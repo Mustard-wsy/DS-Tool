@@ -136,22 +136,17 @@ def _render_pyvis(nodes, edges, title="AutoViz Snapshot"):
       "physics": {
         "enabled": true,
         "barnesHut": {
-              "gravitationalConstant":,
-              "centralGravity"
-              "springLength": 150,
-              "springConstant",
-              "damping",
-              "avoidOverlap"
+          "gravitationalConstant": -8000,
+          "centralGravity": 0.2,
+          "springLength": 150,
+          "springConstant": 0.05,
+          "damping": 0.28,
+          "avoidOverlap": 1
         }
       }
     }
     """)
-    #           "gravitationalConstant": -8000,
-    #           "centralGravity": 0.2,
-    #           "springLength": 150,
-    #           "springConstant": 0.05,
-    #           "damping": 0.28,
-    #           "avoidOverlap": 1
+
     # 指针颜色表（可扩展）
     _POINTER_COLORS = [
         "#4a90e2",  # 蓝色 → next
