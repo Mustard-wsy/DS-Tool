@@ -2,7 +2,7 @@ from contextlib import nullcontext
 
 import dsvis
 
-tag1 = True
+tag1 = False
 
 class Node:
     def __init__(self,v):

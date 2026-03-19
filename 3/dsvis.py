@@ -154,7 +154,7 @@ def _render_g6(nodes, edges, title="AutoViz Snapshot"):
     row_h = 18
     header_h = 22
     section_gap = 6
-    card_w = 300
+    card_w = 200
 
     for n in nodes:
         cls = n.get("class_name") or "Obj"
@@ -233,8 +233,8 @@ def _render_g6(nodes, edges, title="AutoViz Snapshot"):
     layout = {
         "type": "dagre",
         "rankdir": "LR",
-        "nodesep": 30,
-        "ranksep": 100
+        "nodesep": 120,
+        "ranksep": 220
     }
 
     # 🔥 唯一改动：使用模板
