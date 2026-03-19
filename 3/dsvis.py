@@ -203,7 +203,7 @@ def _render_g6(nodes, edges, title="AutoViz Snapshot"):
     # 预计算每个节点的指针名称 -> 索引
     ref_index = {}
     for n in g6_data["nodes"]:
-        refs = n.get("refs", [])
+        refs = (n.get("style") or {}).get("refs", [])
         ref_index[n["id"]] = {r: i for i, r in enumerate(refs)}
 
     edge_counter = 0
@@ -221,8 +221,6 @@ def _render_g6(nodes, edges, title="AutoViz Snapshot"):
             "target": dst_id,
             "data": {"refIndex": ref_idx},
             "style": {
-                "sourcePort": f"pr{ref_idx}" if ref_idx is not None else None,
-                "targetPort": "inL"
             }
         }
         edge_counter += 1
@@ -384,20 +382,6 @@ try {{
 
           // port hints on both sides for pointer rows
           const portY = y + 6;
-          this.upsert(`portL-${{i}}`, 'circle', {{
-            x: -width / 2,
-            y: portY,
-            r: 2.5,
-            fill: '#5b8ff9',
-            stroke: '#2b6cd4',
-          }}, container);
-          this.upsert(`portR-${{i}}`, 'circle', {{
-            x: width / 2,
-            y: portY,
-            r: 2.5,
-            fill: '#5b8ff9',
-            stroke: '#2b6cd4',
-          }}, container);
         }}
 
         return keyShape;
@@ -428,7 +412,10 @@ try {{
       edge: {{
         style: {{
           stroke: '#999',
-          endArrow: true
+          endArrow: true,
+          router: {{
+            type: 'polyline'
+          }}
         }}
       }},
 
@@ -441,31 +428,41 @@ try {{
 
     // 根据相对位置切换指针端口左右
     function updateEdgePorts() {{
-      const updates = [];
-      const edges = graph.getEdgeData();
-      for (const e of edges) {{
-        const src = graph.getNodeData(e.source);
-        const tgt = graph.getNodeData(e.target);
-        if (!src || !tgt) continue;
-        const sx = (src.style && typeof src.style.x === 'number') ? src.style.x : 0;
-        const tx = (tgt.style && typeof tgt.style.x === 'number') ? tgt.style.x : 0;
-        const refIndex = e.data ? e.data.refIndex : null;
-        if (refIndex === null || refIndex === undefined) continue;
-        const preferLeft = tx < sx;
-        const sourcePort = preferLeft ? `pl${{refIndex}}` : `pr${{refIndex}}`;
-        const targetPort = preferLeft ? 'inR' : 'inL';
-        updates.push({{
-          id: e.id,
-          style: {{
-            sourcePort,
-            targetPort
-          }}
-        }});
-      }}
-      if (updates.length) {{
+        const updates = [];
+        const edges = graph.getEdgeData();
+
+        for (const e of edges) {{
+            const src = graph.getNodeData(e.source);
+            const tgt = graph.getNodeData(e.target);
+            if (!src || !tgt) continue;
+
+            const refIndex = e.data ? e.data.refIndex : null;
+            if (refIndex === null || refIndex === undefined) continue;
+
+            // 获取节点位置
+            const sx = src.style?.x ?? 0;
+            const tx = tgt.style?.x ?? 0;
+
+            // 👇 关键：只在当前 refIndex 的左右 port 之间切换
+            const useLeft = tx < sx;
+
+            const sourcePort = useLeft
+            ? `pl${{refIndex}}`   // 该字段的左端口
+            : `pr${{refIndex}}`;  // 该字段的右端口
+
+            const targetPort = useLeft ? 'inR' : 'inL';
+
+            updates.push({{
+            id: e.id,
+            style: {{
+                sourcePort,
+                targetPort
+            }}
+            }});
+        }}
+
         graph.updateEdgeData(updates);
-      }}
-    }}
+        }}
 
     graph.on('afterlayout', updateEdgePorts);
     graph.on('node:dragend', updateEdgePorts);
@@ -518,3 +515,5 @@ def capture(title="AutoViz Snapshot", max_nodes=300, include_private=False):
         del frame
         if caller:
             del caller
+
+
