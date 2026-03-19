@@ -464,7 +464,23 @@ try {{
         graph.updateEdgeData(updates);
         }}
 
-    graph.on('afterlayout', updateEdgePorts);
+    let rafId = null;
+
+    function scheduleUpdate() {{
+    if (rafId !== null) return;
+    rafId = requestAnimationFrame(() => {{
+        updateEdgePorts();
+        rafId = null;
+    }});
+    }}
+
+    // 初始布局后执行一次
+    graph.once('afterlayout', updateEdgePorts);
+
+    // 拖动过程中实时更新（但节流）
+    graph.on('node:dragging', scheduleUpdate);
+
+    // 拖动结束再强制更新一次（防止丢帧）
     graph.on('node:dragend', updateEdgePorts);
   }}
 }} catch (err) {{
