@@ -135,6 +135,11 @@ def _walk(root_scope, max_nodes=300, include_private=False):
 # ---------- G6 渲染 ----------
 
 def _render_g6(nodes, edges, title="AutoViz Snapshot"):
+    import tempfile
+    import webbrowser
+    import json
+    from pathlib import Path
+
     # 转换数据格式
     g6_data = {
         "nodes": [],
@@ -144,7 +149,6 @@ def _render_g6(nodes, edges, title="AutoViz Snapshot"):
     id_to_name = {}
     class_count = {}
 
-    # 卡片布局参数（与前端一致）
     padding_x = 10
     padding_y = 8
     row_h = 18
@@ -155,13 +159,14 @@ def _render_g6(nodes, edges, title="AutoViz Snapshot"):
     for n in nodes:
         cls = n.get("class_name") or "Obj"
         class_count[cls] = class_count.get(cls, 0) + 1
-        name = f"{cls}{class_count[cls]}"
+        name = f"{cls}#{class_count[cls]}@{hex(n['id'])}"
         id_to_name[n["id"]] = name
 
         refs = [r.get("name", "") for r in n.get("refs", [])]
         fields = n.get("fields", [])
         field_rows = max(len(fields), 1)
         ref_rows = max(len(refs), 1) if refs else 0
+
         height = (
             padding_y * 2
             + header_h
@@ -170,10 +175,11 @@ def _render_g6(nodes, edges, title="AutoViz Snapshot"):
             + ref_rows * row_h
         )
 
-        # 端口：左右入点 + 每个指针行左右各一个出点
+        header_center_y = (padding_y + header_h / 2) / height
+
         ports = [
-            {"key": "inL", "placement": [0, 0.5], "r": 2.5, "fill": "#5b8ff9", "stroke": "#2b6cd4"},
-            {"key": "inR", "placement": [1, 0.5], "r": 2.5, "fill": "#5b8ff9", "stroke": "#2b6cd4"},
+            {"key": "inL", "placement": [0, header_center_y], "r": 2.5, "fill": "#5b8ff9", "stroke": "#2b6cd4"},
+            {"key": "inR", "placement": [1, header_center_y], "r": 2.5, "fill": "#5b8ff9", "stroke": "#2b6cd4"},
         ]
         for i in range(len(refs)):
             y = (
@@ -200,7 +206,6 @@ def _render_g6(nodes, edges, title="AutoViz Snapshot"):
             }
         })
 
-    # 预计算每个节点的指针名称 -> 索引
     ref_index = {}
     for n in g6_data["nodes"]:
         refs = (n.get("style") or {}).get("refs", [])
@@ -220,277 +225,25 @@ def _render_g6(nodes, edges, title="AutoViz Snapshot"):
             "source": src_id,
             "target": dst_id,
             "data": {"refIndex": ref_idx},
-            "style": {
-            }
+            "style": {}
         }
         edge_counter += 1
         g6_data["edges"].append(edge_item)
 
-    # 🔥 使用稳定布局（关键）
     layout = {
         "type": "dagre",
-        "rankdir": "LR",   # 左→右（链表非常清晰）
+        "rankdir": "LR",
         "nodesep": 30,
         "ranksep": 100
     }
 
-    html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8"/>
-<title>{title}</title>
-<style>
-  html, body, #container {{
-    width: 100%;
-    height: 100%;
-    margin: 0;
-    padding: 0;
-    overflow: hidden;
-  }}
-  #fallback {{
-    position: absolute;
-    top: 12px;
-    left: 12px;
-    padding: 8px 10px;
-    background: #fff3cd;
-    border: 1px solid #ffeeba;
-    color: #856404;
-    font-family: Consolas, monospace;
-    font-size: 12px;
-    display: none;
-    z-index: 10;
-  }}
-</style>
-<script src="https://unpkg.com/@antv/g6@5.0.51/dist/g6.min.js"></script>
-</head>
+    # 🔥 唯一改动：使用模板
+    template_path = Path(__file__).parent / "template.html"
+    html = template_path.read_text(encoding="utf-8")
 
-<body style="margin:0">
-<div id="fallback">G6 加载失败或渲染出错（请检查控制台错误）。</div>
-<div id="container"></div>
-
-<script>
-const data = {json.dumps(g6_data)};
-const fallback = document.getElementById('fallback');
-
-function showFallback(err) {{
-  fallback.style.display = 'block';
-  if (err && err.message) {{
-    fallback.textContent = 'G6 渲染错误: ' + err.message;
-  }}
-}}
-
-try {{
-  if (!window.G6) {{
-    showFallback(new Error('G6 未加载'));
-  }} else {{
-    // 自定义“分栏卡片”节点（G6 v5）
-    const {{ register, BaseNode }} = G6;
-    class CardNode extends BaseNode {{
-      drawKeyShape(attributes, container) {{
-        const name = attributes.name || '';
-        const fields = Array.isArray(attributes.fields) ? attributes.fields : [];
-        const refs = Array.isArray(attributes.refs) ? attributes.refs : [];
-        const size = attributes.size || [300, 80];
-        const width = size[0];
-        const height = size[1];
-
-        const paddingX = 10;
-        const paddingY = 8;
-        const rowH = 18;
-        const headerH = 22;
-        const sectionGap = attributes.sectionGap || 6;
-        const labelW = width - paddingX * 2;
-
-        const keyShape = this.upsert('key', 'rect', {{
-          x: -width / 2,
-          y: -height / 2,
-          width,
-          height,
-          radius: 4,
-          fill: '#e8f0fe',
-          stroke: '#5b8ff9',
-        }}, container);
-
-        this.upsert('header-bg', 'rect', {{
-          x: -width / 2,
-          y: -height / 2,
-          width,
-          height: headerH + paddingY,
-          fill: '#dbe7ff',
-          stroke: 'transparent',
-          radius: 4,
-        }}, container);
-
-        this.upsert('header-text', 'text', {{
-          x: -width / 2 + paddingX,
-          y: -height / 2 + paddingY + 2,
-          text: name,
-          fill: '#000',
-          fontSize: 12,
-          fontFamily: 'Consolas, monospace',
-          textBaseline: 'top',
-        }}, container);
-
-        const fieldRows = Math.max(fields.length, 1);
-        const refRows = refs.length;
-
-        // fields (top section)
-        for (let i = 0; i < fieldRows; i++) {{
-          const y = -height / 2 + headerH + paddingY + i * rowH + 2;
-          const text = fields[i] || '';
-          if (text) {{
-            this.upsert(`field-${{i}}`, 'text', {{
-              x: -width / 2 + paddingX,
-              y,
-              text,
-              fill: '#1a1a1a',
-              fontSize: 11,
-              fontFamily: 'Consolas, monospace',
-              textBaseline: 'top',
-            }}, container);
-          }}
-        }}
-
-        // divider between fields and refs
-        if (refRows > 0) {{
-          const divY = -height / 2 + headerH + paddingY + fieldRows * rowH + sectionGap / 2;
-          this.upsert('divider', 'line', {{
-            x1: -width / 2 + paddingX,
-            y1: divY,
-            x2: width / 2 - paddingX,
-            y2: divY,
-            stroke: '#c3d4ff',
-          }}, container);
-        }}
-
-        // refs (bottom section)
-        for (let i = 0; i < refRows; i++) {{
-          const y = -height / 2 + headerH + paddingY + fieldRows * rowH + sectionGap + i * rowH + 2;
-          const text = refs[i] || '';
-          if (text) {{
-            this.upsert(`ref-${{i}}`, 'text', {{
-              x: -width / 2 + paddingX,
-              y,
-              text,
-              fill: '#1a1a1a',
-              fontSize: 11,
-              fontFamily: 'Consolas, monospace',
-              textBaseline: 'top',
-            }}, container);
-          }}
-
-          // port hints on both sides for pointer rows
-          const portY = y + 6;
-        }}
-
-        return keyShape;
-      }}
-    }}
-    register('node', 'card', CardNode);
-
-    const graph = new G6.Graph({{
-      container: 'container',
-      width: window.innerWidth,
-      height: window.innerHeight,
-      autoResize: true,
-      data,
-
-      layout: {json.dumps(layout)},
-
-      node: {{
-        type: 'card',
-        style: {{
-          fill: '#e8f0fe',
-          stroke: '#5b8ff9',
-          radius: 4,
-          label: false,
-          port: true
-        }}
-      }},
-
-      edge: {{
-        style: {{
-          stroke: '#999',
-          endArrow: true,
-          router: {{
-            type: 'polyline'
-          }}
-        }}
-      }},
-
-      behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element'],
-
-      transforms: ['process-parallel-edges']
-    }});
-
-    graph.render();
-
-    // 根据相对位置切换指针端口左右
-    function updateEdgePorts() {{
-        const updates = [];
-        const edges = graph.getEdgeData();
-
-        for (const e of edges) {{
-            const src = graph.getNodeData(e.source);
-            const tgt = graph.getNodeData(e.target);
-            if (!src || !tgt) continue;
-
-            const refIndex = e.data ? e.data.refIndex : null;
-            if (refIndex === null || refIndex === undefined) continue;
-
-            // 获取节点位置
-            const sx = src.style?.x ?? 0;
-            const tx = tgt.style?.x ?? 0;
-
-            // 👇 关键：只在当前 refIndex 的左右 port 之间切换
-            const useLeft = tx < sx;
-
-            const sourcePort = useLeft
-            ? `pl${{refIndex}}`   // 该字段的左端口
-            : `pr${{refIndex}}`;  // 该字段的右端口
-
-            const targetPort = useLeft ? 'inR' : 'inL';
-
-            updates.push({{
-            id: e.id,
-            style: {{
-                sourcePort,
-                targetPort
-            }}
-            }});
-        }}
-
-        graph.updateEdgeData(updates);
-        }}
-
-    let rafId = null;
-
-    function scheduleUpdate() {{
-    if (rafId !== null) return;
-    rafId = requestAnimationFrame(() => {{
-        updateEdgePorts();
-        rafId = null;
-    }});
-    }}
-
-    // 初始布局后执行一次
-    graph.once('afterlayout', updateEdgePorts);
-
-    // 拖动过程中实时更新（但节流）
-    graph.on('node:dragging', scheduleUpdate);
-
-    // 拖动结束再强制更新一次（防止丢帧）
-    graph.on('node:dragend', updateEdgePorts);
-  }}
-}} catch (err) {{
-  console.error(err);
-  showFallback(err);
-}}
-</script>
-</body>
-</html>
-"""
+    html = html.replace("__DATA__", json.dumps(g6_data))
+    html = html.replace("__LAYOUT__", json.dumps(layout))
+    html = html.replace("__TITLE__", title)
 
     fd, path = tempfile.mkstemp(suffix=".html")
     html_path = Path(path)
