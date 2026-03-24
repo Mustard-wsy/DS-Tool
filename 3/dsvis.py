@@ -154,12 +154,12 @@ def _render_g6(nodes, edges, title="AutoViz Snapshot"):
     row_h = 18
     header_h = 22
     section_gap = 6
-    card_w = 200
+    card_w = 100
 
     for n in nodes:
         cls = n.get("class_name") or "Obj"
         class_count[cls] = class_count.get(cls, 0) + 1
-        name = f"{cls}#{class_count[cls]}@{hex(n['id'])}"
+        name = f"{cls}#{class_count[cls]}"
         id_to_name[n["id"]] = name
 
         refs = [r.get("name", "") for r in n.get("refs", [])]
@@ -237,7 +237,6 @@ def _render_g6(nodes, edges, title="AutoViz Snapshot"):
         "ranksep": 220
     }
 
-    # 🔥 唯一改动：使用模板
     template_path = Path(__file__).parent / "template.html"
     html = template_path.read_text(encoding="utf-8")
 
