@@ -284,20 +284,16 @@ try {
       updateEdgePorts(nodeId);
     }
 
-    function refreshAfterLoad() {
-      updateEdgePorts();
-      requestAnimationFrame(() => updateEdgePorts());
-      setTimeout(() => updateEdgePorts(), 0);
-    }
-
-    graph.once('afterlayout', refreshAfterLoad);
-    graph.once('afterrender', refreshAfterLoad);
+    graph.once('afterlayout', updateEdgePorts);
+    graph.once('afterrender', updateEdgePorts);
     graph.on('node:dragstart', onDragStart);
+
     graph.on('node:drag', onDragMove);
     graph.on('node:dragging', onDragMove);
     graph.on('node:dragend', onDragEnd);
     graph.on('element:dragstart', onDragStart);
     graph.on('element:drag', onDragMove);
+
     graph.on('element:dragend', onDragEnd);
   }
 } catch (err) {
