@@ -284,8 +284,14 @@ try {
       updateEdgePorts(nodeId);
     }
 
-    graph.once('afterlayout', updateEdgePorts);
-    graph.once('afterrender', updateEdgePorts);
+    function refreshAfterLoad() {
+      updateEdgePorts();
+      requestAnimationFrame(() => updateEdgePorts());
+      setTimeout(() => updateEdgePorts(), 0);
+    }
+
+    graph.once('afterlayout', refreshAfterLoad);
+    graph.once('afterrender', refreshAfterLoad);
     graph.on('node:dragstart', onDragStart);
 
     graph.on('node:drag', onDragMove);
