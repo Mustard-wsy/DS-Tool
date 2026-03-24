@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>__TITLE__</title>
+<style>
+  html, body, #container {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+  #fallback {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    padding: 8px 10px;
+    background: #fff3cd;
+    border: 1px solid #ffeeba;
+    color: #856404;
+    font-family: Consolas, monospace;
+    font-size: 12px;
+    display: none;
+    z-index: 10;
+  }
+</style>
+<script src="https://unpkg.com/@antv/g6@5.0.51/dist/g6.min.js"></script>
+</head>
+
+<body style="margin:0">
+<div id="fallback">G6 加载失败或渲染出错（请检查控制台错误）。</div>
+<div id="container"></div>
+
+<script>
+const data = __DATA__;
+const fallback = document.getElementById('fallback');
+
+function showFallback(err) {
+  fallback.style.display = 'block';
+  if (err && err.message) {
+    fallback.textContent = 'G6 渲染错误: ' + err.message;
+  }
+}
+
+try {
+  if (!window.G6) {
+    showFallback(new Error('G6 未加载'));
+  } else {
+    const { register, BaseNode } = G6;
+
+    class CardNode extends BaseNode {
+      drawKeyShape(attributes, container) {
+        const name = attributes.name || '';
+        const rows = Array.isArray(attributes.rows) ? attributes.rows : [];
+        const size = attributes.size || [300, 80];
+        const width = size[0];
+        const height = size[1];
+
+        const paddingX = 10;
+        const paddingY = 8;
+        const rowH = 18;
+        const headerH = 22;
+        const sectionGap = attributes.sectionGap || 6;
+
+        const keyShape = this.upsert('key', 'rect', {
+          x: -width / 2,
+          y: -height / 2,
+          width,
+          height,
+          radius: 4,
+          fill: '#e8f0fe',
+          stroke: '#5b8ff9',
+        }, container);
+
+        this.upsert('header-bg', 'rect', {
+          x: -width / 2,
+          y: -height / 2,
+          width,
+          height: headerH + paddingY,
+          fill: '#dbe7ff',
+          stroke: 'transparent',
+          radius: 4,
+        }, container);
+
+        this.upsert('header-text', 'text', {
+          x: -width / 2 + paddingX,
+          y: -height / 2 + paddingY + 2,
+          text: name,
+          fill: '#000',
+          fontSize: 12,
+          fontFamily: 'Consolas, monospace',
+          textBaseline: 'top',
+        }, container);
+
+        const rowCount = Math.max(rows.length, 1);
+
+        for (let i = 0; i < rowCount; i++) {
+          const y = -height / 2 + headerH + paddingY + i * rowH + 2;
+          const text = rows[i] || '';
+          if (text) {
+            this.upsert(`field-${i}`, 'text', {
+              x: -width / 2 + paddingX,
+              y,
+              text,
+              fill: '#1a1a1a',
+              fontSize: 11,
+              fontFamily: 'Consolas, monospace',
+              textBaseline: 'top',
+            }, container);
+          }
+        }
+
+        return keyShape;
+      }
+    }
+
+    register('node', 'card', CardNode);
+
+    const graph = new G6.Graph({
+      container: 'container',
+      width: window.innerWidth,
+      height: window.innerHeight,
+      autoResize: true,
+      data,
+
+      layout: __LAYOUT__,
+
+      node: {
+        type: 'card',
+        style: {
+          fill: '#e8f0fe',
+          stroke: '#5b8ff9',
+          radius: 4,
+          label: false,
+          port: true
+        }
+      },
+
+      edge: {
+        style: {
+          stroke: '#999',
+          endArrow: true,
+          router: {
+            type: 'polyline'
+          }
+        }
+      },
+
+      behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element'],
+      transforms: ['process-parallel-edges']
+    });
+
+    graph.render();
+
+    function buildPortStyles(node, usedPorts) {
+      const ports = Array.isArray(node.style?.ports) ? node.style.ports : [];
+      return ports.map((p) => {
+        const key = p.key;
+        const active = usedPorts.has(key);
+        return {
+          ...p,
+          r: active ? 2.5 : 0,
+          fill: active ? '#5b8ff9' : 'transparent',
+          stroke: active ? '#2b6cd4' : 'transparent',
+        };
+      });
+    }
+
+    function updateEdgePorts() {
+        const updates = [];
+        const nodePortUsage = new Map();
+        const edges = graph.getEdgeData();
+        const nodeDataList = graph.getNodeData();
+        const nodeMap = new Map(nodeDataList.map((n) => [n.id, n]));
+
+        function markPort(nodeId, portKey) {
+          if (!portKey) return;
+          if (!nodePortUsage.has(nodeId)) nodePortUsage.set(nodeId, new Set());
+          nodePortUsage.get(nodeId).add(portKey);
+        }
+
+        for (const e of edges) {
+            const src = nodeMap.get(e.source);
+            const tgt = nodeMap.get(e.target);
+            if (!src || !tgt) continue;
+
+            const refIndex = e.data ? e.data.refIndex : null;
+            if (refIndex === null || refIndex === undefined) continue;
+
+            const sx = src.style?.x ?? 0;
+            const tx = tgt.style?.x ?? 0;
+            
+
+            const useLeft = tx < sx;
+
+            const sourcePort = useLeft
+            ? `pl${refIndex}`
+            : `pr${refIndex}`;
+
+            const targetPort = useLeft ? 'inR' : 'inL';
+            markPort(src.id, sourcePort);
+            markPort(tgt.id, targetPort);
+
+            updates.push({
+            id: e.id,
+            style: {
+                sourcePort,
+                targetPort
+            }
+            });
+        }
+
+        graph.updateEdgeData(updates);
+
+        const nodeUpdates = [];
+        for (const n of nodeDataList) {
+          const usedPorts = nodePortUsage.get(n.id) || new Set();
+          nodeUpdates.push({
+            id: n.id,
+            style: {
+              ports: buildPortStyles(n, usedPorts),
+            }
+          });
+        }
+        graph.updateNodeData(nodeUpdates);
+        graph.draw();
+    }
+
+    let rafId = null;
+    let dragging = false;
+
+    function scheduleUpdate() {
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        updateEdgePorts();
+        rafId = null;
+        if (dragging) scheduleUpdate();
+      });
+    }
+
+    function onDragStart() {
+      dragging = true;
+      scheduleUpdate();
+    }
+
+    function onDragEnd() {
+      dragging = false;
+      updateEdgePorts();
+    }
+
+    graph.once('afterlayout', updateEdgePorts);
+    graph.once('afterrender', updateEdgePorts);
+    graph.on('node:dragstart', onDragStart);
+    graph.on('node:drag', scheduleUpdate);
+    graph.on('node:dragging', scheduleUpdate);
+    graph.on('node:dragend', onDragEnd);
+    graph.on('element:dragstart', onDragStart);
+    graph.on('element:drag', scheduleUpdate);
+    graph.on('element:dragend', onDragEnd);
+  }
+} catch (err) {
+  console.error(err);
+  showFallback(err);
+}
+</script>
+</body>
+</html>
