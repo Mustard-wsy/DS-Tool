@@ -167,6 +167,7 @@ try {
       });
     }
 
+
     function resolvePortsForEdge(e, nodeMap) {
       const src = nodeMap.get(e.source);
       const tgt = nodeMap.get(e.target);
@@ -242,10 +243,12 @@ try {
         if (edgeUpdates.length > 0 || nodeUpdates.length > 0 || !focusNodeId) {
           graph.draw();
         }
+
     }
 
     let rafId = null;
     let dragging = false;
+
     let draggingNodeId = null;
 
     function getDragNodeId(evt) {
@@ -287,11 +290,13 @@ try {
     graph.once('afterlayout', updateEdgePorts);
     graph.once('afterrender', updateEdgePorts);
     graph.on('node:dragstart', onDragStart);
+
     graph.on('node:drag', onDragMove);
     graph.on('node:dragging', onDragMove);
     graph.on('node:dragend', onDragEnd);
     graph.on('element:dragstart', onDragStart);
     graph.on('element:drag', onDragMove);
+
     graph.on('element:dragend', onDragEnd);
   }
 } catch (err) {
