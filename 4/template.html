@@ -167,7 +167,6 @@ try {
       });
     }
 
-
     function resolvePortsForEdge(e, nodeMap) {
       const src = nodeMap.get(e.source);
       const tgt = nodeMap.get(e.target);
@@ -243,12 +242,10 @@ try {
         if (edgeUpdates.length > 0 || nodeUpdates.length > 0 || !focusNodeId) {
           graph.draw();
         }
-
     }
 
     let rafId = null;
     let dragging = false;
-
     let draggingNodeId = null;
 
     function getDragNodeId(evt) {
