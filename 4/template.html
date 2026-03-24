@@ -167,96 +167,136 @@ try {
       });
     }
 
-    function updateEdgePorts() {
-        const updates = [];
-        const nodePortUsage = new Map();
-        const edges = graph.getEdgeData();
+
+    function resolvePortsForEdge(e, nodeMap) {
+      const src = nodeMap.get(e.source);
+      const tgt = nodeMap.get(e.target);
+      if (!src || !tgt) return null;
+
+      const refIndex = e.data ? e.data.refIndex : null;
+      if (refIndex === null || refIndex === undefined) return null;
+
+      const sx = src.style?.x ?? 0;
+      const tx = tgt.style?.x ?? 0;
+      const useLeft = tx < sx;
+      return {
+        sourcePort: useLeft ? `pl${refIndex}` : `pr${refIndex}`,
+        targetPort: useLeft ? 'inR' : 'inL',
+      };
+    }
+
+    function updateEdgePorts(focusNodeId = null) {
+        const allEdges = graph.getEdgeData();
         const nodeDataList = graph.getNodeData();
         const nodeMap = new Map(nodeDataList.map((n) => [n.id, n]));
+        const relatedNodeIds = new Set();
 
-        function markPort(nodeId, portKey) {
-          if (!portKey) return;
-          if (!nodePortUsage.has(nodeId)) nodePortUsage.set(nodeId, new Set());
-          nodePortUsage.get(nodeId).add(portKey);
-        }
+        const edgesToUpdate = focusNodeId
+          ? allEdges.filter((e) => e.source === focusNodeId || e.target === focusNodeId)
+          : allEdges;
 
-        for (const e of edges) {
-            const src = nodeMap.get(e.source);
-            const tgt = nodeMap.get(e.target);
-            if (!src || !tgt) continue;
-
-            const refIndex = e.data ? e.data.refIndex : null;
-            if (refIndex === null || refIndex === undefined) continue;
-
-            const sx = src.style?.x ?? 0;
-            const tx = tgt.style?.x ?? 0;
-            
-
-            const useLeft = tx < sx;
-
-            const sourcePort = useLeft
-            ? `pl${refIndex}`
-            : `pr${refIndex}`;
-
-            const targetPort = useLeft ? 'inR' : 'inL';
-            markPort(src.id, sourcePort);
-            markPort(tgt.id, targetPort);
-
-            updates.push({
+        const edgeUpdates = [];
+        for (const e of edgesToUpdate) {
+          const ports = resolvePortsForEdge(e, nodeMap);
+          if (!ports) continue;
+          edgeUpdates.push({
             id: e.id,
-            style: {
-                sourcePort,
-                targetPort
-            }
-            });
+            style: ports,
+          });
+          relatedNodeIds.add(e.source);
+          relatedNodeIds.add(e.target);
         }
 
-        graph.updateEdgeData(updates);
+        if (edgeUpdates.length > 0) {
+          graph.updateEdgeData(edgeUpdates);
+        }
+
+        const nodeIdsToRefresh = focusNodeId
+          ? Array.from(relatedNodeIds)
+          : nodeDataList.map((n) => n.id);
 
         const nodeUpdates = [];
-        for (const n of nodeDataList) {
-          const usedPorts = nodePortUsage.get(n.id) || new Set();
+        for (const nodeId of nodeIdsToRefresh) {
+          const node = nodeMap.get(nodeId);
+          if (!node) continue;
+
+          const usedPorts = new Set();
+          for (const e of allEdges) {
+            if (e.source !== nodeId && e.target !== nodeId) continue;
+            const ports = resolvePortsForEdge(e, nodeMap);
+            if (!ports) continue;
+            if (e.source === nodeId) usedPorts.add(ports.sourcePort);
+            if (e.target === nodeId) usedPorts.add(ports.targetPort);
+          }
+
           nodeUpdates.push({
-            id: n.id,
+            id: nodeId,
             style: {
-              ports: buildPortStyles(n, usedPorts),
-            }
+              ports: buildPortStyles(node, usedPorts),
+            },
           });
         }
-        graph.updateNodeData(nodeUpdates);
-        graph.draw();
+
+        if (nodeUpdates.length > 0) {
+          graph.updateNodeData(nodeUpdates);
+        }
+        if (edgeUpdates.length > 0 || nodeUpdates.length > 0 || !focusNodeId) {
+          graph.draw();
+        }
+
     }
 
     let rafId = null;
     let dragging = false;
 
-    function scheduleUpdate() {
+    let draggingNodeId = null;
+
+    function getDragNodeId(evt) {
+      return evt?.target?.id || evt?.item?.id || evt?.data?.id || evt?.id || null;
+    }
+
+    function scheduleUpdate(nodeId = null) {
+      if (nodeId) draggingNodeId = nodeId;
       if (rafId !== null) return;
       rafId = requestAnimationFrame(() => {
-        updateEdgePorts();
+        updateEdgePorts(draggingNodeId);
         rafId = null;
-        if (dragging) scheduleUpdate();
+        if (dragging) scheduleUpdate(draggingNodeId);
       });
     }
 
-    function onDragStart() {
+    function onDragStart(evt) {
+      const nodeId = getDragNodeId(evt);
+      if (!nodeId) return;
       dragging = true;
-      scheduleUpdate();
+      draggingNodeId = nodeId;
+      scheduleUpdate(nodeId);
     }
 
-    function onDragEnd() {
+    function onDragMove(evt) {
+      const nodeId = getDragNodeId(evt) || draggingNodeId;
+      if (!nodeId) return;
+      scheduleUpdate(nodeId);
+    }
+
+    function onDragEnd(evt) {
+      const nodeId = getDragNodeId(evt) || draggingNodeId;
       dragging = false;
-      updateEdgePorts();
+      draggingNodeId = null;
+      if (!nodeId) return;
+      updateEdgePorts(nodeId);
     }
 
     graph.once('afterlayout', updateEdgePorts);
     graph.once('afterrender', updateEdgePorts);
     graph.on('node:dragstart', onDragStart);
-    graph.on('node:drag', scheduleUpdate);
-    graph.on('node:dragging', scheduleUpdate);
+
+    graph.on('node:drag', onDragMove);
+    graph.on('node:dragging', onDragMove);
     graph.on('node:dragend', onDragEnd);
     graph.on('element:dragstart', onDragStart);
-    graph.on('element:drag', scheduleUpdate);
+    graph.on('element:drag', onDragMove);
+
     graph.on('element:dragend', onDragEnd);
   }
 } catch (err) {
