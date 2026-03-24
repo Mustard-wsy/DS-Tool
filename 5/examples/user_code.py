@@ -20,4 +20,4 @@ numbers = []
 numbers.append(a.value)
 
 # 手动 capture 仍可保留，AST 插桩会自动追加 trigger。
-dsvis.capture()
+#dsvis.capture()
