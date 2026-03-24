@@ -1,21 +1,21 @@
+import threading
+
 from dsvis import capture
 
 
 class Scheduler:
-    def __init__(self, step_mode=True):
-        self.step_mode = step_mode
-        self.step = 0
+    def __init__(self, delay=0.1):
+        self.delay = delay
+        self.pending = False
 
-    def request_update(self, caller_frame=None):
-        self.step += 1
-        capture(title=f"Step {self.step}", _caller_frame=caller_frame)
+    def request_update(self):
+        if not self.pending:
+            self.pending = True
+            threading.Timer(self.delay, self.flush).start()
 
-        if self.step_mode:
-            try:
-                input(f"[dsvis] Step {self.step} 完成，按 Enter 继续...")
-            except EOFError:
-                # 非交互环境（如 CI）下无法输入时自动继续
-                pass
+    def flush(self):
+        self.pending = False
+        capture()
 
 
 scheduler = Scheduler()
