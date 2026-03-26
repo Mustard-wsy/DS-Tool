@@ -6,9 +6,7 @@ import os
 from collections import deque
 from pathlib import Path
 
-__all__ = ["capture", "set_mode", "get_mode"]
-
-_MODE = os.environ.get("DSVIS_MODE", "auto")
+__all__ = ["capture", "auto"]
 
 # ---------- helpers ----------
 
@@ -301,17 +299,6 @@ def capture(title="AutoViz Snapshot", max_nodes=300, include_private=False, _cal
             del caller
 
 
-def set_mode(mode):
-    global _MODE
-    if mode not in {"auto", "manual"}:
-        raise ValueError("mode must be 'auto' or 'manual'")
-    _MODE = mode
-
-
-def get_mode():
-    return _MODE
-
-
 def _find_main_script():
     frame = inspect.currentframe()
     try:
@@ -327,15 +314,20 @@ def _find_main_script():
     return None
 
 
-def _bootstrap_auto_mode():
-    if _MODE != "auto":
-        return
+def auto():
+    """
+    显式启用 AST 自动插桩模式：
+    用户在脚本顶部写：
+
+        import dsvis
+        dsvis.auto()
+    """
     if os.environ.get("DSVIS_AST_RUNNING") == "1":
         return
 
     main_file = _find_main_script()
     if not main_file:
-        return
+        raise RuntimeError("dsvis.auto() 只能在脚本主模块中调用")
     if Path(main_file).resolve() == Path(__file__).resolve():
         return
 
@@ -343,6 +335,3 @@ def _bootstrap_auto_mode():
 
     run_file(main_file)
     raise SystemExit(0)
-
-
-_bootstrap_auto_mode()
