@@ -2,10 +2,13 @@
 import tempfile
 import webbrowser
 import json
+import os
 from collections import deque
 from pathlib import Path
 
-__all__ = ["capture"]
+__all__ = ["capture", "set_mode", "get_mode"]
+
+_MODE = os.environ.get("DSVIS_MODE", "auto")
 
 # ---------- helpers ----------
 
@@ -296,3 +299,50 @@ def capture(title="AutoViz Snapshot", max_nodes=300, include_private=False, _cal
         del frame
         if _caller_frame is None and caller:
             del caller
+
+
+def set_mode(mode):
+    global _MODE
+    if mode not in {"auto", "manual"}:
+        raise ValueError("mode must be 'auto' or 'manual'")
+    _MODE = mode
+
+
+def get_mode():
+    return _MODE
+
+
+def _find_main_script():
+    frame = inspect.currentframe()
+    try:
+        current = frame.f_back if frame else None
+        while current:
+            g = current.f_globals
+            if g.get("__name__") == "__main__" and g.get("__file__"):
+                return str(Path(g["__file__"]).resolve())
+            current = current.f_back
+    finally:
+        if frame:
+            del frame
+    return None
+
+
+def _bootstrap_auto_mode():
+    if _MODE != "auto":
+        return
+    if os.environ.get("DSVIS_AST_RUNNING") == "1":
+        return
+
+    main_file = _find_main_script()
+    if not main_file:
+        return
+    if Path(main_file).resolve() == Path(__file__).resolve():
+        return
+
+    from runtime.ast_hook import run_file
+
+    run_file(main_file)
+    raise SystemExit(0)
+
+
+_bootstrap_auto_mode()
