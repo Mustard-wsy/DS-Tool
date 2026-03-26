@@ -1,4 +1,5 @@
 import ast
+import os
 
 from .injector import InjectTrigger
 
@@ -22,10 +23,18 @@ def run_file(filepath):
 
     from .trigger import trigger
 
+    previous_flag = os.environ.get("DSVIS_AST_RUNNING")
+    os.environ["DSVIS_AST_RUNNING"] = "1"
+
     global_env = {
         "trigger": trigger,
-        "__name__": "__main__",
+        "__name__": "__ast_exec__",
         "__file__": filepath,
     }
-
-    exec(compiled, global_env)
+    try:
+        exec(compiled, global_env)
+    finally:
+        if previous_flag is None:
+            os.environ.pop("DSVIS_AST_RUNNING", None)
+        else:
+            os.environ["DSVIS_AST_RUNNING"] = previous_flag
