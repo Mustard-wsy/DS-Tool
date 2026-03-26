@@ -1,7 +1,7 @@
 from contextlib import nullcontext
 
-import dsvis
-
+#import dsvis
+import runtime.auto
 tag1 = False
 
 class Node:
