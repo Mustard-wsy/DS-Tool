@@ -6,11 +6,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-if __name__ == "__main__" and os.environ.get("DSVIS_AST_RUNNING") != "1":
-    from runtime.ast_hook import run_file
-
-    run_file(str(Path(__file__).resolve()))
-    raise SystemExit(0)
+# 用户只需在脚本开头引入这一行即可启用 AST 自动插桩。
+if os.environ.get("DSVIS_AST_RUNNING") != "1":
+    import runtime.auto  # noqa: F401
 
 import dsvis
 
