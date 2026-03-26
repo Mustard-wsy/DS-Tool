@@ -288,6 +288,13 @@ try {
       updateEdgePorts();
       requestAnimationFrame(() => updateEdgePorts());
       setTimeout(() => updateEdgePorts(), 0);
+      requestAnimationFrame(() => {
+        if (typeof graph.fitView === 'function') {
+          graph.fitView({ padding: 40 });
+        } else if (typeof graph.fitCenter === 'function') {
+          graph.fitCenter();
+        }
+      });
     }
 
     graph.once('afterlayout', refreshAfterLoad);

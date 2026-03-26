@@ -31,8 +31,22 @@ class InjectTrigger(ast.NodeTransformer):
     def _is_struct_target(target):
         return isinstance(target, (ast.Attribute, ast.Subscript))
 
+    @staticmethod
+    def _is_constructor_call(value):
+        if not isinstance(value, ast.Call):
+            return False
+        fn = value.func
+        if isinstance(fn, ast.Name):
+            return fn.id[:1].isupper()
+        if isinstance(fn, ast.Attribute):
+            return fn.attr[:1].isupper()
+        return False
+
     def _should_trigger_assign(self, node):
-        return any(self._is_struct_target(t) for t in node.targets)
+        if any(self._is_struct_target(t) for t in node.targets):
+            return True
+        has_name_target = any(isinstance(t, ast.Name) for t in node.targets)
+        return has_name_target and self._is_constructor_call(node.value)
 
     def _in_init(self):
         return bool(self._func_stack and self._func_stack[-1] == "__init__")
