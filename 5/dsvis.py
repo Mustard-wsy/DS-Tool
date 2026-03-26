@@ -270,9 +270,9 @@ def _render_g6(nodes, edges, title="AutoViz Snapshot"):
 
 # ---------- 对外接口 ----------
 
-def capture(title="AutoViz Snapshot", max_nodes=300, include_private=False):
+def capture(title="AutoViz Snapshot", max_nodes=300, include_private=False, _caller_frame=None):
     frame = inspect.currentframe()
-    caller = frame.f_back if frame else None
+    caller = _caller_frame if _caller_frame is not None else (frame.f_back if frame else None)
 
     if not caller:
         print("[dsvis] 无法获取调用帧")
@@ -294,6 +294,5 @@ def capture(title="AutoViz Snapshot", max_nodes=300, include_private=False):
 
     finally:
         del frame
-        if caller:
+        if _caller_frame is None and caller:
             del caller
-
