@@ -41,15 +41,15 @@ def create_complete_binary_tree(height):
             node.next = Node(current_val)
             current_val += 1
             queue.append(node.next)
-            if tag1 == True:
-                dsvis.capture()
+            #if tag1 == True:
+                #dsvis.capture()
 
             # 创建右子节点
             node.prev = Node(current_val)
             current_val += 1
             queue.append(node.prev)
-            if tag1==True:
-                dsvis.capture() # tag1
+            #if tag1==True:
+                #dsvis.capture() # tag1
 
         current_height += 1
 
@@ -72,13 +72,13 @@ b.prev=a
 c.prev=b
 # c.next=a   # 环
 
-dsvis.capture()
+#dsvis.capture()
 del a,b,c,d,e,f
 
 n=create_complete_binary_tree(4)
 if tag1==False:
-    dsvis.capture()
+    #dsvis.capture()
     del n
     n = create_complete_binary_tree(10)
 
-    dsvis.capture()
+    #dsvis.capture()
