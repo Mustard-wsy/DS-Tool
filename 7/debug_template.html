@@ -113,13 +113,13 @@ function initGraph(data) {
     behaviors:['drag-canvas','zoom-canvas','drag-element']
   });
 
-  graph.on('node:dragstart', onDragUpdate);
-  graph.on('node:drag', onDragUpdate);
-  graph.on('node:dragging', onDragUpdate);
-  graph.on('node:dragend', onDragUpdate);
-  graph.on('element:dragstart', onDragUpdate);
-  graph.on('element:drag', onDragUpdate);
-  graph.on('element:dragend', onDragUpdate);
+  graph.on('node:dragstart', onDragStart);
+  graph.on('node:drag', onDragMove);
+  graph.on('node:dragging', onDragMove);
+  graph.on('node:dragend', onDragEnd);
+  graph.on('element:dragstart', onDragStart);
+  graph.on('element:drag', onDragMove);
+  graph.on('element:dragend', onDragEnd);
 
   if (typeof graph.once === 'function') {
     graph.once('afterlayout', refreshGraphVisuals);
@@ -169,25 +169,37 @@ function resolvePortsForEdge(e, nodeMap) {
   };
 }
 
-function updateEdgePorts() {
+function updateEdgePorts(focusNodeId = null) {
   if (!graph) return;
   const allEdges = graph.getEdgeData();
   const nodeDataList = graph.getNodeData();
   const nodeMap = new Map(nodeDataList.map((n) => [n.id, n]));
+  const relatedNodeIds = new Set();
+
+  const edgesToUpdate = focusNodeId
+    ? allEdges.filter((e) => e.source === focusNodeId || e.target === focusNodeId)
+    : allEdges;
 
   const edgeUpdates = [];
-  for (const e of allEdges) {
+  for (const e of edgesToUpdate) {
     const ports = resolvePortsForEdge(e, nodeMap);
     if (!ports) continue;
     edgeUpdates.push({ id: e.id, style: ports });
+    relatedNodeIds.add(e.source);
+    relatedNodeIds.add(e.target);
   }
   if (edgeUpdates.length > 0) {
     graph.updateEdgeData(edgeUpdates);
   }
 
+  const nodeIdsToRefresh = focusNodeId
+    ? Array.from(relatedNodeIds)
+    : nodeDataList.map((n) => n.id);
+
   const nodeUpdates = [];
-  for (const node of nodeDataList) {
-    const nodeId = node.id;
+  for (const nodeId of nodeIdsToRefresh) {
+    const node = nodeMap.get(nodeId);
+    if (!node) continue;
     const usedPorts = new Set();
     for (const e of allEdges) {
       if (e.source !== nodeId && e.target !== nodeId) continue;
@@ -204,7 +216,7 @@ function updateEdgePorts() {
   if (nodeUpdates.length > 0) {
     graph.updateNodeData(nodeUpdates);
   }
-  if (edgeUpdates.length > 0 || nodeUpdates.length > 0) {
+  if (edgeUpdates.length > 0 || nodeUpdates.length > 0 || !focusNodeId) {
     graph.draw();
   }
 }
@@ -241,8 +253,44 @@ function refreshGraphVisuals() {
   fitGraph();
 }
 
-function onDragUpdate() {
-  updateEdgePorts();
+let rafId = null;
+let dragging = false;
+let draggingNodeId = null;
+
+function getDragNodeId(evt) {
+  return evt?.target?.id || evt?.item?.id || evt?.data?.id || evt?.id || null;
+}
+
+function scheduleUpdate(nodeId = null) {
+  if (nodeId) draggingNodeId = nodeId;
+  if (rafId !== null) return;
+  rafId = requestAnimationFrame(() => {
+    updateEdgePorts(draggingNodeId);
+    rafId = null;
+    if (dragging) scheduleUpdate(draggingNodeId);
+  });
+}
+
+function onDragStart(evt) {
+  const nodeId = getDragNodeId(evt);
+  if (!nodeId) return;
+  dragging = true;
+  draggingNodeId = nodeId;
+  scheduleUpdate(nodeId);
+}
+
+function onDragMove(evt) {
+  const nodeId = getDragNodeId(evt) || draggingNodeId;
+  if (!nodeId) return;
+  scheduleUpdate(nodeId);
+}
+
+function onDragEnd(evt) {
+  const nodeId = getDragNodeId(evt) || draggingNodeId;
+  dragging = false;
+  draggingNodeId = null;
+  if (!nodeId) return;
+  updateEdgePorts(nodeId);
 }
 
 function renderAllCode() {
