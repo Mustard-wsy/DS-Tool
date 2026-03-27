@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>__TITLE__</title>
+<script src="https://unpkg.com/@antv/g6@5.0.51/dist/g6.min.js"></script>
+<style>
+  html, body { width:100%; height:100%; margin:0; font-family:Consolas, monospace; }
+  #root { display:flex; width:100%; height:100%; }
+  #left { width:65%; height:100%; border-right:1px solid #ddd; }
+  #graph { width:100%; height:100%; }
+
+  #right { width:35%; height:100%; display:flex; flex-direction:column; background:#fafafa; }
+  #codeHeader { padding:10px 12px; border-bottom:1px solid #ddd; font-weight:600; background:#fff; }
+  #codeView { flex:1; overflow:auto; padding:8px 0; }
+  .line { display:flex; padding:2px 12px; white-space:pre; }
+  .ln { width:56px; color:#999; user-select:none; }
+  .txt { flex:1; }
+  .active { background:#fff3cd; }
+
+  #controls { min-height:64px; display:flex; align-items:center; gap:12px; padding:8px 12px; border-top:1px solid #ddd; background:#fff; }
+  button { padding:6px 12px; font-size:14px; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="left"><div id="graph"></div></div>
+  <div id="right">
+    <div id="codeHeader">Original Source (full file, auto-scroll to current line)</div>
+    <div id="codeView"></div>
+    <div id="controls">
+      <button id="prevBtn">Prev</button>
+      <button id="nextBtn">Next</button>
+      <span id="stepInfo"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+const STEPS = __STEPS__;
+const SOURCE_LINES = __SOURCE_LINES__;
+let current = 0;
+let graph = null;
+let codeRows = [];
+
+function getGraphSize() {
+  const el = document.getElementById('graph');
+  return {
+    width: Math.max(200, el.clientWidth),
+    height: Math.max(200, el.clientHeight),
+  };
+}
+
+function initGraph(data) {
+  const { register, BaseNode } = G6;
+
+  class CardNode extends BaseNode {
+    drawKeyShape(attributes, container) {
+      const name = attributes.name || '';
+      const rows = Array.isArray(attributes.rows) ? attributes.rows : [];
+      const [w, h] = attributes.size || [160, 80];
+      const key = this.upsert('key', 'rect', {
+        x: -w/2, y: -h/2, width:w, height:h, radius:4,
+        fill:'#e8f0fe', stroke:'#5b8ff9'
+      }, container);
+      this.upsert('title', 'text', {
+        x: -w/2 + 8, y: -h/2 + 6, text:name,
+        fontSize:12, fill:'#111', textBaseline:'top'
+      }, container);
+      rows.forEach((row, i) => {
+        this.upsert(`r-${i}`, 'text', {
+          x: -w/2 + 8, y: -h/2 + 28 + i * 16, text: row,
+          fontSize:11, fill:'#333', textBaseline:'top'
+        }, container);
+      });
+      return key;
+    }
+  }
+
+  register('node', 'card', CardNode);
+  const size = getGraphSize();
+  graph = new G6.Graph({
+    container:'graph',
+    width:size.width,
+    height:size.height,
+    autoResize:true,
+    data,
+    layout:{ type:'dagre', rankdir:'LR', nodesep:120, ranksep:220 },
+    node:{ type:'card' },
+    edge:{ style:{ endArrow:true, stroke:'#888' } },
+    behaviors:['drag-canvas','zoom-canvas','drag-element']
+  });
+  graph.render();
+  requestAnimationFrame(() => {
+    if (typeof graph.fitView === 'function') {
+      graph.fitView({ padding: [28, 28, 28, 28] });
+    }
+  });
+}
+
+function renderAllCode() {
+  const codeView = document.getElementById('codeView');
+  codeView.innerHTML = '';
+  codeRows = [];
+  for (let i = 1; i <= SOURCE_LINES.length; i++) {
+    const row = document.createElement('div');
+    row.className = 'line';
+    row.innerHTML = `<span class="ln">${i}</span><span class="txt"></span>`;
+    row.querySelector('.txt').textContent = SOURCE_LINES[i - 1] ?? '';
+    codeView.appendChild(row);
+    codeRows.push(row);
+  }
+}
+
+function focusLine(lineno) {
+  codeRows.forEach((r) => r.classList.remove('active'));
+  const line = Math.max(1, Math.min(lineno || 1, codeRows.length));
+  const row = codeRows[line - 1];
+  if (!row) return;
+  row.classList.add('active');
+  row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+function renderStep(i) {
+  if (!STEPS.length) return;
+  current = Math.max(0, Math.min(i, STEPS.length - 1));
+  const s = STEPS[current];
+
+  if (!graph) {
+    initGraph(s.graph);
+  } else {
+    graph.setData(s.graph);
+    graph.render();
+    requestAnimationFrame(() => {
+      if (typeof graph.fitView === 'function') {
+        graph.fitView({ padding: [28, 28, 28, 28] });
+      }
+    });
+  }
+
+  focusLine(s.lineno || 1);
+  document.getElementById('stepInfo').textContent = `Step ${s.step} / ${STEPS.length}  |  line ${s.lineno ?? '-'}`;
+}
+
+document.getElementById('prevBtn').addEventListener('click', () => renderStep(current - 1));
+document.getElementById('nextBtn').addEventListener('click', () => renderStep(current + 1));
+
+renderAllCode();
+renderStep(0);
+</script>
+</body>
+</html>
