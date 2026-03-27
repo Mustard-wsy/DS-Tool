@@ -7,9 +7,8 @@
 <style>
   html, body { width:100%; height:100%; margin:0; font-family:Consolas, monospace; }
   #root { display:flex; width:100%; height:100%; }
-  #left { width:65%; height:100%; border-right:1px solid #ddd; }
+  #left { width:65%; height:100%; border-right:1px solid #ddd; position:relative; }
   #graph { width:100%; height:100%; }
-
   #right { width:35%; height:100%; display:flex; flex-direction:column; background:#fafafa; }
   #codeHeader { padding:10px 12px; border-bottom:1px solid #ddd; font-weight:600; background:#fff; }
   #codeView { flex:1; overflow:auto; padding:8px 0; }
@@ -24,7 +23,9 @@
 </head>
 <body>
 <div id="root">
-  <div id="left"><div id="graph"></div></div>
+  <div id="left">
+    <div id="graph"></div>
+  </div>
   <div id="right">
     <div id="codeHeader">Original Source (full file, auto-scroll to current line)</div>
     <div id="codeView"></div>
@@ -43,6 +44,7 @@ let current = 0;
 let graph = null;
 let codeRows = [];
 let graphResizeObserver = null;
+const FIT_PADDING = { top: 44, right: 30, bottom: 44, left: 30 };
 
 function getGraphSize() {
   const el = document.getElementById('graph');
@@ -60,17 +62,21 @@ function initGraph(data) {
       const name = attributes.name || '';
       const rows = Array.isArray(attributes.rows) ? attributes.rows : [];
       const [w, h] = attributes.size || [160, 80];
+      const paddingX = 10;
+      const paddingY = 8;
+      const rowH = 18;
+      const headerH = 22;
       const key = this.upsert('key', 'rect', {
         x: -w/2, y: -h/2, width:w, height:h, radius:4,
         fill:'#e8f0fe', stroke:'#5b8ff9'
       }, container);
       this.upsert('title', 'text', {
-        x: -w/2 + 8, y: -h/2 + 6, text:name,
+        x: -w/2 + paddingX, y: -h/2 + paddingY + 2, text:name,
         fontSize:12, fill:'#111', textBaseline:'top'
       }, container);
       rows.forEach((row, i) => {
         this.upsert(`r-${i}`, 'text', {
-          x: -w/2 + 8, y: -h/2 + 28 + i * 16, text: row,
+          x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: row,
           fontSize:11, fill:'#333', textBaseline:'top'
         }, container);
       });
@@ -87,12 +93,33 @@ function initGraph(data) {
     autoResize:true,
     data,
     layout:{ type:'dagre', rankdir:'LR', nodesep:120, ranksep:220 },
-    node:{ type:'card' },
-    edge:{ style:{ endArrow:true, stroke:'#888' } },
+    node:{
+      type:'card',
+      style: { port: true }
+    },
+    edge:{
+      style:{
+        endArrow:true,
+        stroke:'#888',
+        router: { type: 'polyline' }
+      }
+    },
     behaviors:['drag-canvas','zoom-canvas','drag-element']
   });
+
+  graph.on('node:dragstart', onDragStart);
+  graph.on('node:drag', onDragMove);
+  graph.on('node:dragging', onDragMove);
+  graph.on('node:dragend', onDragEnd);
+  graph.on('element:dragstart', onDragStart);
+  graph.on('element:drag', onDragMove);
+  graph.on('element:dragend', onDragEnd);
+
+  if (typeof graph.once === 'function') {
+    graph.once('afterlayout', refreshGraphVisuals);
+    graph.once('afterrender', refreshGraphVisuals);
+  }
   graph.render();
-  fitGraph();
 
   if (typeof ResizeObserver !== 'undefined') {
     graphResizeObserver = new ResizeObserver(() => {
@@ -101,69 +128,152 @@ function initGraph(data) {
       if (typeof graph.setSize === 'function') {
         graph.setSize(size.width, size.height);
       }
-      fitGraph();
+      refreshGraphVisuals();
     });
     graphResizeObserver.observe(document.getElementById('graph'));
+  }
+}
+
+function buildPortStyles(node, usedPorts) {
+  const ports = Array.isArray(node?.style?.ports) ? node.style.ports : [];
+  return ports.map((p) => {
+    const key = p.key;
+    const active = usedPorts.has(key);
+    return {
+      ...p,
+      r: active ? 2.5 : 0,
+      fill: active ? '#5b8ff9' : 'transparent',
+      stroke: active ? '#2b6cd4' : 'transparent',
+    };
+  });
+}
+
+function resolvePortsForEdge(e, nodeMap) {
+  const src = nodeMap.get(e.source);
+  const tgt = nodeMap.get(e.target);
+  if (!src || !tgt) return null;
+  const refIndex = e.data ? e.data.refIndex : null;
+  if (refIndex === null || refIndex === undefined) return null;
+  const sx = src.style?.x ?? 0;
+  const tx = tgt.style?.x ?? 0;
+  const useLeft = tx < sx;
+  return {
+    sourcePort: useLeft ? `pl${refIndex}` : `pr${refIndex}`,
+    targetPort: useLeft ? 'inR' : 'inL',
+  };
+}
+
+function updateEdgePorts(focusNodeId = null) {
+  if (!graph) return;
+  const allEdges = graph.getEdgeData();
+  const nodeDataList = graph.getNodeData();
+  const nodeMap = new Map(nodeDataList.map((n) => [n.id, n]));
+  const relatedNodeIds = new Set();
+
+  const edgesToUpdate = focusNodeId
+    ? allEdges.filter((e) => e.source === focusNodeId || e.target === focusNodeId)
+    : allEdges;
+
+  const edgeUpdates = [];
+  for (const e of edgesToUpdate) {
+    const ports = resolvePortsForEdge(e, nodeMap);
+    if (!ports) continue;
+    edgeUpdates.push({ id: e.id, style: ports });
+    relatedNodeIds.add(e.source);
+    relatedNodeIds.add(e.target);
+  }
+  if (edgeUpdates.length > 0) {
+    graph.updateEdgeData(edgeUpdates);
+  }
+
+  const nodeIdsToRefresh = focusNodeId
+    ? Array.from(relatedNodeIds)
+    : nodeDataList.map((n) => n.id);
+
+  const nodeUpdates = [];
+  for (const nodeId of nodeIdsToRefresh) {
+    const node = nodeMap.get(nodeId);
+    if (!node) continue;
+    const usedPorts = new Set();
+    for (const e of allEdges) {
+      if (e.source !== nodeId && e.target !== nodeId) continue;
+      const ports = resolvePortsForEdge(e, nodeMap);
+      if (!ports) continue;
+      if (e.source === nodeId) usedPorts.add(ports.sourcePort);
+      if (e.target === nodeId) usedPorts.add(ports.targetPort);
+    }
+    nodeUpdates.push({
+      id: nodeId,
+      style: { ports: buildPortStyles(node, usedPorts) },
+    });
+  }
+  if (nodeUpdates.length > 0) {
+    graph.updateNodeData(nodeUpdates);
+  }
+  if (edgeUpdates.length > 0 || nodeUpdates.length > 0 || !focusNodeId) {
+    graph.draw();
   }
 }
 
 function fitGraph() {
   requestAnimationFrame(() => {
     if (!graph) return;
-
-    const nodeData = graph.getNodeData();
-    if (!Array.isArray(nodeData) || nodeData.length === 0) {
-      if (typeof graph.fitCenter === 'function') graph.fitCenter();
+    if (typeof graph.fitView === 'function') {
+      graph.fitView({
+        padding: [FIT_PADDING.top, FIT_PADDING.right, FIT_PADDING.bottom, FIT_PADDING.left],
+        when: 'always',
+      });
       return;
     }
-
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-    let hasPosition = false;
-
-    for (const node of nodeData) {
-      const x = Number(node?.style?.x);
-      const y = Number(node?.style?.y);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-      hasPosition = true;
-
-      const size = Array.isArray(node?.style?.size) ? node.style.size : [160, 80];
-      const w = Number(size[0]) || 160;
-      const h = Number(size[1]) || 80;
-      minX = Math.min(minX, x - w / 2);
-      maxX = Math.max(maxX, x + w / 2);
-      minY = Math.min(minY, y - h / 2);
-      maxY = Math.max(maxY, y + h / 2);
-    }
-
-    if (!hasPosition) {
-      if (typeof graph.fitView === 'function') {
-        graph.fitView({ padding: [48, 36, 48, 36] });
-      } else if (typeof graph.fitCenter === 'function') {
-        graph.fitCenter();
-      }
-      return;
-    }
-
-    const contentWidth = Math.max(maxX - minX, 1);
-    const contentHeight = Math.max(maxY - minY, 1);
-    const viewport = getGraphSize();
-    const paddingX = 36;
-    const paddingY = 48;
-    const scaleX = (viewport.width - paddingX * 2) / contentWidth;
-    const scaleY = (viewport.height - paddingY * 2) / contentHeight;
-    const scale = Math.min(scaleX, scaleY, 1);
-    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-
     if (typeof graph.fitCenter === 'function') {
       graph.fitCenter();
     }
-    if (typeof graph.zoomTo === 'function') {
-      graph.zoomTo(safeScale, { x: viewport.width / 2, y: viewport.height / 2 }, false);
-    }
   });
+}
+
+function refreshGraphVisuals() {
+  updateEdgePorts();
+  fitGraph();
+}
+
+let rafId = null;
+let dragging = false;
+let draggingNodeId = null;
+
+function getDragNodeId(evt) {
+  return evt?.target?.id || evt?.item?.id || evt?.data?.id || evt?.id || null;
+}
+
+function scheduleUpdate(nodeId = null) {
+  if (nodeId) draggingNodeId = nodeId;
+  if (rafId !== null) return;
+  rafId = requestAnimationFrame(() => {
+    updateEdgePorts(draggingNodeId);
+    rafId = null;
+    if (dragging) scheduleUpdate(draggingNodeId);
+  });
+}
+
+function onDragStart(evt) {
+  const nodeId = getDragNodeId(evt);
+  if (!nodeId) return;
+  dragging = true;
+  draggingNodeId = nodeId;
+  scheduleUpdate(nodeId);
+}
+
+function onDragMove(evt) {
+  const nodeId = getDragNodeId(evt) || draggingNodeId;
+  if (!nodeId) return;
+  scheduleUpdate(nodeId);
+}
+
+function onDragEnd(evt) {
+  const nodeId = getDragNodeId(evt) || draggingNodeId;
+  dragging = false;
+  draggingNodeId = null;
+  if (!nodeId) return;
+  updateEdgePorts(nodeId);
 }
 
 function renderAllCode() {
@@ -198,8 +308,11 @@ function renderStep(i) {
     initGraph(s.graph);
   } else {
     graph.setData(s.graph);
+    if (typeof graph.once === 'function') {
+      graph.once('afterlayout', refreshGraphVisuals);
+      graph.once('afterrender', refreshGraphVisuals);
+    }
     graph.render();
-    fitGraph();
   }
 
   focusLine(s.lineno || 1);
