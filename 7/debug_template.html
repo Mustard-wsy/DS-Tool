@@ -110,10 +110,58 @@ function initGraph(data) {
 function fitGraph() {
   requestAnimationFrame(() => {
     if (!graph) return;
-    if (typeof graph.fitView === 'function') {
-      graph.fitView({ padding: [36, 36, 36, 36] });
-    } else if (typeof graph.fitCenter === 'function') {
+
+    const nodeData = graph.getNodeData();
+    if (!Array.isArray(nodeData) || nodeData.length === 0) {
+      if (typeof graph.fitCenter === 'function') graph.fitCenter();
+      return;
+    }
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let hasPosition = false;
+
+    for (const node of nodeData) {
+      const x = Number(node?.style?.x);
+      const y = Number(node?.style?.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      hasPosition = true;
+
+      const size = Array.isArray(node?.style?.size) ? node.style.size : [160, 80];
+      const w = Number(size[0]) || 160;
+      const h = Number(size[1]) || 80;
+      minX = Math.min(minX, x - w / 2);
+      maxX = Math.max(maxX, x + w / 2);
+      minY = Math.min(minY, y - h / 2);
+      maxY = Math.max(maxY, y + h / 2);
+    }
+
+    if (!hasPosition) {
+      if (typeof graph.fitView === 'function') {
+        graph.fitView({ padding: [48, 36, 48, 36] });
+      } else if (typeof graph.fitCenter === 'function') {
+        graph.fitCenter();
+      }
+      return;
+    }
+
+    const contentWidth = Math.max(maxX - minX, 1);
+    const contentHeight = Math.max(maxY - minY, 1);
+    const viewport = getGraphSize();
+    const paddingX = 36;
+    const paddingY = 48;
+    const scaleX = (viewport.width - paddingX * 2) / contentWidth;
+    const scaleY = (viewport.height - paddingY * 2) / contentHeight;
+    const scale = Math.min(scaleX, scaleY, 1);
+    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+
+    if (typeof graph.fitCenter === 'function') {
       graph.fitCenter();
+    }
+    if (typeof graph.zoomTo === 'function') {
+      graph.zoomTo(safeScale, { x: viewport.width / 2, y: viewport.height / 2 }, false);
     }
   });
 }
