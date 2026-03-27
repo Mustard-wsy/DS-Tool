@@ -7,32 +7,32 @@
 <style>
   html, body { width:100%; height:100%; margin:0; font-family:Consolas, monospace; }
   #root { display:flex; width:100%; height:100%; }
-  #left { width:65%; height:100%; display:flex; flex-direction:column; border-right:1px solid #ddd; }
-  #graph { flex:1; min-height:0; }
-  #controls { height:64px; display:flex; align-items:center; gap:12px; padding:8px 12px; border-top:1px solid #ddd; }
-  #right { width:35%; height:100%; display:flex; flex-direction:column; }
-  #codeHeader { padding:10px 12px; border-bottom:1px solid #ddd; font-weight:600; }
-  #codeView { flex:1; overflow:auto; padding:8px 0; background:#fafafa; }
+  #left { width:65%; height:100%; border-right:1px solid #ddd; }
+  #graph { width:100%; height:100%; }
+
+  #right { width:35%; height:100%; display:flex; flex-direction:column; background:#fafafa; }
+  #codeHeader { padding:10px 12px; border-bottom:1px solid #ddd; font-weight:600; background:#fff; }
+  #codeView { flex:1; overflow:auto; padding:8px 0; }
   .line { display:flex; padding:2px 12px; white-space:pre; }
   .ln { width:56px; color:#999; user-select:none; }
   .txt { flex:1; }
   .active { background:#fff3cd; }
+
+  #controls { min-height:64px; display:flex; align-items:center; gap:12px; padding:8px 12px; border-top:1px solid #ddd; background:#fff; }
   button { padding:6px 12px; font-size:14px; }
 </style>
 </head>
 <body>
 <div id="root">
-  <div id="left">
-    <div id="graph"></div>
+  <div id="left"><div id="graph"></div></div>
+  <div id="right">
+    <div id="codeHeader">Original Source (full file, auto-scroll to current line)</div>
+    <div id="codeView"></div>
     <div id="controls">
       <button id="prevBtn">Prev</button>
       <button id="nextBtn">Next</button>
       <span id="stepInfo"></span>
     </div>
-  </div>
-  <div id="right">
-    <div id="codeHeader">Original Source (±10 lines)</div>
-    <div id="codeView"></div>
   </div>
 </div>
 
@@ -41,6 +41,16 @@ const STEPS = __STEPS__;
 const SOURCE_LINES = __SOURCE_LINES__;
 let current = 0;
 let graph = null;
+let codeRows = [];
+let graphResizeObserver = null;
+
+function getGraphSize() {
+  const el = document.getElementById('graph');
+  return {
+    width: Math.max(200, el.clientWidth),
+    height: Math.max(200, el.clientHeight),
+  };
+}
 
 function initGraph(data) {
   const { register, BaseNode } = G6;
@@ -69,31 +79,66 @@ function initGraph(data) {
   }
 
   register('node', 'card', CardNode);
+  const size = getGraphSize();
   graph = new G6.Graph({
-    container:'graph', width:window.innerWidth*0.65, height:window.innerHeight-64,
-    autoResize:true, data,
+    container:'graph',
+    width:size.width,
+    height:size.height,
+    autoResize:true,
+    data,
     layout:{ type:'dagre', rankdir:'LR', nodesep:120, ranksep:220 },
     node:{ type:'card' },
     edge:{ style:{ endArrow:true, stroke:'#888' } },
     behaviors:['drag-canvas','zoom-canvas','drag-element']
   });
   graph.render();
-  if (typeof graph.fitView === 'function') graph.fitView({ padding: 24 });
+  fitGraph();
+
+  if (typeof ResizeObserver !== 'undefined') {
+    graphResizeObserver = new ResizeObserver(() => {
+      if (!graph) return;
+      const size = getGraphSize();
+      if (typeof graph.setSize === 'function') {
+        graph.setSize(size.width, size.height);
+      }
+      fitGraph();
+    });
+    graphResizeObserver.observe(document.getElementById('graph'));
+  }
 }
 
-function renderCode(lineno) {
+function fitGraph() {
+  requestAnimationFrame(() => {
+    if (!graph) return;
+    if (typeof graph.fitView === 'function') {
+      graph.fitView({ padding: [36, 36, 36, 36] });
+    } else if (typeof graph.fitCenter === 'function') {
+      graph.fitCenter();
+    }
+  });
+}
+
+function renderAllCode() {
   const codeView = document.getElementById('codeView');
   codeView.innerHTML = '';
-  const center = Math.max(1, lineno || 1);
-  const from = Math.max(1, center - 10);
-  const to = Math.min(SOURCE_LINES.length, center + 10);
-  for (let i = from; i <= to; i++) {
+  codeRows = [];
+  for (let i = 1; i <= SOURCE_LINES.length; i++) {
     const row = document.createElement('div');
-    row.className = 'line' + (i === center ? ' active' : '');
+    row.className = 'line';
     row.innerHTML = `<span class="ln">${i}</span><span class="txt"></span>`;
     row.querySelector('.txt').textContent = SOURCE_LINES[i - 1] ?? '';
     codeView.appendChild(row);
+    codeRows.push(row);
   }
+}
+
+function focusLine(lineno) {
+  codeRows.forEach((r) => r.classList.remove('active'));
+  const line = Math.max(1, Math.min(lineno || 1, codeRows.length));
+  const row = codeRows[line - 1];
+  if (!row) return;
+  row.classList.add('active');
+  row.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
 function renderStep(i) {
@@ -106,16 +151,17 @@ function renderStep(i) {
   } else {
     graph.setData(s.graph);
     graph.render();
-    if (typeof graph.fitView === 'function') graph.fitView({ padding: 24 });
+    fitGraph();
   }
 
-  renderCode(s.lineno || 1);
+  focusLine(s.lineno || 1);
   document.getElementById('stepInfo').textContent = `Step ${s.step} / ${STEPS.length}  |  line ${s.lineno ?? '-'}`;
 }
 
 document.getElementById('prevBtn').addEventListener('click', () => renderStep(current - 1));
 document.getElementById('nextBtn').addEventListener('click', () => renderStep(current + 1));
 
+renderAllCode();
 renderStep(0);
 </script>
 </body>

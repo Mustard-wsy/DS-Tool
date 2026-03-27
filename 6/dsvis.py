@@ -297,7 +297,6 @@ def capture(title="AutoViz Snapshot", max_nodes=300, include_private=False, _cal
         del frame
         if _caller_frame is None and caller:
             del caller
-<<<<<<<< HEAD:6/dsvis.py
 
 
 def _find_main_script():
@@ -336,5 +335,3 @@ def auto():
 
     run_file(main_file)
     raise SystemExit(0)
-========
->>>>>>>> github-origin/codex/add-hook-functionality-for-step-debugging:5/dsvis.py
