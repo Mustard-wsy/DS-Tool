@@ -9,15 +9,6 @@
   #root { display:flex; width:100%; height:100%; }
   #left { width:65%; height:100%; border-right:1px solid #ddd; position:relative; }
   #graph { width:100%; height:100%; }
-  #fitViewportFrame {
-    position:absolute;
-    border:2px dashed #ff4d4f;
-    box-sizing:border-box;
-    pointer-events:none;
-    z-index:5;
-    display:none;
-  }
-
   #right { width:35%; height:100%; display:flex; flex-direction:column; background:#fafafa; }
   #codeHeader { padding:10px 12px; border-bottom:1px solid #ddd; font-weight:600; background:#fff; }
   #codeView { flex:1; overflow:auto; padding:8px 0; }
@@ -34,7 +25,6 @@
 <div id="root">
   <div id="left">
     <div id="graph"></div>
-    <div id="fitViewportFrame" title="fit viewport"></div>
   </div>
   <div id="right">
     <div id="codeHeader">Original Source (full file, auto-scroll to current line)</div>
@@ -54,7 +44,7 @@ let current = 0;
 let graph = null;
 let codeRows = [];
 let graphResizeObserver = null;
-const FIT_PADDING = { top: 32, right: 24, bottom: 32, left: 24 };
+const FIT_PADDING = { top: 44, right: 30, bottom: 44, left: 30 };
 
 function getGraphSize() {
   const el = document.getElementById('graph');
@@ -72,17 +62,21 @@ function initGraph(data) {
       const name = attributes.name || '';
       const rows = Array.isArray(attributes.rows) ? attributes.rows : [];
       const [w, h] = attributes.size || [160, 80];
+      const paddingX = 10;
+      const paddingY = 8;
+      const rowH = 18;
+      const headerH = 22;
       const key = this.upsert('key', 'rect', {
         x: -w/2, y: -h/2, width:w, height:h, radius:4,
         fill:'#e8f0fe', stroke:'#5b8ff9'
       }, container);
       this.upsert('title', 'text', {
-        x: -w/2 + 8, y: -h/2 + 6, text:name,
+        x: -w/2 + paddingX, y: -h/2 + paddingY + 2, text:name,
         fontSize:12, fill:'#111', textBaseline:'top'
       }, container);
       rows.forEach((row, i) => {
         this.upsert(`r-${i}`, 'text', {
-          x: -w/2 + 8, y: -h/2 + 28 + i * 16, text: row,
+          x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: row,
           fontSize:11, fill:'#333', textBaseline:'top'
         }, container);
       });
@@ -221,20 +215,9 @@ function updateEdgePorts(focusNodeId = null) {
   }
 }
 
-function drawFitViewportFrame() {
-  const el = document.getElementById('fitViewportFrame');
-  if (!el) return;
-  el.style.display = 'block';
-  el.style.left = `${FIT_PADDING.left}px`;
-  el.style.top = `${FIT_PADDING.top}px`;
-  el.style.right = `${FIT_PADDING.right}px`;
-  el.style.bottom = `${FIT_PADDING.bottom}px`;
-}
-
 function fitGraph() {
   requestAnimationFrame(() => {
     if (!graph) return;
-    drawFitViewportFrame();
     if (typeof graph.fitView === 'function') {
       graph.fitView({
         padding: [FIT_PADDING.top, FIT_PADDING.right, FIT_PADDING.bottom, FIT_PADDING.left],
