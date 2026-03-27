@@ -1,6 +1,7 @@
 from contextlib import nullcontext
 
 import dsvis
+dsvis.auto()
 
 tag1 = False
 
@@ -77,8 +78,8 @@ del a,b,c,d,e,f
 
 n=create_complete_binary_tree(4)
 if tag1==False:
-    dsvis.capture()
+    #dsvis.capture()
     del n
     n = create_complete_binary_tree(10)
 
-    dsvis.capture()
+    #dsvis.capture()
