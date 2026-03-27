@@ -314,8 +314,67 @@ try {
 
       if (!hasPosition) return null;
       return {
+        minX,
+        maxX,
+        minY,
+        maxY,
         width: Math.max(maxX - minX, 1),
         height: Math.max(maxY - minY, 1),
+      };
+    }
+
+    function getSafeViewportPadding() {
+      const container = document.getElementById('container');
+      const rect = container?.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) {
+        return { top: 48, right: 48, bottom: 48, left: 48 };
+      }
+
+      const base = { top: 28, right: 28, bottom: 28, left: 28 };
+      const computed = getComputedStyle(document.documentElement);
+      const cssPadding = {
+        top: Number.parseFloat(computed.getPropertyValue('--dsvis-safe-top')) || 0,
+        right: Number.parseFloat(computed.getPropertyValue('--dsvis-safe-right')) || 0,
+        bottom: Number.parseFloat(computed.getPropertyValue('--dsvis-safe-bottom')) || 0,
+        left: Number.parseFloat(computed.getPropertyValue('--dsvis-safe-left')) || 0,
+      };
+
+      const overlay = { top: 0, right: 0, bottom: 0, left: 0 };
+      const children = Array.from(document.body.children);
+      for (const el of children) {
+        if (el === container || el.id === 'fallback') continue;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        const position = style.position;
+        if (!['fixed', 'absolute', 'sticky'].includes(position)) continue;
+
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;
+        const overlapW = Math.max(0, Math.min(rect.right, r.right) - Math.max(rect.left, r.left));
+        const overlapH = Math.max(0, Math.min(rect.bottom, r.bottom) - Math.max(rect.top, r.top));
+        if (overlapW <= 0 || overlapH <= 0) continue;
+
+        const coversMostlyVertical = overlapH >= rect.height * 0.6;
+        const coversMostlyHorizontal = overlapW >= rect.width * 0.6;
+        if (coversMostlyVertical && r.left >= rect.left + rect.width * 0.45) {
+          overlay.right = Math.max(overlay.right, overlapW);
+        }
+        if (coversMostlyVertical && r.right <= rect.left + rect.width * 0.55) {
+          overlay.left = Math.max(overlay.left, overlapW);
+        }
+        if (coversMostlyHorizontal && r.top >= rect.top + rect.height * 0.45) {
+          overlay.bottom = Math.max(overlay.bottom, overlapH);
+        }
+        if (coversMostlyHorizontal && r.bottom <= rect.top + rect.height * 0.55) {
+          overlay.top = Math.max(overlay.top, overlapH);
+        }
+      }
+
+      return {
+        top: Math.max(base.top, base.top + cssPadding.top + overlay.top),
+        right: Math.max(base.right, base.right + cssPadding.right + overlay.right),
+        bottom: Math.max(base.bottom, base.bottom + cssPadding.bottom + overlay.bottom),
+        left: Math.max(base.left, base.left + cssPadding.left + overlay.left),
       };
     }
 
@@ -323,29 +382,41 @@ try {
       const container = document.getElementById('container');
       const viewportWidth = container?.clientWidth || window.innerWidth;
       const viewportHeight = container?.clientHeight || window.innerHeight;
-      const paddingX = 60;
-      const paddingY = 80;
+      const safePadding = getSafeViewportPadding();
       const bounds = computeContentBounds();
 
       if (!bounds) {
         if (typeof graph.fitView === 'function') {
-          graph.fitView({ padding: [paddingY, paddingX, paddingY, paddingX] });
+          graph.fitView({
+            padding: [safePadding.top, safePadding.right, safePadding.bottom, safePadding.left],
+          });
         } else if (typeof graph.fitCenter === 'function') {
           graph.fitCenter();
         }
         return;
       }
 
-      const scaleX = (viewportWidth - paddingX * 2) / bounds.width;
-      const scaleY = (viewportHeight - paddingY * 2) / bounds.height;
+      const availableWidth = Math.max(1, viewportWidth - safePadding.left - safePadding.right);
+      const availableHeight = Math.max(1, viewportHeight - safePadding.top - safePadding.bottom);
+      const scaleX = availableWidth / bounds.width;
+      const scaleY = availableHeight / bounds.height;
       const targetScale = Math.min(scaleX, scaleY, 1);
       const safeScale = Number.isFinite(targetScale) && targetScale > 0 ? targetScale : 1;
 
-      if (typeof graph.fitCenter === 'function') {
-        graph.fitCenter();
-      }
-      if (typeof graph.zoomTo === 'function') {
-        graph.zoomTo(safeScale, { x: viewportWidth / 2, y: viewportHeight / 2 }, false);
+      if (typeof graph.fitView === 'function') {
+        graph.fitView({
+          padding: [safePadding.top, safePadding.right, safePadding.bottom, safePadding.left],
+          when: 'always',
+        });
+      } else {
+        if (typeof graph.fitCenter === 'function') {
+          graph.fitCenter();
+        }
+        const focusX = (safePadding.left + (viewportWidth - safePadding.right)) / 2;
+        const focusY = (safePadding.top + (viewportHeight - safePadding.bottom)) / 2;
+        if (typeof graph.zoomTo === 'function') {
+          graph.zoomTo(safeScale, { x: focusX, y: focusY }, false);
+        }
       }
     }
 

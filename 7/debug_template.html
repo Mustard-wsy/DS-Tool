@@ -7,8 +7,16 @@
 <style>
   html, body { width:100%; height:100%; margin:0; font-family:Consolas, monospace; }
   #root { display:flex; width:100%; height:100%; }
-  #left { width:65%; height:100%; border-right:1px solid #ddd; }
+  #left { width:65%; height:100%; border-right:1px solid #ddd; position:relative; }
   #graph { width:100%; height:100%; }
+  #fitViewportFrame {
+    position:absolute;
+    border:2px dashed #ff4d4f;
+    box-sizing:border-box;
+    pointer-events:none;
+    z-index:5;
+    display:none;
+  }
 
   #right { width:35%; height:100%; display:flex; flex-direction:column; background:#fafafa; }
   #codeHeader { padding:10px 12px; border-bottom:1px solid #ddd; font-weight:600; background:#fff; }
@@ -24,7 +32,10 @@
 </head>
 <body>
 <div id="root">
-  <div id="left"><div id="graph"></div></div>
+  <div id="left">
+    <div id="graph"></div>
+    <div id="fitViewportFrame" title="fit viewport"></div>
+  </div>
   <div id="right">
     <div id="codeHeader">Original Source (full file, auto-scroll to current line)</div>
     <div id="codeView"></div>
@@ -43,6 +54,7 @@ let current = 0;
 let graph = null;
 let codeRows = [];
 let graphResizeObserver = null;
+const FIT_PADDING = { top: 32, right: 24, bottom: 32, left: 24 };
 
 function getGraphSize() {
   const el = document.getElementById('graph');
@@ -87,12 +99,33 @@ function initGraph(data) {
     autoResize:true,
     data,
     layout:{ type:'dagre', rankdir:'LR', nodesep:120, ranksep:220 },
-    node:{ type:'card' },
-    edge:{ style:{ endArrow:true, stroke:'#888' } },
+    node:{
+      type:'card',
+      style: { port: true }
+    },
+    edge:{
+      style:{
+        endArrow:true,
+        stroke:'#888',
+        router: { type: 'polyline' }
+      }
+    },
     behaviors:['drag-canvas','zoom-canvas','drag-element']
   });
+
+  graph.on('node:dragstart', onDragUpdate);
+  graph.on('node:drag', onDragUpdate);
+  graph.on('node:dragging', onDragUpdate);
+  graph.on('node:dragend', onDragUpdate);
+  graph.on('element:dragstart', onDragUpdate);
+  graph.on('element:drag', onDragUpdate);
+  graph.on('element:dragend', onDragUpdate);
+
+  if (typeof graph.once === 'function') {
+    graph.once('afterlayout', refreshGraphVisuals);
+    graph.once('afterrender', refreshGraphVisuals);
+  }
   graph.render();
-  fitGraph();
 
   if (typeof ResizeObserver !== 'undefined') {
     graphResizeObserver = new ResizeObserver(() => {
@@ -101,69 +134,115 @@ function initGraph(data) {
       if (typeof graph.setSize === 'function') {
         graph.setSize(size.width, size.height);
       }
-      fitGraph();
+      refreshGraphVisuals();
     });
     graphResizeObserver.observe(document.getElementById('graph'));
   }
 }
 
+function buildPortStyles(node, usedPorts) {
+  const ports = Array.isArray(node?.style?.ports) ? node.style.ports : [];
+  return ports.map((p) => {
+    const key = p.key;
+    const active = usedPorts.has(key);
+    return {
+      ...p,
+      r: active ? 2.5 : 0,
+      fill: active ? '#5b8ff9' : 'transparent',
+      stroke: active ? '#2b6cd4' : 'transparent',
+    };
+  });
+}
+
+function resolvePortsForEdge(e, nodeMap) {
+  const src = nodeMap.get(e.source);
+  const tgt = nodeMap.get(e.target);
+  if (!src || !tgt) return null;
+  const refIndex = e.data ? e.data.refIndex : null;
+  if (refIndex === null || refIndex === undefined) return null;
+  const sx = src.style?.x ?? 0;
+  const tx = tgt.style?.x ?? 0;
+  const useLeft = tx < sx;
+  return {
+    sourcePort: useLeft ? `pl${refIndex}` : `pr${refIndex}`,
+    targetPort: useLeft ? 'inR' : 'inL',
+  };
+}
+
+function updateEdgePorts() {
+  if (!graph) return;
+  const allEdges = graph.getEdgeData();
+  const nodeDataList = graph.getNodeData();
+  const nodeMap = new Map(nodeDataList.map((n) => [n.id, n]));
+
+  const edgeUpdates = [];
+  for (const e of allEdges) {
+    const ports = resolvePortsForEdge(e, nodeMap);
+    if (!ports) continue;
+    edgeUpdates.push({ id: e.id, style: ports });
+  }
+  if (edgeUpdates.length > 0) {
+    graph.updateEdgeData(edgeUpdates);
+  }
+
+  const nodeUpdates = [];
+  for (const node of nodeDataList) {
+    const nodeId = node.id;
+    const usedPorts = new Set();
+    for (const e of allEdges) {
+      if (e.source !== nodeId && e.target !== nodeId) continue;
+      const ports = resolvePortsForEdge(e, nodeMap);
+      if (!ports) continue;
+      if (e.source === nodeId) usedPorts.add(ports.sourcePort);
+      if (e.target === nodeId) usedPorts.add(ports.targetPort);
+    }
+    nodeUpdates.push({
+      id: nodeId,
+      style: { ports: buildPortStyles(node, usedPorts) },
+    });
+  }
+  if (nodeUpdates.length > 0) {
+    graph.updateNodeData(nodeUpdates);
+  }
+  if (edgeUpdates.length > 0 || nodeUpdates.length > 0) {
+    graph.draw();
+  }
+}
+
+function drawFitViewportFrame() {
+  const el = document.getElementById('fitViewportFrame');
+  if (!el) return;
+  el.style.display = 'block';
+  el.style.left = `${FIT_PADDING.left}px`;
+  el.style.top = `${FIT_PADDING.top}px`;
+  el.style.right = `${FIT_PADDING.right}px`;
+  el.style.bottom = `${FIT_PADDING.bottom}px`;
+}
+
 function fitGraph() {
   requestAnimationFrame(() => {
     if (!graph) return;
-
-    const nodeData = graph.getNodeData();
-    if (!Array.isArray(nodeData) || nodeData.length === 0) {
-      if (typeof graph.fitCenter === 'function') graph.fitCenter();
+    drawFitViewportFrame();
+    if (typeof graph.fitView === 'function') {
+      graph.fitView({
+        padding: [FIT_PADDING.top, FIT_PADDING.right, FIT_PADDING.bottom, FIT_PADDING.left],
+        when: 'always',
+      });
       return;
     }
-
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-    let hasPosition = false;
-
-    for (const node of nodeData) {
-      const x = Number(node?.style?.x);
-      const y = Number(node?.style?.y);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-      hasPosition = true;
-
-      const size = Array.isArray(node?.style?.size) ? node.style.size : [160, 80];
-      const w = Number(size[0]) || 160;
-      const h = Number(size[1]) || 80;
-      minX = Math.min(minX, x - w / 2);
-      maxX = Math.max(maxX, x + w / 2);
-      minY = Math.min(minY, y - h / 2);
-      maxY = Math.max(maxY, y + h / 2);
-    }
-
-    if (!hasPosition) {
-      if (typeof graph.fitView === 'function') {
-        graph.fitView({ padding: [48, 36, 48, 36] });
-      } else if (typeof graph.fitCenter === 'function') {
-        graph.fitCenter();
-      }
-      return;
-    }
-
-    const contentWidth = Math.max(maxX - minX, 1);
-    const contentHeight = Math.max(maxY - minY, 1);
-    const viewport = getGraphSize();
-    const paddingX = 36;
-    const paddingY = 48;
-    const scaleX = (viewport.width - paddingX * 2) / contentWidth;
-    const scaleY = (viewport.height - paddingY * 2) / contentHeight;
-    const scale = Math.min(scaleX, scaleY, 1);
-    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-
     if (typeof graph.fitCenter === 'function') {
       graph.fitCenter();
     }
-    if (typeof graph.zoomTo === 'function') {
-      graph.zoomTo(safeScale, { x: viewport.width / 2, y: viewport.height / 2 }, false);
-    }
   });
+}
+
+function refreshGraphVisuals() {
+  updateEdgePorts();
+  fitGraph();
+}
+
+function onDragUpdate() {
+  updateEdgePorts();
 }
 
 function renderAllCode() {
@@ -198,8 +277,11 @@ function renderStep(i) {
     initGraph(s.graph);
   } else {
     graph.setData(s.graph);
+    if (typeof graph.once === 'function') {
+      graph.once('afterlayout', refreshGraphVisuals);
+      graph.once('afterrender', refreshGraphVisuals);
+    }
     graph.render();
-    fitGraph();
   }
 
   focusLine(s.lineno || 1);
