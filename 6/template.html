@@ -284,17 +284,76 @@ try {
       updateEdgePorts(nodeId);
     }
 
+    function computeContentBounds() {
+      const nodes = graph.getNodeData();
+      if (!Array.isArray(nodes) || nodes.length === 0) return null;
+
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      let hasPosition = false;
+
+      for (const node of nodes) {
+        const x = Number(node?.style?.x);
+        const y = Number(node?.style?.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        hasPosition = true;
+
+        const size = Array.isArray(node?.style?.size) ? node.style.size : [100, 60];
+        const width = Number(size[0]) || 100;
+        const height = Number(size[1]) || 60;
+        const halfW = width / 2;
+        const halfH = height / 2;
+
+        minX = Math.min(minX, x - halfW);
+        maxX = Math.max(maxX, x + halfW);
+        minY = Math.min(minY, y - halfH);
+        maxY = Math.max(maxY, y + halfH);
+      }
+
+      if (!hasPosition) return null;
+      return {
+        width: Math.max(maxX - minX, 1),
+        height: Math.max(maxY - minY, 1),
+      };
+    }
+
+    function applyAutoFitViewport() {
+      const container = document.getElementById('container');
+      const viewportWidth = container?.clientWidth || window.innerWidth;
+      const viewportHeight = container?.clientHeight || window.innerHeight;
+      const paddingX = 60;
+      const paddingY = 80;
+      const bounds = computeContentBounds();
+
+      if (!bounds) {
+        if (typeof graph.fitView === 'function') {
+          graph.fitView({ padding: [paddingY, paddingX, paddingY, paddingX] });
+        } else if (typeof graph.fitCenter === 'function') {
+          graph.fitCenter();
+        }
+        return;
+      }
+
+      const scaleX = (viewportWidth - paddingX * 2) / bounds.width;
+      const scaleY = (viewportHeight - paddingY * 2) / bounds.height;
+      const targetScale = Math.min(scaleX, scaleY, 1);
+      const safeScale = Number.isFinite(targetScale) && targetScale > 0 ? targetScale : 1;
+
+      if (typeof graph.fitCenter === 'function') {
+        graph.fitCenter();
+      }
+      if (typeof graph.zoomTo === 'function') {
+        graph.zoomTo(safeScale, { x: viewportWidth / 2, y: viewportHeight / 2 }, false);
+      }
+    }
+
     function refreshAfterLoad() {
       updateEdgePorts();
       requestAnimationFrame(() => updateEdgePorts());
       setTimeout(() => updateEdgePorts(), 0);
-      requestAnimationFrame(() => {
-        if (typeof graph.fitView === 'function') {
-          graph.fitView({ padding: 40 });
-        } else if (typeof graph.fitCenter === 'function') {
-          graph.fitCenter();
-        }
-      });
+      requestAnimationFrame(applyAutoFitViewport);
     }
 
     graph.once('afterlayout', refreshAfterLoad);
