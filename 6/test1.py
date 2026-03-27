@@ -2,9 +2,6 @@ from contextlib import nullcontext
 
 import dsvis
 
-dsvis.auto()
-
-
 tag1 = False
 
 class Node:

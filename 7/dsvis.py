@@ -144,13 +144,7 @@ def _walk(root_scope, max_nodes=300, include_private=False):
 
 # ---------- G6 渲染 ----------
 
-def _render_g6(nodes, edges, title="AutoViz Snapshot"):
-    import tempfile
-    import webbrowser
-    import json
-    from pathlib import Path
-
-    # 转换数据格式
+def _build_g6_data(nodes, edges):
     g6_data = {
         "nodes": [],
         "edges": []
@@ -244,6 +238,16 @@ def _render_g6(nodes, edges, title="AutoViz Snapshot"):
         edge_counter += 1
         g6_data["edges"].append(edge_item)
 
+    return g6_data
+
+
+def _render_g6(nodes, edges, title="AutoViz Snapshot"):
+    import tempfile
+    import webbrowser
+    import json
+    from pathlib import Path
+
+    g6_data = _build_g6_data(nodes, edges)
     layout = {
         "type": "dagre",
         "rankdir": "LR",
@@ -267,6 +271,36 @@ def _render_g6(nodes, edges, title="AutoViz Snapshot"):
     webbrowser.open(html_path.as_uri())
     print(f"[dsvis] G6 HTML 输出：{html_path}")
 
+    return html_path
+
+
+def _render_debugger(steps, source_lines, title="DSVis Debugger"):
+    import tempfile
+    import webbrowser
+    import json
+    from pathlib import Path
+
+    step_payload = []
+    for idx, step in enumerate(steps, start=1):
+        step_payload.append({
+            "step": idx,
+            "lineno": step.get("lineno"),
+            "graph": _build_g6_data(step.get("nodes", []), step.get("edges", [])),
+        })
+
+    template_path = Path(__file__).parent / "debug_template.html"
+    html = template_path.read_text(encoding="utf-8")
+    html = html.replace("__TITLE__", title)
+    html = html.replace("__STEPS__", json.dumps(step_payload, ensure_ascii=False))
+    html = html.replace("__SOURCE_LINES__", json.dumps(source_lines, ensure_ascii=False))
+
+    fd, path = tempfile.mkstemp(suffix=".html")
+    html_path = Path(path)
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    webbrowser.open(html_path.as_uri())
+    print(f"[dsvis] Debugger HTML 输出：{html_path}")
     return html_path
 
 # ---------- 对外接口 ----------

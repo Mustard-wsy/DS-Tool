@@ -20,7 +20,7 @@ class InjectTrigger(ast.NodeTransformer):
         trigger_node = ast.Expr(
             value=ast.Call(
                 func=ast.Name(id="trigger", ctx=ast.Load()),
-                args=[ast.Constant(value=getattr(node, "lineno", None))],
+                args=[],
                 keywords=[],
             )
         )
