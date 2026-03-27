@@ -2,7 +2,7 @@ from contextlib import nullcontext
 
 import dsvis
 
-#dsvis.auto()
+dsvis.auto()
 
 
 tag1 = False
