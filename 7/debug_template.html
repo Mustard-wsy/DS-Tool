@@ -42,6 +42,7 @@ const SOURCE_LINES = __SOURCE_LINES__;
 let current = 0;
 let graph = null;
 let codeRows = [];
+let graphResizeObserver = null;
 
 function getGraphSize() {
   const el = document.getElementById('graph');
@@ -91,9 +92,28 @@ function initGraph(data) {
     behaviors:['drag-canvas','zoom-canvas','drag-element']
   });
   graph.render();
+  fitGraph();
+
+  if (typeof ResizeObserver !== 'undefined') {
+    graphResizeObserver = new ResizeObserver(() => {
+      if (!graph) return;
+      const size = getGraphSize();
+      if (typeof graph.setSize === 'function') {
+        graph.setSize(size.width, size.height);
+      }
+      fitGraph();
+    });
+    graphResizeObserver.observe(document.getElementById('graph'));
+  }
+}
+
+function fitGraph() {
   requestAnimationFrame(() => {
+    if (!graph) return;
     if (typeof graph.fitView === 'function') {
-      graph.fitView({ padding: [28, 28, 28, 28] });
+      graph.fitView({ padding: [36, 36, 36, 36] });
+    } else if (typeof graph.fitCenter === 'function') {
+      graph.fitCenter();
     }
   });
 }
@@ -131,11 +151,7 @@ function renderStep(i) {
   } else {
     graph.setData(s.graph);
     graph.render();
-    requestAnimationFrame(() => {
-      if (typeof graph.fitView === 'function') {
-        graph.fitView({ padding: [28, 28, 28, 28] });
-      }
-    });
+    fitGraph();
   }
 
   focusLine(s.lineno || 1);
