@@ -15,6 +15,8 @@ def _typename(obj):
         t = type(obj)
         mod = getattr(t, "__module__", "")
         name = getattr(t, "__qualname__", getattr(t, "__name__", str(t)))
+        if mod in ("__main__", "main"):
+            return name
         if mod and mod != "builtins":
             return f"{mod}.{name}"
         return name
@@ -48,6 +50,9 @@ def _is_class_object(obj):
 
 def _is_renderable(obj):
     return _is_class_object(obj) or _is_primitive(obj)
+
+def _format_typed_label(name, value):
+    return f"{name}\n({_typename(value)})"
 
 def _iter_container_items(name, container):
     """把容器拆成 (显示名, 值) 二元组，支持继续判断引用关系。"""
@@ -94,7 +99,7 @@ def _walk(root_scope, max_nodes=300, include_private=False):
     node_index = {}
     q = deque()
 
-    def add_obj(obj, label):
+    def add_obj(obj, label, value_text=None):
         if not _is_renderable(obj):
             return None
         obj_id = id(obj)
@@ -113,6 +118,12 @@ def _walk(root_scope, max_nodes=300, include_private=False):
             "class_name": type(obj).__name__ if obj else "NoneType",
             "is_class_object": _is_class_object(obj),
         }
+        if value_text is not None:
+            n["rows"].append({
+                "name": "value",
+                "kind": "field",
+                "text": value_text,
+            })
         nodes.append(n)
         node_index[obj_id] = n
         q.append(obj)
@@ -123,8 +134,9 @@ def _walk(root_scope, max_nodes=300, include_private=False):
         for k, v in scope_dict.items():
             if not include_private and k.startswith("_"):
                 continue
-            label = f"{k} = {_short(v)}" if _is_primitive(v) else f"{k}: {_typename(v)}"
-            add_obj(v, label)
+            label = _format_typed_label(k, v)
+            value_text = f"value = {_short(v)}" if _is_primitive(v) else None
+            add_obj(v, label, value_text=value_text)
 
     # BFS
     while q:
@@ -160,7 +172,7 @@ def _walk(root_scope, max_nodes=300, include_private=False):
                             "text": f"{item_name} = {_short(item_val)}",
                         })
                     elif _is_class_object(item_val):
-                        cid = add_obj(item_val, f"{item_name}: {_typename(item_val)}")
+                        cid = add_obj(item_val, _format_typed_label(item_name, item_val))
                         if cid:
                             owner["rows"].append({
                                 "name": item_name,
@@ -186,7 +198,7 @@ def _walk(root_scope, max_nodes=300, include_private=False):
                             "text": f"{item_name} = {_short(item_val)}",
                         })
             elif _is_class_object(val):
-                cid = add_obj(val, f"{attr}: {_typename(val)}")
+                cid = add_obj(val, _format_typed_label(attr, val))
                 if cid:
                     owner["rows"].append({
                         "name": attr,
@@ -216,18 +228,20 @@ def _build_g6_data(nodes, edges):
     padding_x = 10
     padding_y = 8
     row_h = 18
-    header_h = 22
+    default_header_h = 22
     section_gap = 6
     card_w = 100
 
     for n in nodes:
         cls = n.get("class_name") or "Obj"
         class_count[cls] = class_count.get(cls, 0) + 1
-        name = f"{cls}#{class_count[cls]}"
+        name = n.get("label") or f"{cls}#{class_count[cls]}"
         id_to_name[n["id"]] = name
 
         rows = n.get("rows", [])
         display_rows = [r.get("text", "") for r in rows]
+        header_line_count = max(1, len(str(name).splitlines()))
+        header_h = max(default_header_h, header_line_count * 16)
 
         height = (
             padding_y * 2
@@ -262,6 +276,7 @@ def _build_g6_data(nodes, edges):
             "style": {
                 "size": [card_w, height],
                 "name": name,
+                "headerHeight": header_h,
                 "rows": display_rows,
                 "refRowIndices": ref_row_indices,
                 "sectionGap": section_gap,
