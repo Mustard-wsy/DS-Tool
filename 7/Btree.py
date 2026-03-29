@@ -79,6 +79,50 @@ class BTree:
         else:
             self.insert_non_full(root, key)
 
+    def inorder(self, node=None):
+        """中序遍历，便于快速检查 B 树内容是否正确。"""
+        node = self.root if node is None else node
+        if node.leaf:
+            return node.keys[:]
+
+        out = []
+        for i, key in enumerate(node.keys):
+            out.extend(self.inorder(node.children[i]))
+            out.append(key)
+        out.extend(self.inorder(node.children[len(node.keys)]))
+        return out
+
+    def validate(self):
+        """检查关键 B 树不变式（key 个数、有序性、子节点数量）。"""
+        t = self.t
+
+        def _check(node, is_root):
+            if node.keys != sorted(node.keys):
+                return False, "节点 key 不是升序"
+
+            if is_root:
+                if len(node.keys) > 2 * t - 1:
+                    return False, "根节点 key 数过多"
+            else:
+                if len(node.keys) < t - 1 or len(node.keys) > 2 * t - 1:
+                    return False, "非根节点 key 数不合法"
+
+            if node.leaf:
+                if node.children:
+                    return False, "叶子节点不应包含 children"
+                return True, ""
+
+            if len(node.children) != len(node.keys) + 1:
+                return False, "内部节点 children 数应为 keys+1"
+
+            for child in node.children:
+                ok, msg = _check(child, False)
+                if not ok:
+                    return False, msg
+            return True, ""
+
+        return _check(self.root, True)
+
 
 # ===============================
 # 内部测试（无输入输出）
@@ -88,7 +132,8 @@ def build_random_btree():
     t = 3
     btree = BTree(t)
 
-    # 随机生成数据
+    # 固定随机种子，便于复现
+    random.seed(42)
     data = list(range(50))
     random.shuffle(data)
 
@@ -98,5 +143,8 @@ def build_random_btree():
     return btree
 
 
-# 执行构建
-btree_instance = build_random_btree()
+if __name__ == "__main__":
+    # 执行构建
+    btree_instance = build_random_btree()
+    ok, msg = btree_instance.validate()
+    assert ok, f"BTree 校验失败: {msg}"
