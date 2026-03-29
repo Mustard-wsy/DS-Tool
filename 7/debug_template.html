@@ -90,15 +90,26 @@ function initGraph(data) {
       const paddingX = 10;
       const paddingY = 8;
       const rowH = 18;
-      const headerH = 22;
+      const headerH = attributes.headerHeight || 22;
+      const headerLines = String(name).split('\n');
       const key = this.upsert('key', 'rect', {
         x: -w/2, y: -h/2, width:w, height:h, radius:4,
         fill:'#e8f0fe', stroke:'#5b8ff9'
       }, container);
-      this.upsert('title', 'text', {
-        x: -w/2 + paddingX, y: -h/2 + paddingY + 2, text:name,
-        fontSize:12, fill:'#111', textBaseline:'top'
-      }, container);
+      const prevHeaderLineCount = this.__prevHeaderLineCount || 0;
+      headerLines.forEach((line, i) => {
+        this.upsert(`title-${i}`, 'text', {
+          x: -w/2 + paddingX, y: -h/2 + paddingY + 2 + i * 14, text:line,
+          fontSize:12, fill:'#111', textBaseline:'top'
+        }, container);
+      });
+      for (let i = headerLines.length; i < prevHeaderLineCount; i++) {
+        this.upsert(`title-${i}`, 'text', {
+          x: -w/2 + paddingX, y: -h/2 + paddingY + 2 + i * 14, text:'',
+          fontSize:12, fill:'#111', textBaseline:'top'
+        }, container);
+      }
+      this.__prevHeaderLineCount = headerLines.length;
       rows.forEach((row, i) => {
         this.upsert(`r-${i}`, 'text', {
           x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: row,

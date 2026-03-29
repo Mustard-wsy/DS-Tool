@@ -85,8 +85,9 @@ try {
         const paddingX = 10;
         const paddingY = 8;
         const rowH = 18;
-        const headerH = 22;
+        const headerH = attributes.headerHeight || 22;
         const sectionGap = attributes.sectionGap || 6;
+        const headerLines = String(name).split('\n');
 
         const keyShape = this.upsert('key', 'rect', {
           x: -width / 2,
@@ -108,15 +109,30 @@ try {
           radius: 4,
         }, container);
 
-        this.upsert('header-text', 'text', {
-          x: -width / 2 + paddingX,
-          y: -height / 2 + paddingY + 2,
-          text: name,
-          fill: '#000',
-          fontSize: 12,
-          fontFamily: 'Consolas, monospace',
-          textBaseline: 'top',
-        }, container);
+        const prevHeaderLineCount = this.__prevHeaderLineCount || 0;
+        for (let i = 0; i < headerLines.length; i++) {
+          this.upsert(`header-text-${i}`, 'text', {
+            x: -width / 2 + paddingX,
+            y: -height / 2 + paddingY + 2 + i * 14,
+            text: headerLines[i],
+            fill: '#000',
+            fontSize: 12,
+            fontFamily: 'Consolas, monospace',
+            textBaseline: 'top',
+          }, container);
+        }
+        for (let i = headerLines.length; i < prevHeaderLineCount; i++) {
+          this.upsert(`header-text-${i}`, 'text', {
+            x: -width / 2 + paddingX,
+            y: -height / 2 + paddingY + 2 + i * 14,
+            text: '',
+            fill: '#000',
+            fontSize: 12,
+            fontFamily: 'Consolas, monospace',
+            textBaseline: 'top',
+          }, container);
+        }
+        this.__prevHeaderLineCount = headerLines.length;
 
         const rowCount = Math.max(rows.length, 1);
 

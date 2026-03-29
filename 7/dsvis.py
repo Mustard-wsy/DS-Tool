@@ -15,6 +15,8 @@ def _typename(obj):
         t = type(obj)
         mod = getattr(t, "__module__", "")
         name = getattr(t, "__qualname__", getattr(t, "__name__", str(t)))
+        if mod in ("__main__", "main"):
+            return name
         if mod and mod != "builtins":
             return f"{mod}.{name}"
         return name
@@ -129,7 +131,7 @@ def _walk(root_scope, max_nodes=300, include_private=False):
         for k, v in scope_dict.items():
             if not include_private and k.startswith("_"):
                 continue
-            label = f"{k}: {_typename(v)}"
+            label = f"{k}\n({_typename(v)})"
             value_text = f"value = {_short(v)}" if _is_primitive(v) else None
             add_obj(v, label, value_text=value_text)
 
@@ -223,7 +225,7 @@ def _build_g6_data(nodes, edges):
     padding_x = 10
     padding_y = 8
     row_h = 18
-    header_h = 22
+    default_header_h = 22
     section_gap = 6
     card_w = 100
 
@@ -235,6 +237,8 @@ def _build_g6_data(nodes, edges):
 
         rows = n.get("rows", [])
         display_rows = [r.get("text", "") for r in rows]
+        header_line_count = max(1, len(str(name).splitlines()))
+        header_h = max(default_header_h, header_line_count * 16)
 
         height = (
             padding_y * 2
@@ -269,6 +273,7 @@ def _build_g6_data(nodes, edges):
             "style": {
                 "size": [card_w, height],
                 "name": name,
+                "headerHeight": header_h,
                 "rows": display_rows,
                 "refRowIndices": ref_row_indices,
                 "sectionGap": section_gap,
