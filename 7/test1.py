@@ -77,9 +77,9 @@ dsvis.capture()
 del a,b,c,d,e,f
 
 n=create_complete_binary_tree(4)
-if tag1==False:
-    #dsvis.capture()
-    del n
-    n = create_complete_binary_tree(10)
+# if tag1==False:
+#     #dsvis.capture()
+#     del n
+#     n = create_complete_binary_tree(10)
 
     #dsvis.capture()
