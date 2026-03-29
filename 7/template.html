@@ -49,8 +49,8 @@ function computeAdaptiveLayout(graphData, fallbackLayout) {
     }
   }
 
-  const adaptiveNodeSep = Math.max(120, Math.ceil(maxH + 28));
-  const adaptiveRankSep = Math.max(220, Math.ceil(maxW + 120));
+  const adaptiveNodeSep = Math.max(120, Math.ceil(maxH + 10));
+  const adaptiveRankSep = Math.max(220, Math.ceil(maxW + 10));
 
   return {
     ...(fallbackLayout || {}),

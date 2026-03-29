@@ -134,7 +134,7 @@ def build_random_btree():
 
     # 固定随机种子，便于复现
     random.seed(42)
-    data = list(range(50))
+    data = list(range(20))
     random.shuffle(data)
 
     for num in data:
