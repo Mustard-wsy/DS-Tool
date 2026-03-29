@@ -51,6 +51,9 @@ def _is_class_object(obj):
 def _is_renderable(obj):
     return _is_class_object(obj) or _is_primitive(obj)
 
+def _format_typed_label(name, value):
+    return f"{name}\n({_typename(value)})"
+
 def _iter_container_items(name, container):
     """把容器拆成 (显示名, 值) 二元组，支持继续判断引用关系。"""
     if isinstance(container, dict):
@@ -131,7 +134,7 @@ def _walk(root_scope, max_nodes=300, include_private=False):
         for k, v in scope_dict.items():
             if not include_private and k.startswith("_"):
                 continue
-            label = f"{k}\n({_typename(v)})"
+            label = _format_typed_label(k, v)
             value_text = f"value = {_short(v)}" if _is_primitive(v) else None
             add_obj(v, label, value_text=value_text)
 
@@ -169,7 +172,7 @@ def _walk(root_scope, max_nodes=300, include_private=False):
                             "text": f"{item_name} = {_short(item_val)}",
                         })
                     elif _is_class_object(item_val):
-                        cid = add_obj(item_val, f"{item_name}: {_typename(item_val)}")
+                        cid = add_obj(item_val, _format_typed_label(item_name, item_val))
                         if cid:
                             owner["rows"].append({
                                 "name": item_name,
@@ -195,7 +198,7 @@ def _walk(root_scope, max_nodes=300, include_private=False):
                             "text": f"{item_name} = {_short(item_val)}",
                         })
             elif _is_class_object(val):
-                cid = add_obj(val, f"{attr}: {_typename(val)}")
+                cid = add_obj(val, _format_typed_label(attr, val))
                 if cid:
                     owner["rows"].append({
                         "name": attr,
