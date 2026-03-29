@@ -94,7 +94,7 @@ def _walk(root_scope, max_nodes=300, include_private=False):
     node_index = {}
     q = deque()
 
-    def add_obj(obj, label):
+    def add_obj(obj, label, value_text=None):
         if not _is_renderable(obj):
             return None
         obj_id = id(obj)
@@ -113,6 +113,12 @@ def _walk(root_scope, max_nodes=300, include_private=False):
             "class_name": type(obj).__name__ if obj else "NoneType",
             "is_class_object": _is_class_object(obj),
         }
+        if value_text is not None:
+            n["rows"].append({
+                "name": "value",
+                "kind": "field",
+                "text": value_text,
+            })
         nodes.append(n)
         node_index[obj_id] = n
         q.append(obj)
@@ -123,8 +129,9 @@ def _walk(root_scope, max_nodes=300, include_private=False):
         for k, v in scope_dict.items():
             if not include_private and k.startswith("_"):
                 continue
-            label = f"{k} = {_short(v)}" if _is_primitive(v) else f"{k}: {_typename(v)}"
-            add_obj(v, label)
+            label = f"{k}: {_typename(v)}"
+            value_text = f"value = {_short(v)}" if _is_primitive(v) else None
+            add_obj(v, label, value_text=value_text)
 
     # BFS
     while q:
@@ -223,7 +230,7 @@ def _build_g6_data(nodes, edges):
     for n in nodes:
         cls = n.get("class_name") or "Obj"
         class_count[cls] = class_count.get(cls, 0) + 1
-        name = f"{cls}#{class_count[cls]}"
+        name = n.get("label") or f"{cls}#{class_count[cls]}"
         id_to_name[n["id"]] = name
 
         rows = n.get("rows", [])
