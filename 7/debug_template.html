@@ -46,6 +46,25 @@ let codeRows = [];
 let graphResizeObserver = null;
 const FIT_PADDING = { top: 44, right: 30, bottom: 44, left: 30 };
 
+function computeAdaptiveLayout(graphData) {
+  const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  let maxH = 80;
+  let maxW = 160;
+  for (const n of nodes) {
+    const size = n?.style?.size;
+    if (Array.isArray(size) && size.length >= 2) {
+      maxW = Math.max(maxW, Number(size[0]) || 0);
+      maxH = Math.max(maxH, Number(size[1]) || 0);
+    }
+  }
+  return {
+    type: 'dagre',
+    rankdir: 'LR',
+    nodesep: Math.max(120, Math.ceil(maxH + 28)),
+    ranksep: Math.max(220, Math.ceil(maxW + 120)),
+  };
+}
+
 function getGraphSize() {
   const el = document.getElementById('graph');
   return {
@@ -92,7 +111,7 @@ function initGraph(data) {
     height:size.height,
     autoResize:true,
     data,
-    layout:{ type:'dagre', rankdir:'LR', nodesep:120, ranksep:220 },
+    layout: computeAdaptiveLayout(data),
     node:{
       type:'card',
       style: { port: true }
@@ -307,6 +326,12 @@ function renderStep(i) {
   if (!graph) {
     initGraph(s.graph);
   } else {
+    const nextLayout = computeAdaptiveLayout(s.graph);
+    if (typeof graph.setOptions === 'function') {
+      graph.setOptions({ layout: nextLayout });
+    } else if (typeof graph.setLayout === 'function') {
+      graph.setLayout(nextLayout);
+    }
     graph.setData(s.graph);
     if (typeof graph.once === 'function') {
       graph.once('afterlayout', refreshGraphVisuals);
