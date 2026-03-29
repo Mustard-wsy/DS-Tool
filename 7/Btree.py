@@ -139,6 +139,7 @@ def build_random_btree():
 
     for num in data:
         btree.insert(num)
+        #dsvis.capture()
 
     return btree
 
