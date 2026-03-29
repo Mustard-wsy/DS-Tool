@@ -35,6 +35,31 @@
 <script>
 const data = __DATA__;
 const fallback = document.getElementById('fallback');
+const baseLayout = __LAYOUT__;
+
+function computeAdaptiveLayout(graphData, fallbackLayout) {
+  const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  let maxH = 80;
+  let maxW = 160;
+  for (const n of nodes) {
+    const size = n?.style?.size;
+    if (Array.isArray(size) && size.length >= 2) {
+      maxW = Math.max(maxW, Number(size[0]) || 0);
+      maxH = Math.max(maxH, Number(size[1]) || 0);
+    }
+  }
+
+  const adaptiveNodeSep = Math.max(120, Math.ceil(maxH + 28));
+  const adaptiveRankSep = Math.max(220, Math.ceil(maxW + 120));
+
+  return {
+    ...(fallbackLayout || {}),
+    type: (fallbackLayout && fallbackLayout.type) || 'dagre',
+    rankdir: (fallbackLayout && fallbackLayout.rankdir) || 'LR',
+    nodesep: adaptiveNodeSep,
+    ranksep: adaptiveRankSep,
+  };
+}
 
 function showFallback(err) {
   fallback.style.display = 'block';
@@ -124,7 +149,7 @@ try {
       autoResize: true,
       data,
 
-      layout: __LAYOUT__,
+      layout: computeAdaptiveLayout(data, baseLayout),
 
       node: {
         type: 'card',

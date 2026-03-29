@@ -49,6 +49,23 @@ def _is_class_object(obj):
 def _is_renderable(obj):
     return _is_class_object(obj) or _is_primitive(obj)
 
+def _iter_container_items(name, container):
+    """把容器拆成 (显示名, 值) 二元组，支持继续判断引用关系。"""
+    if isinstance(container, dict):
+        for k, v in container.items():
+            yield f"{name}[{_short(k, 30)}]", v
+        return
+
+    if isinstance(container, (list, tuple, deque)):
+        for i, v in enumerate(container):
+            yield f"{name}[{i}]", v
+        return
+
+    if isinstance(container, (set, frozenset)):
+        for i, v in enumerate(sorted(container, key=lambda x: _short(x))):
+            yield f"{name}[{i}]", v
+        return
+
 def _iter_object_items(obj, include_private=False):
     try:
         for k, v in vars(obj).items():
@@ -125,6 +142,49 @@ def _walk(root_scope, max_nodes=300, include_private=False):
                     "kind": "field",
                     "text": f"{attr} = {_short(val)}",
                 })
+            elif isinstance(val, (list, tuple, set, frozenset, dict, deque)):
+                items = list(_iter_container_items(attr, val))
+                if not items:
+                    owner["rows"].append({
+                        "name": attr,
+                        "kind": "field",
+                        "text": f"{attr} = {type(val).__name__}()",
+                    })
+                    continue
+
+                for item_name, item_val in items:
+                    if _is_primitive(item_val):
+                        owner["rows"].append({
+                            "name": item_name,
+                            "kind": "field",
+                            "text": f"{item_name} = {_short(item_val)}",
+                        })
+                    elif _is_class_object(item_val):
+                        cid = add_obj(item_val, f"{item_name}: {_typename(item_val)}")
+                        if cid:
+                            owner["rows"].append({
+                                "name": item_name,
+                                "kind": "ref",
+                                "text": item_name,
+                            })
+                            owner["refs"].append({"name": item_name})
+                            edges.append({
+                                "src": obj_id,
+                                "dst": cid,
+                                "label": item_name
+                            })
+                        else:
+                            owner["rows"].append({
+                                "name": item_name,
+                                "kind": "field",
+                                "text": f"{item_name} = {_short(item_val)}",
+                            })
+                    else:
+                        owner["rows"].append({
+                            "name": item_name,
+                            "kind": "field",
+                            "text": f"{item_name} = {_short(item_val)}",
+                        })
             elif _is_class_object(val):
                 cid = add_obj(val, f"{attr}: {_typename(val)}")
                 if cid:

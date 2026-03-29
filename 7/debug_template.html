@@ -19,6 +19,7 @@
 
   #controls { min-height:64px; display:flex; align-items:center; gap:12px; padding:8px 12px; border-top:1px solid #ddd; background:#fff; }
   button { padding:6px 12px; font-size:14px; }
+  #stepInput { width:72px; padding:4px 6px; font-size:14px; font-family:Consolas, monospace; }
 </style>
 </head>
 <body>
@@ -32,7 +33,12 @@
     <div id="controls">
       <button id="prevBtn">Prev</button>
       <button id="nextBtn">Next</button>
-      <span id="stepInfo"></span>
+      <span>
+        Step
+        <input id="stepInput" type="number" min="1" step="1" />
+        / <span id="stepTotal">0</span>
+        &nbsp;|&nbsp; line <span id="lineInfo">-</span>
+      </span>
     </div>
   </div>
 </div>
@@ -45,6 +51,25 @@ let graph = null;
 let codeRows = [];
 let graphResizeObserver = null;
 const FIT_PADDING = { top: 44, right: 30, bottom: 44, left: 30 };
+
+function computeAdaptiveLayout(graphData) {
+  const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  let maxH = 80;
+  let maxW = 160;
+  for (const n of nodes) {
+    const size = n?.style?.size;
+    if (Array.isArray(size) && size.length >= 2) {
+      maxW = Math.max(maxW, Number(size[0]) || 0);
+      maxH = Math.max(maxH, Number(size[1]) || 0);
+    }
+  }
+  return {
+    type: 'dagre',
+    rankdir: 'LR',
+    nodesep: Math.max(120, Math.ceil(maxH + 28)),
+    ranksep: Math.max(220, Math.ceil(maxW + 120)),
+  };
+}
 
 function getGraphSize() {
   const el = document.getElementById('graph');
@@ -80,6 +105,14 @@ function initGraph(data) {
           fontSize:11, fill:'#333', textBaseline:'top'
         }, container);
       });
+      const prevRowCount = this.__prevRowCount || 0;
+      for (let i = rows.length; i < prevRowCount; i++) {
+        this.upsert(`r-${i}`, 'text', {
+          x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: '',
+          fontSize:11, fill:'#333', textBaseline:'top'
+        }, container);
+      }
+      this.__prevRowCount = rows.length;
       return key;
     }
   }
@@ -92,7 +125,7 @@ function initGraph(data) {
     height:size.height,
     autoResize:true,
     data,
-    layout:{ type:'dagre', rankdir:'LR', nodesep:120, ranksep:220 },
+    layout: computeAdaptiveLayout(data),
     node:{
       type:'card',
       style: { port: true }
@@ -307,6 +340,12 @@ function renderStep(i) {
   if (!graph) {
     initGraph(s.graph);
   } else {
+    const nextLayout = computeAdaptiveLayout(s.graph);
+    if (typeof graph.setOptions === 'function') {
+      graph.setOptions({ layout: nextLayout });
+    } else if (typeof graph.setLayout === 'function') {
+      graph.setLayout(nextLayout);
+    }
     graph.setData(s.graph);
     if (typeof graph.once === 'function') {
       graph.once('afterlayout', refreshGraphVisuals);
@@ -316,11 +355,25 @@ function renderStep(i) {
   }
 
   focusLine(s.lineno || 1);
-  document.getElementById('stepInfo').textContent = `Step ${s.step} / ${STEPS.length}  |  line ${s.lineno ?? '-'}`;
+  document.getElementById('stepInput').value = String(current + 1);
+  document.getElementById('stepTotal').textContent = String(STEPS.length);
+  document.getElementById('lineInfo').textContent = String(s.lineno ?? '-');
 }
 
 document.getElementById('prevBtn').addEventListener('click', () => renderStep(current - 1));
 document.getElementById('nextBtn').addEventListener('click', () => renderStep(current + 1));
+const stepInput = document.getElementById('stepInput');
+stepInput.addEventListener('change', () => {
+  const raw = Number(stepInput.value);
+  if (!Number.isFinite(raw)) return;
+  renderStep(raw - 1);
+});
+stepInput.addEventListener('keydown', (evt) => {
+  if (evt.key !== 'Enter') return;
+  const raw = Number(stepInput.value);
+  if (!Number.isFinite(raw)) return;
+  renderStep(raw - 1);
+});
 
 renderAllCode();
 renderStep(0);

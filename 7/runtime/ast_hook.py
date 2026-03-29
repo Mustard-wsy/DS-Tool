@@ -3,7 +3,7 @@ import os
 
 from .injector import InjectTrigger
 
-PRINT_TRANSFORMED_CODE = True
+PRINT_TRANSFORMED_CODE = False
 
 
 def run_file(filepath):
@@ -27,7 +27,7 @@ def run_file(filepath):
 
     global_env = {
         "trigger": trigger,
-        "__name__": "__ast_exec__",
+        "__name__": "__main__",
         "__file__": filepath,
     }
     try:
