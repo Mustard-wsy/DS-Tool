@@ -49,6 +49,23 @@ def _is_class_object(obj):
 def _is_renderable(obj):
     return _is_class_object(obj) or _is_primitive(obj)
 
+def _iter_container_rows(name, container):
+    """把容器拆成多行普通字段文本，避免被当成对象引用。"""
+    if isinstance(container, dict):
+        for k, v in container.items():
+            yield f"{name}[{_short(k, 30)}] = {_short(v)}"
+        return
+
+    if isinstance(container, (list, tuple, deque)):
+        for i, v in enumerate(container):
+            yield f"{name}[{i}] = {_short(v)}"
+        return
+
+    if isinstance(container, (set, frozenset)):
+        for i, v in enumerate(sorted(container, key=lambda x: _short(x))):
+            yield f"{name}[{i}] = {_short(v)}"
+        return
+
 def _iter_object_items(obj, include_private=False):
     try:
         for k, v in vars(obj).items():
@@ -125,6 +142,16 @@ def _walk(root_scope, max_nodes=300, include_private=False):
                     "kind": "field",
                     "text": f"{attr} = {_short(val)}",
                 })
+            elif isinstance(val, (list, tuple, set, frozenset, dict, deque)):
+                lines = list(_iter_container_rows(attr, val))
+                if not lines:
+                    lines = [f"{attr} = {type(val).__name__}()"]
+                for line in lines:
+                    owner["rows"].append({
+                        "name": attr,
+                        "kind": "field",
+                        "text": line,
+                    })
             elif _is_class_object(val):
                 cid = add_obj(val, f"{attr}: {_typename(val)}")
                 if cid:
