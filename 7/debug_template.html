@@ -16,6 +16,13 @@
   .ln { width:56px; color:#999; user-select:none; }
   .txt { flex:1; }
   .active { background:#fff3cd; }
+  .tok-comment { color:#6a737d; font-style:italic; }
+  .tok-string { color:#0b7a0b; }
+  .tok-keyword { color:#8a2be2; font-weight:600; }
+  .tok-number { color:#b75501; }
+  .tok-function { color:#005cc5; font-weight:600; }
+  .tok-class { color:#1f6feb; font-weight:600; }
+  .tok-operator { color:#d73a49; }
 
   #controls { min-height:64px; display:flex; align-items:center; gap:12px; padding:8px 12px; border-top:1px solid #ddd; background:#fff; }
   button { padding:6px 12px; font-size:14px; }
@@ -46,11 +53,17 @@
 <script>
 const STEPS = __STEPS__;
 const SOURCE_LINES = __SOURCE_LINES__;
+const STEP_DIFFS = [];
 let current = 0;
 let graph = null;
 let codeRows = [];
 let graphResizeObserver = null;
 const FIT_PADDING = { top: 44, right: 30, bottom: 44, left: 30 };
+const DELTA_COLORS = {
+  unchanged: { fill: '#e8f0fe', stroke: '#5b8ff9', line: '#333' },
+  changed: { fill: '#fff5e6', stroke: '#ff9800', line: '#c97200' },
+  added: { fill: '#eafaf0', stroke: '#34a853', line: '#1e8e3e' },
+};
 
 function computeAdaptiveLayout(graphData) {
   const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
@@ -94,7 +107,9 @@ function initGraph(data) {
       const headerLines = String(name).split('\n');
       const key = this.upsert('key', 'rect', {
         x: -w/2, y: -h/2, width:w, height:h, radius:4,
-        fill:'#e8f0fe', stroke:'#5b8ff9'
+        fill: attributes.fill || DELTA_COLORS.unchanged.fill,
+        stroke: attributes.stroke || DELTA_COLORS.unchanged.stroke,
+        lineWidth: attributes.lineWidth || 1
       }, container);
       const prevHeaderLineCount = this.__prevHeaderLineCount || 0;
       headerLines.forEach((line, i) => {
@@ -111,9 +126,15 @@ function initGraph(data) {
       }
       this.__prevHeaderLineCount = headerLines.length;
       rows.forEach((row, i) => {
+        const rowDeltaType = Array.isArray(attributes.rowDeltaTypes) ? attributes.rowDeltaTypes[i] : null;
+        const rowColor = rowDeltaType === 'added'
+          ? DELTA_COLORS.added.line
+          : rowDeltaType === 'changed'
+            ? DELTA_COLORS.changed.line
+            : '#333';
         this.upsert(`r-${i}`, 'text', {
           x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: row,
-          fontSize:11, fill:'#333', textBaseline:'top'
+          fontSize:11, fill: rowColor, fontWeight: rowDeltaType ? 600 : 400, textBaseline:'top'
         }, container);
       });
       const prevRowCount = this.__prevRowCount || 0;
@@ -320,6 +341,134 @@ function onDragEnd(evt) {
   updateEdgePorts(nodeId);
 }
 
+function escapeHtml(raw) {
+  return String(raw ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function highlightPythonLine(sourceLine) {
+  const text = String(sourceLine ?? '');
+  if (!text) return '';
+  const regex = /(#[^\n]*|"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b(?:and|as|assert|async|await|break|class|continue|def|del|elif|else|except|False|finally|for|from|global|if|import|in|is|lambda|None|nonlocal|not|or|pass|raise|return|True|try|while|with|yield)\b|\b\d+(?:\.\d+)?\b|\bdef\s+([A-Za-z_]\w*)|\bclass\s+([A-Za-z_]\w*)|[+\-*/%=<>!]+)/g;
+  let last = 0;
+  let html = '';
+  for (const match of text.matchAll(regex)) {
+    const token = match[0];
+    const index = match.index ?? 0;
+    if (index > last) {
+      html += escapeHtml(text.slice(last, index));
+    }
+    let cls = '';
+    if (token.startsWith('#')) cls = 'tok-comment';
+    else if (token.startsWith('"') || token.startsWith("'")) cls = 'tok-string';
+    else if (/^\b\d/.test(token) || /^\d/.test(token)) cls = 'tok-number';
+    else if (/^(def\s+)/.test(token)) cls = 'tok-keyword';
+    else if (/^(class\s+)/.test(token)) cls = 'tok-keyword';
+    else if (/^[+\-*/%=<>!]+$/.test(token)) cls = 'tok-operator';
+    else cls = 'tok-keyword';
+    html += `<span class="${cls}">${escapeHtml(token)}</span>`;
+    last = index + token.length;
+  }
+  if (last < text.length) {
+    html += escapeHtml(text.slice(last));
+  }
+  return html;
+}
+
+function cloneGraphData(data) {
+  return JSON.parse(JSON.stringify(data || { nodes: [], edges: [] }));
+}
+
+function edgeSignature(edge) {
+  return `${edge.source}->${edge.target}#${edge?.data?.refIndex ?? 'na'}`;
+}
+
+function computeStepDiffs() {
+  STEP_DIFFS.length = 0;
+  let prevGraph = null;
+  for (let stepIdx = 0; stepIdx < STEPS.length; stepIdx++) {
+    const currentGraph = STEPS[stepIdx]?.graph || { nodes: [], edges: [] };
+    const diff = {
+      nodeTypes: new Map(),
+      nodeRowTypes: new Map(),
+      addedEdgeSigs: new Set(),
+    };
+    if (prevGraph) {
+      const prevNodeMap = new Map((prevGraph.nodes || []).map((n) => [n.id, n]));
+      for (const node of currentGraph.nodes || []) {
+        const prevNode = prevNodeMap.get(node.id);
+        const rows = Array.isArray(node?.style?.rows) ? node.style.rows : [];
+        if (!prevNode) {
+          diff.nodeTypes.set(node.id, 'added');
+          diff.nodeRowTypes.set(node.id, rows.map(() => 'added'));
+          continue;
+        }
+        const prevRows = Array.isArray(prevNode?.style?.rows) ? prevNode.style.rows : [];
+        const rowTypes = [];
+        let hasChange = false;
+        const maxLen = Math.max(rows.length, prevRows.length);
+        for (let i = 0; i < maxLen; i++) {
+          if (i >= prevRows.length) {
+            rowTypes[i] = 'added';
+            hasChange = true;
+          } else if (rows[i] !== prevRows[i]) {
+            rowTypes[i] = 'changed';
+            hasChange = true;
+          } else {
+            rowTypes[i] = '';
+          }
+        }
+        if ((node?.style?.name || '') !== (prevNode?.style?.name || '')) {
+          hasChange = true;
+        }
+        if (hasChange) {
+          diff.nodeTypes.set(node.id, 'changed');
+          diff.nodeRowTypes.set(node.id, rowTypes);
+        }
+      }
+
+      const prevEdges = new Set((prevGraph.edges || []).map(edgeSignature));
+      for (const edge of currentGraph.edges || []) {
+        const sig = edgeSignature(edge);
+        if (!prevEdges.has(sig)) diff.addedEdgeSigs.add(sig);
+      }
+    }
+    STEP_DIFFS.push(diff);
+    prevGraph = currentGraph;
+  }
+}
+
+function applyStepHighlights(graphData, stepIndex) {
+  const diff = STEP_DIFFS[stepIndex];
+  if (!diff) return graphData;
+  for (const node of graphData.nodes || []) {
+    const nodeType = diff.nodeTypes.get(node.id) || '';
+    const color = nodeType === 'added'
+      ? DELTA_COLORS.added
+      : nodeType === 'changed'
+        ? DELTA_COLORS.changed
+        : DELTA_COLORS.unchanged;
+    node.style = node.style || {};
+    node.style.fill = color.fill;
+    node.style.stroke = color.stroke;
+    node.style.lineWidth = nodeType ? 2 : 1;
+    node.style.rowDeltaTypes = diff.nodeRowTypes.get(node.id) || [];
+  }
+  for (const edge of graphData.edges || []) {
+    const added = diff.addedEdgeSigs.has(edgeSignature(edge));
+    edge.style = edge.style || {};
+    edge.style.stroke = added ? DELTA_COLORS.added.stroke : '#888';
+    edge.style.lineWidth = added ? 2 : 1;
+    edge.style.endArrow = {
+      ...(typeof edge.style.endArrow === 'object' ? edge.style.endArrow : {}),
+      fill: added ? DELTA_COLORS.added.stroke : '#888',
+    };
+  }
+  return graphData;
+}
+
 function renderAllCode() {
   const codeView = document.getElementById('codeView');
   codeView.innerHTML = '';
@@ -328,7 +477,7 @@ function renderAllCode() {
     const row = document.createElement('div');
     row.className = 'line';
     row.innerHTML = `<span class="ln">${i}</span><span class="txt"></span>`;
-    row.querySelector('.txt').textContent = SOURCE_LINES[i - 1] ?? '';
+    row.querySelector('.txt').innerHTML = highlightPythonLine(SOURCE_LINES[i - 1] ?? '');
     codeView.appendChild(row);
     codeRows.push(row);
   }
@@ -347,17 +496,18 @@ function renderStep(i) {
   if (!STEPS.length) return;
   current = Math.max(0, Math.min(i, STEPS.length - 1));
   const s = STEPS[current];
+  const graphData = applyStepHighlights(cloneGraphData(s.graph), current);
 
   if (!graph) {
-    initGraph(s.graph);
+    initGraph(graphData);
   } else {
-    const nextLayout = computeAdaptiveLayout(s.graph);
+    const nextLayout = computeAdaptiveLayout(graphData);
     if (typeof graph.setOptions === 'function') {
       graph.setOptions({ layout: nextLayout });
     } else if (typeof graph.setLayout === 'function') {
       graph.setLayout(nextLayout);
     }
-    graph.setData(s.graph);
+    graph.setData(graphData);
     if (typeof graph.once === 'function') {
       graph.once('afterlayout', refreshGraphVisuals);
       graph.once('afterrender', refreshGraphVisuals);
@@ -387,6 +537,7 @@ stepInput.addEventListener('keydown', (evt) => {
 });
 
 renderAllCode();
+computeStepDiffs();
 renderStep(0);
 </script>
 </body>

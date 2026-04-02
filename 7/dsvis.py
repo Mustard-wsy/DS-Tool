@@ -423,13 +423,17 @@ def _find_main_script():
     return None
 
 
-def auto():
+def auto(print_ast=False):
     """
     显式启用 AST 自动插桩模式：
     用户在脚本顶部写：
 
         import dsvis
         dsvis.auto()
+
+    如需打印 AST 插桩后的代码（便于调试）：
+
+        dsvis.auto(print_ast=True)
     """
     if os.environ.get("DSVIS_AST_RUNNING") == "1":
         return
@@ -442,5 +446,5 @@ def auto():
 
     from runtime.ast_hook import run_file
 
-    run_file(main_file)
+    run_file(main_file, print_transformed_code=print_ast)
     raise SystemExit(0)

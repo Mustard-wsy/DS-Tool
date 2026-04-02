@@ -6,7 +6,13 @@ from .injector import InjectTrigger
 PRINT_TRANSFORMED_CODE = False
 
 
-def run_file(filepath):
+def _to_bool_env(value):
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def run_file(filepath, print_transformed_code=False):
     with open(filepath, "r", encoding="utf-8") as f:
         code = f.read()
 
@@ -16,7 +22,13 @@ def run_file(filepath):
     new_tree = transformer.visit(tree)
     ast.fix_missing_locations(new_tree)
 
-    if PRINT_TRANSFORMED_CODE:
+    should_print = (
+        bool(print_transformed_code)
+        or PRINT_TRANSFORMED_CODE
+        or _to_bool_env(os.environ.get("DSVIS_PRINT_AST"))
+    )
+    if should_print:
+        print("[dsvis] Injected AST result:")
         print(ast.unparse(new_tree))
 
     compiled = compile(new_tree, filename=filepath, mode="exec")
