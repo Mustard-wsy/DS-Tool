@@ -2,6 +2,7 @@ import dsvis
 import json
 import atexit
 from pathlib import Path
+from .config import get_mode, get_pointer_watchers, get_watch_vars
 
 
 class Scheduler:
@@ -51,7 +52,7 @@ class Scheduler:
         self.source_file = str(p)
         self.source_lines = p.read_text(encoding="utf-8").splitlines()
 
-    def request_update(self, caller_frame=None, lineno=None):
+    def request_update(self, caller_frame=None, lineno=None, observed_vars=None, pointer_watchers=None, tag=None):
         if caller_frame is None:
             return
 
@@ -60,7 +61,15 @@ class Scheduler:
             "__locals__": dict(caller_frame.f_locals),
             "__globals__": dict(caller_frame.f_globals),
         }
-        nodes, edges = dsvis._walk(root_scope)
+        mode = get_mode()
+        merged_focus = set(get_watch_vars()) | set(observed_vars or [])
+        merged_pointers = list(get_pointer_watchers()) + list(pointer_watchers or [])
+        nodes, edges = dsvis._walk(
+            root_scope,
+            include_containers=(mode == "fine"),
+            focus_vars=merged_focus,
+            pointer_watchers=merged_pointers,
+        )
         signature = self._make_signature(nodes, edges)
         if signature == self.last_signature:
             return
@@ -71,6 +80,7 @@ class Scheduler:
                 "lineno": lineno or caller_frame.f_lineno,
                 "nodes": nodes,
                 "edges": edges,
+                "tag": tag,
             }
         )
 
