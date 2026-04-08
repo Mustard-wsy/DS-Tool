@@ -1,4 +1,5 @@
 import ast
+from .config import get_mode
 
 
 class InjectTrigger(ast.NodeTransformer):
@@ -43,6 +44,10 @@ class InjectTrigger(ast.NodeTransformer):
         return False
 
     def _should_trigger_assign(self, node):
+        if get_mode() == "fine":
+            return any(isinstance(t, ast.Name) for t in node.targets) or any(
+                self._is_struct_target(t) for t in node.targets
+            )
         if any(self._is_struct_target(t) for t in node.targets):
             return True
         has_name_target = any(isinstance(t, ast.Name) for t in node.targets)
@@ -105,6 +110,9 @@ class InjectTrigger(ast.NodeTransformer):
 
         if not isinstance(node.value, ast.Call) or getattr(node, "_injected", False):
             return node
+
+        if get_mode() == "fine":
+            return [node, self._make_trigger(node)]
 
         fn = node.value.func
         if isinstance(fn, ast.Attribute):
