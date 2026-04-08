@@ -32,6 +32,15 @@ class InjectTrigger(ast.NodeTransformer):
     def _is_struct_target(target):
         return isinstance(target, (ast.Attribute, ast.Subscript))
 
+    def _target_contains_struct(self, target):
+        if self._is_struct_target(target):
+            return True
+        if isinstance(target, ast.Starred):
+            return self._target_contains_struct(target.value)
+        if isinstance(target, (ast.Tuple, ast.List)):
+            return any(self._target_contains_struct(elt) for elt in target.elts)
+        return False
+
     @staticmethod
     def _is_constructor_call(value):
         if not isinstance(value, ast.Call):
@@ -45,10 +54,8 @@ class InjectTrigger(ast.NodeTransformer):
 
     def _should_trigger_assign(self, node):
         if get_mode() == "fine":
-            return any(isinstance(t, ast.Name) for t in node.targets) or any(
-                self._is_struct_target(t) for t in node.targets
-            )
-        if any(self._is_struct_target(t) for t in node.targets):
+            return bool(node.targets)
+        if any(self._target_contains_struct(t) for t in node.targets):
             return True
         has_name_target = any(isinstance(t, ast.Name) for t in node.targets)
         return has_name_target and self._is_constructor_call(node.value)
@@ -82,7 +89,7 @@ class InjectTrigger(ast.NodeTransformer):
         self.generic_visit(node)
         if self._in_init():
             return node
-        if node.target and self._is_struct_target(node.target):
+        if node.target and self._target_contains_struct(node.target):
             return [node, self._make_trigger(node)]
         return node
 
@@ -90,7 +97,7 @@ class InjectTrigger(ast.NodeTransformer):
         self.generic_visit(node)
         if self._in_init():
             return node
-        if self._is_struct_target(node.target):
+        if self._target_contains_struct(node.target):
             return [node, self._make_trigger(node)]
         return node
 
@@ -98,9 +105,28 @@ class InjectTrigger(ast.NodeTransformer):
         self.generic_visit(node)
         if self._in_init():
             return node
-        if any(self._is_struct_target(t) for t in node.targets):
+        if any(self._target_contains_struct(t) for t in node.targets):
             return [node, self._make_trigger(node)]
         return node
+
+    def _inject_loop_iteration_trigger(self, node):
+        if get_mode() != "fine" or self._in_init():
+            return node
+        loop_trigger = self._make_trigger(node)
+        node.body.insert(0, loop_trigger)
+        return node
+
+    def visit_For(self, node):
+        self.generic_visit(node)
+        return self._inject_loop_iteration_trigger(node)
+
+    def visit_AsyncFor(self, node):
+        self.generic_visit(node)
+        return self._inject_loop_iteration_trigger(node)
+
+    def visit_While(self, node):
+        self.generic_visit(node)
+        return self._inject_loop_iteration_trigger(node)
 
     def visit_Expr(self, node):
         """捕捉对象方法调用（黑名单除外）；是否真的变化交给 scheduler 判定。"""
