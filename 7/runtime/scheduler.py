@@ -15,27 +15,33 @@ class Scheduler:
 
     @staticmethod
     def _make_signature(nodes, edges):
-        normalized_nodes = []
-        for n in nodes:
-            normalized_nodes.append(
+        normalized_nodes = sorted(
+            [
                 {
+                    "id": str(n.get("id")),
+                    "label": n.get("label"),
                     "class_name": n.get("class_name"),
                     "is_class_object": n.get("is_class_object"),
-                    "rows": sorted((row.get("text", "") for row in n.get("rows", []))),
-                    "refs": sorted((ref.get("name", "") for ref in n.get("refs", []))),
+                    "rows": [row.get("text", "") for row in n.get("rows", [])],
+                    "refs": [ref.get("name", "") for ref in n.get("refs", [])],
                 }
-            )
-        normalized_edges = sorted((e.get("label", "") for e in edges))
+                for n in nodes
+            ],
+            key=lambda x: (x["id"], x["label"] or ""),
+        )
+        normalized_edges = sorted(
+            [
+                {
+                    "src": str(e.get("src")),
+                    "dst": str(e.get("dst")),
+                    "label": e.get("label", ""),
+                }
+                for e in edges
+            ],
+            key=lambda x: (x["src"], x["dst"], x["label"]),
+        )
         payload = {
-            "nodes": sorted(
-                normalized_nodes,
-                key=lambda x: (
-                    x["class_name"] or "",
-                    str(x["is_class_object"]),
-                    "|".join(x["rows"]),
-                    "|".join(x["refs"]),
-                ),
-            ),
+            "nodes": normalized_nodes,
             "edges": normalized_edges,
         }
         return json.dumps(payload, ensure_ascii=False, sort_keys=True)
