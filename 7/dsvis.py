@@ -9,11 +9,9 @@ from collections import deque
 from pathlib import Path
 
 from runtime.config import (
-    get_layout,
     get_mode,
     get_pointer_watchers,
     get_watch_vars,
-    set_layout,
     set_mode,
 )
 
@@ -27,7 +25,6 @@ __all__ = [
     "bind_fields",
     "bind_lists",
     "set_mode",
-    "set_layout_model",
 ]
 
 _DEFAULT_LAYOUT = {
@@ -37,11 +34,7 @@ _DEFAULT_LAYOUT = {
     "ranksep": 220,
 }
 
-_LAYOUT_PRESETS = {
-    "default": dict(_DEFAULT_LAYOUT),
-    "concentriclayout": {"type": "concentric"},
-    "snakelayout": {"type": "snake"},
-}
+_OBJECT_FIELD_BINDINGS = weakref.WeakKeyDictionary()
 
 _OBJECT_FIELD_BINDINGS = weakref.WeakKeyDictionary()
 
@@ -283,29 +276,15 @@ def _normalize_layout(layout):
     if layout is None:
         return dict(_DEFAULT_LAYOUT)
 
-    if isinstance(layout, str):
-        key = layout.strip().lower()
-        if key in _LAYOUT_PRESETS:
-            return dict(_LAYOUT_PRESETS[key])
-        raise ValueError(
-            "layout 必须是 default / ConcentricLayout / SnakeLayout 或布局字典"
-        )
-
     if isinstance(layout, dict):
         merged = dict(_DEFAULT_LAYOUT)
         merged.update(layout)
+        layout_type = str(merged.get("type", "")).strip().lower()
+        if layout_type in {"snake", "concentric", "snakelayout", "concentriclayout"}:
+            raise ValueError("snake / concentric 布局已移除，仅支持 dagre 类布局参数")
         return merged
 
-    raise ValueError("layout 参数类型无效，必须是字符串或字典")
-
-
-def set_layout_model(layout="default"):
-    """
-    设置全局默认布局模型。
-    可选值：default / ConcentricLayout / SnakeLayout / 布局字典。
-    """
-    normalized = _normalize_layout(layout)
-    set_layout(normalized)
+    raise ValueError("layout 参数类型无效，必须是布局字典或 None")
 
 # ---------- 核心遍历 ----------
 
@@ -447,6 +426,7 @@ def _walk(
             continue
 
         object_items = list(_iter_object_items(obj, include_private))
+        item_map = dict(object_items)
         bind_groups = _get_bound_specs(obj)
         instance_specs = _get_instance_bound_specs(obj)
         for group_name, mapping in instance_specs.items():
@@ -498,12 +478,12 @@ def _walk(
                 })
 
         for group_name, mapping in bind_groups.items():
-            ordered_fields = [attr for attr, _ in object_items if attr in mapping]
+            ordered_fields = [attr for attr in mapping.keys() if attr in item_map]
             if len(ordered_fields) < 2:
                 continue
             bound_streams = {}
             for attr in ordered_fields:
-                val = dict(object_items).get(attr)
+                val = item_map.get(attr)
                 if not isinstance(val, (list, tuple, set, frozenset, dict, deque)):
                     continue
                 bound_streams[attr] = {
@@ -776,7 +756,7 @@ def capture(
             pointer_watchers=merged_pointers,
         )
 
-        effective_layout = get_layout() if layout is None else layout
+        effective_layout = _normalize_layout(layout)
         return _render_g6(nodes, edges, title, layout=effective_layout)
 
     finally:

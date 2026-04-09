@@ -288,10 +288,6 @@ function applyPresetLayout(graphData, presetType, viewport = null) {
 }
 
 function prepareGraphForLayout(graphData, viewport = null) {
-  const layoutType = normalizeLayoutType(baseLayout?.type);
-  if (layoutType === 'snake' || layoutType === 'concentric') {
-    return applyPresetLayout(graphData, layoutType, viewport);
-  }
   return {
     data: graphData,
     layout: computeAdaptiveLayout(graphData, viewport),

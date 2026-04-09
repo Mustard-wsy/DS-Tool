@@ -285,15 +285,7 @@ function applyPresetLayout(graphData, presetType) {
   };
 }
 
-const layoutType = normalizeLayoutType(baseLayout?.type);
-const shouldUsePreset = layoutType === 'snake' || layoutType === 'concentric';
-const prepared = shouldUsePreset
-  ? applyPresetLayout(data, layoutType)
-  : { data, layout: computeAdaptiveLayout(data, baseLayout), hasDisconnected: false, componentCount: 1 };
-
-if (shouldUsePreset && prepared.hasDisconnected) {
-  console.info(`[dsvis] ${layoutType} layout: detected ${prepared.componentCount} disconnected components; applied component-aware placement.`);
-}
+const prepared = { data, layout: computeAdaptiveLayout(data, baseLayout), hasDisconnected: false, componentCount: 1 };
 
 function showFallback(err) {
   fallback.style.display = 'block';
