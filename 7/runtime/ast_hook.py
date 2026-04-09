@@ -3,7 +3,7 @@ import os
 
 from .injector import InjectTrigger
 
-PRINT_TRANSFORMED_CODE = False
+PRINT_TRANSFORMED_CODE = True
 
 
 def run_file(filepath):
