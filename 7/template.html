@@ -50,6 +50,11 @@ const LAYOUT_PRESET = {
   aspectMin: 0.6,
   aspectMax: 1.8,
 };
+const AUTO_FIT_CONFIG = {
+  maxScale: 1.25,
+  innerRingRatio: 0.08,
+  minInnerRingPx: 20,
+};
 
 function getContainerSize() {
   const el = document.getElementById('container');
@@ -134,6 +139,7 @@ function computeAdaptiveLayout(graphData, fallbackLayout) {
     padding: [LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding],
   };
 }
+
 
 function normalizeLayoutType(layoutTypeRaw) {
   const t = String(layoutTypeRaw || '').trim().toLowerCase();
@@ -687,7 +693,16 @@ try {
         return { top: 48, right: 48, bottom: 48, left: 48 };
       }
 
-      const base = { top: 28, right: 28, bottom: 28, left: 28 };
+      const ringInset = Math.max(
+        AUTO_FIT_CONFIG.minInnerRingPx,
+        Math.floor(Math.min(rect.width, rect.height) * AUTO_FIT_CONFIG.innerRingRatio)
+      );
+      const base = {
+        top: 28 + ringInset,
+        right: 28 + ringInset,
+        bottom: 28 + ringInset,
+        left: 28 + ringInset,
+      };
       const computed = getComputedStyle(document.documentElement);
       const cssPadding = {
         top: Number.parseFloat(computed.getPropertyValue('--dsvis-safe-top')) || 0,
@@ -746,6 +761,7 @@ try {
         if (typeof graph.fitView === 'function') {
           graph.fitView({
             padding: [safePadding.top, safePadding.right, safePadding.bottom, safePadding.left],
+            animation: false,
           });
         } else if (typeof graph.fitCenter === 'function') {
           graph.fitCenter();
@@ -764,6 +780,7 @@ try {
         graph.fitView({
           padding: [safePadding.top, safePadding.right, safePadding.bottom, safePadding.left],
           when: 'always',
+          animation: false,
         });
       } else {
         if (typeof graph.fitCenter === 'function') {
@@ -772,7 +789,7 @@ try {
         const focusX = (safePadding.left + (viewportWidth - safePadding.right)) / 2;
         const focusY = (safePadding.top + (viewportHeight - safePadding.bottom)) / 2;
         if (typeof graph.zoomTo === 'function') {
-          graph.zoomTo(safeScale, { x: focusX, y: focusY }, false);
+          graph.zoomTo(Math.min(safeScale, AUTO_FIT_CONFIG.maxScale), { x: focusX, y: focusY }, false);
         }
       }
     }
@@ -795,6 +812,7 @@ try {
     graph.on('element:drag', onDragMove);
 
     graph.on('element:dragend', onDragEnd);
+
   }
 } catch (err) {
   console.error(err);
