@@ -27,6 +27,7 @@
   #controls { min-height:64px; display:flex; align-items:center; gap:12px; padding:8px 12px; border-top:1px solid #ddd; background:#fff; }
   button { padding:6px 12px; font-size:14px; }
   #stepInput { width:72px; padding:4px 6px; font-size:14px; font-family:Consolas, monospace; }
+  #autoFitWrap { margin-left:auto; font-size:13px; user-select:none; display:flex; align-items:center; gap:6px; }
 </style>
 </head>
 <body>
@@ -46,6 +47,10 @@
         / <span id="stepTotal">0</span>
         &nbsp;|&nbsp; line <span id="lineInfo">-</span>
       </span>
+      <label id="autoFitWrap">
+        <input id="autoFitToggle" type="checkbox" checked />
+        自动缩放
+      </label>
     </div>
   </div>
 </div>
@@ -74,6 +79,11 @@ const LAYOUT_PRESET = {
   aspectMax: 1.8,
 };
 const FIT_PADDING = { top: 44, right: 30, bottom: 44, left: 30 };
+const AUTO_FIT_CONFIG = {
+  maxScale: 1.25,
+  innerRingRatio: 0.08,
+  minInnerRingPx: 18,
+};
 const DELTA_COLORS = {
   unchanged: { fill: '#e8f0fe', stroke: '#5b8ff9', line: '#333' },
   changed: { fill: '#fff5e6', stroke: '#ff9800', line: '#c97200' },
@@ -152,6 +162,35 @@ function computeAdaptiveLayout(graphData, viewport = null) {
     preventOverlapPadding: Math.max(metrics.boundaryGapX, metrics.boundaryGapY),
     sortBy: 'id',
     padding: [LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding],
+  };
+}
+
+
+function applyCompactGridLayout(graphData, viewport = null) {
+  const metrics = analyzeLayoutMetrics(graphData, viewport || getGraphSize());
+  const workingData = JSON.parse(JSON.stringify(graphData || { nodes: [], edges: [] }));
+  const nodes = Array.isArray(workingData.nodes) ? workingData.nodes.slice() : [];
+  const cols = Math.max(1, metrics.cols);
+  const stepX = Math.max(metrics.maxW + metrics.boundaryGapX, 96);
+  const stepY = Math.max(metrics.maxH + metrics.boundaryGapY, 72);
+  const totalRows = Math.max(1, Math.ceil(nodes.length / cols));
+  const totalW = Math.max(0, (cols - 1) * stepX);
+  const totalH = Math.max(0, (totalRows - 1) * stepY);
+  const startX = -Math.floor(totalW / 2);
+  const startY = -Math.floor(totalH / 2);
+
+  nodes.sort((a, b) => String(a?.id ?? '').localeCompare(String(b?.id ?? '')));
+  nodes.forEach((node, idx) => {
+    const row = Math.floor(idx / cols);
+    const col = idx % cols;
+    node.style = node.style || {};
+    node.style.x = startX + col * stepX;
+    node.style.y = startY + row * stepY;
+  });
+
+  return {
+    data: workingData,
+    layout: { type: 'preset' },
   };
 }
 
@@ -288,6 +327,10 @@ function applyPresetLayout(graphData, presetType, viewport = null) {
 }
 
 function prepareGraphForLayout(graphData, viewport = null) {
+  const metrics = analyzeLayoutMetrics(graphData, viewport || getGraphSize());
+  if (!metrics.treeLike) {
+    return applyCompactGridLayout(graphData, viewport || getGraphSize());
+  }
   return {
     data: graphData,
     layout: computeAdaptiveLayout(graphData, viewport),
@@ -459,6 +502,10 @@ function initGraph(data) {
     behaviors:['drag-canvas','zoom-canvas','drag-element']
   });
 
+  if (typeof graph.setZoomRange === 'function') {
+    graph.setZoomRange([0.05, AUTO_FIT_CONFIG.maxScale]);
+  }
+
   graph.on('node:dragstart', onDragStart);
   graph.on('node:drag', onDragMove);
   graph.on('node:dragging', onDragMove);
@@ -570,11 +617,31 @@ function updateEdgePorts(focusNodeId = null) {
 function fitGraph() {
   requestAnimationFrame(() => {
     if (!graph) return;
+    const autoFitToggle = document.getElementById('autoFitToggle');
+    if (autoFitToggle && !autoFitToggle.checked) return;
+    const size = getGraphSize();
+    const ringInset = Math.max(
+      AUTO_FIT_CONFIG.minInnerRingPx,
+      Math.floor(Math.min(size.width, size.height) * AUTO_FIT_CONFIG.innerRingRatio)
+    );
+    const fitPadding = {
+      top: FIT_PADDING.top + ringInset,
+      right: FIT_PADDING.right + ringInset,
+      bottom: FIT_PADDING.bottom + ringInset,
+      left: FIT_PADDING.left + ringInset,
+    };
     if (typeof graph.fitView === 'function') {
       graph.fitView({
-        padding: [FIT_PADDING.top, FIT_PADDING.right, FIT_PADDING.bottom, FIT_PADDING.left],
+        padding: [fitPadding.top, fitPadding.right, fitPadding.bottom, fitPadding.left],
         when: 'always',
+        animation: false,
       });
+      if (typeof graph.getZoom === 'function' && typeof graph.zoomTo === 'function') {
+        const currentScale = Number(graph.getZoom());
+        if (Number.isFinite(currentScale) && currentScale > AUTO_FIT_CONFIG.maxScale) {
+          graph.zoomTo(AUTO_FIT_CONFIG.maxScale, { x: size.width / 2, y: size.height / 2 }, false);
+        }
+      }
       return;
     }
     if (typeof graph.fitCenter === 'function') {
@@ -823,6 +890,14 @@ stepInput.addEventListener('keydown', (evt) => {
   if (!Number.isFinite(raw)) return;
   renderStep(raw - 1);
 });
+const autoFitToggle = document.getElementById('autoFitToggle');
+if (autoFitToggle) {
+  autoFitToggle.addEventListener('change', () => {
+    if (autoFitToggle.checked) {
+      fitGraph();
+    }
+  });
+}
 
 renderAllCode();
 computeStepDiffs();

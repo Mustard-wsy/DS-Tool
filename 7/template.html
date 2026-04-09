@@ -36,6 +36,13 @@
 const data = __DATA__;
 const fallback = document.getElementById('fallback');
 const baseLayout = __LAYOUT__;
+const staleZoomControls = document.getElementById('zoomControls');
+if (staleZoomControls) staleZoomControls.remove();
+const staleAutoFitToggle = document.getElementById('autoFitToggle');
+if (staleAutoFitToggle) {
+  const host = staleAutoFitToggle.closest('label, div');
+  if (host && host !== document.body) host.remove();
+}
 const LAYOUT_PRESET = {
   minNodeWidth: 120,
   minNodeHeight: 60,
@@ -50,6 +57,12 @@ const LAYOUT_PRESET = {
   aspectMin: 0.6,
   aspectMax: 1.8,
 };
+const AUTO_FIT_CONFIG = {
+  maxScale: 1.25,
+  innerRingRatio: 0.08,
+  minInnerRingPx: 20,
+};
+const FIT_PADDING = { top: 44, right: 30, bottom: 44, left: 30 };
 
 function getContainerSize() {
   const el = document.getElementById('container');
@@ -119,7 +132,11 @@ function computeAdaptiveLayout(graphData, fallbackLayout) {
       ...(fallbackLayout || {}),
       type: 'dagre',
       rankdir: (fallbackLayout && fallbackLayout.rankdir) || 'LR',
-      nodesep: Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 44),
+      nodesep: Math.max(
+        metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY,
+        Math.ceil(metrics.maxH * 0.32),
+        52
+      ),
       ranksep: Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 68),
     };
   }
@@ -134,6 +151,46 @@ function computeAdaptiveLayout(graphData, fallbackLayout) {
     padding: [LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding],
   };
 }
+
+function applyCompactGridLayout(graphData, viewport = null) {
+  const metrics = analyzeLayoutMetrics(graphData, viewport || getContainerSize());
+  const workingData = JSON.parse(JSON.stringify(graphData || { nodes: [], edges: [] }));
+  const nodes = Array.isArray(workingData.nodes) ? workingData.nodes.slice() : [];
+  const cols = Math.max(1, metrics.cols);
+  const stepX = Math.max(metrics.maxW + metrics.boundaryGapX, 96);
+  const stepY = Math.max(Math.ceil(metrics.maxH * 1.12) + metrics.boundaryGapY, 92);
+  const totalRows = Math.max(1, Math.ceil(nodes.length / cols));
+  const totalW = Math.max(0, (cols - 1) * stepX);
+  const totalH = Math.max(0, (totalRows - 1) * stepY);
+  const startX = -Math.floor(totalW / 2);
+  const startY = -Math.floor(totalH / 2);
+
+  nodes.sort((a, b) => String(a?.id ?? '').localeCompare(String(b?.id ?? '')));
+  nodes.forEach((node, idx) => {
+    const row = Math.floor(idx / cols);
+    const col = idx % cols;
+    node.style = node.style || {};
+    node.style.x = startX + col * stepX;
+    node.style.y = startY + row * stepY;
+  });
+
+  return {
+    data: workingData,
+    layout: { type: 'preset' },
+  };
+}
+
+function prepareGraphForLayout(graphData, viewport = null) {
+  const metrics = analyzeLayoutMetrics(graphData, viewport || getContainerSize());
+  if (!metrics.treeLike) {
+    return applyCompactGridLayout(graphData, viewport || getContainerSize());
+  }
+  return {
+    data: graphData,
+    layout: computeAdaptiveLayout(graphData, viewport),
+  };
+}
+
 
 function normalizeLayoutType(layoutTypeRaw) {
   const t = String(layoutTypeRaw || '').trim().toLowerCase();
@@ -285,7 +342,7 @@ function applyPresetLayout(graphData, presetType) {
   };
 }
 
-const prepared = { data, layout: computeAdaptiveLayout(data, baseLayout), hasDisconnected: false, componentCount: 1 };
+const prepared = prepareGraphForLayout(data, getContainerSize());
 
 function showFallback(err) {
   fallback.style.display = 'block';
@@ -306,7 +363,7 @@ try {
         const rows = Array.isArray(attributes.rows) ? attributes.rows : [];
         const rowBindGroups = Array.isArray(attributes.rowBindGroups) ? attributes.rowBindGroups : [];
         const rowBindBlocks = Array.isArray(attributes.rowBindBlocks) ? attributes.rowBindBlocks : [];
-        const size = attributes.size || [300, 80];
+        const size = attributes.size || [160, 80];
         const width = size[0];
         const height = size[1];
 
@@ -323,18 +380,8 @@ try {
           width,
           height,
           radius: 4,
-          fill: '#e8f0fe',
-          stroke: '#5b8ff9',
-        }, container);
-
-        this.upsert('header-bg', 'rect', {
-          x: -width / 2,
-          y: -height / 2,
-          width,
-          height: headerH + paddingY,
-          fill: '#dbe7ff',
-          stroke: 'transparent',
-          radius: 4,
+          fill: attributes.fill || '#e8f0fe',
+          stroke: attributes.stroke || '#5b8ff9',
         }, container);
 
         const prevHeaderLineCount = this.__prevHeaderLineCount || 0;
@@ -362,7 +409,7 @@ try {
         }
         this.__prevHeaderLineCount = headerLines.length;
 
-        const rowCount = Math.max(rows.length, 1);
+        const rowCount = rows.length;
         const bindPalette = ['#d9ecff', '#d6f5e8', '#fbe6c8', '#e6dcff', '#ffe1ea'];
         const colorForGroup = (group) => {
           const s = String(group || '');
@@ -687,7 +734,16 @@ try {
         return { top: 48, right: 48, bottom: 48, left: 48 };
       }
 
-      const base = { top: 28, right: 28, bottom: 28, left: 28 };
+      const ringInset = Math.max(
+        AUTO_FIT_CONFIG.minInnerRingPx,
+        Math.floor(Math.min(rect.width, rect.height) * AUTO_FIT_CONFIG.innerRingRatio)
+      );
+      const base = {
+        top: 28 + ringInset,
+        right: 28 + ringInset,
+        bottom: 28 + ringInset,
+        left: 28 + ringInset,
+      };
       const computed = getComputedStyle(document.documentElement);
       const cssPadding = {
         top: Number.parseFloat(computed.getPropertyValue('--dsvis-safe-top')) || 0,
@@ -736,43 +792,32 @@ try {
     }
 
     function applyAutoFitViewport() {
-      const container = document.getElementById('container');
-      const viewportWidth = container?.clientWidth || window.innerWidth;
-      const viewportHeight = container?.clientHeight || window.innerHeight;
-      const safePadding = getSafeViewportPadding();
-      const bounds = computeContentBounds();
-
-      if (!bounds) {
-        if (typeof graph.fitView === 'function') {
-          graph.fitView({
-            padding: [safePadding.top, safePadding.right, safePadding.bottom, safePadding.left],
-          });
-        } else if (typeof graph.fitCenter === 'function') {
-          graph.fitCenter();
-        }
-        return;
-      }
-
-      const availableWidth = Math.max(1, viewportWidth - safePadding.left - safePadding.right);
-      const availableHeight = Math.max(1, viewportHeight - safePadding.top - safePadding.bottom);
-      const scaleX = availableWidth / bounds.width;
-      const scaleY = availableHeight / bounds.height;
-      const targetScale = Math.min(scaleX, scaleY, 1);
-      const safeScale = Number.isFinite(targetScale) && targetScale > 0 ? targetScale : 1;
-
+      const size = getContainerSize();
+      const ringInset = Math.max(
+        AUTO_FIT_CONFIG.minInnerRingPx,
+        Math.floor(Math.min(size.width, size.height) * AUTO_FIT_CONFIG.innerRingRatio)
+      );
+      const fitPadding = {
+        top: FIT_PADDING.top + ringInset,
+        right: FIT_PADDING.right + ringInset,
+        bottom: FIT_PADDING.bottom + ringInset,
+        left: FIT_PADDING.left + ringInset,
+      };
       if (typeof graph.fitView === 'function') {
         graph.fitView({
-          padding: [safePadding.top, safePadding.right, safePadding.bottom, safePadding.left],
+          padding: [fitPadding.top, fitPadding.right, fitPadding.bottom, fitPadding.left],
           when: 'always',
+          animation: false,
         });
+        if (typeof graph.getZoom === 'function' && typeof graph.zoomTo === 'function') {
+          const currentScale = Number(graph.getZoom());
+          if (Number.isFinite(currentScale) && currentScale > AUTO_FIT_CONFIG.maxScale) {
+            graph.zoomTo(AUTO_FIT_CONFIG.maxScale, { x: size.width / 2, y: size.height / 2 }, false);
+          }
+        }
       } else {
         if (typeof graph.fitCenter === 'function') {
           graph.fitCenter();
-        }
-        const focusX = (safePadding.left + (viewportWidth - safePadding.right)) / 2;
-        const focusY = (safePadding.top + (viewportHeight - safePadding.bottom)) / 2;
-        if (typeof graph.zoomTo === 'function') {
-          graph.zoomTo(safeScale, { x: focusX, y: focusY }, false);
         }
       }
     }
@@ -795,6 +840,7 @@ try {
     graph.on('element:drag', onDragMove);
 
     graph.on('element:dragend', onDragEnd);
+
   }
 } catch (err) {
   console.error(err);
