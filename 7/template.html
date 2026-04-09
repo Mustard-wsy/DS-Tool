@@ -24,6 +24,27 @@
     display: none;
     z-index: 10;
   }
+  #zoomControls {
+    position: fixed;
+    right: 14px;
+    bottom: 14px;
+    z-index: 20;
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid #d9d9d9;
+    border-radius: 8px;
+    padding: 8px 10px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+    font-family: Consolas, monospace;
+    font-size: 12px;
+    color: #333;
+    user-select: none;
+  }
+  #zoomControls label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+  }
 </style>
 <script src="https://unpkg.com/@antv/g6@5.0.51/dist/g6.min.js"></script>
 </head>
@@ -31,6 +52,12 @@
 <body style="margin:0">
 <div id="fallback">G6 加载失败或渲染出错（请检查控制台错误）。</div>
 <div id="container"></div>
+<div id="zoomControls">
+  <label>
+    <input id="autoFitToggle" type="checkbox" checked />
+    自动缩放
+  </label>
+</div>
 
 <script>
 const data = __DATA__;
@@ -125,8 +152,8 @@ function computeAdaptiveLayout(graphData, fallbackLayout) {
       ...(fallbackLayout || {}),
       type: 'dagre',
       rankdir: (fallbackLayout && fallbackLayout.rankdir) || 'LR',
-      nodesep: Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 44),
-      ranksep: Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 68),
+      nodesep: Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 80),
+      ranksep: Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 140),
     };
   }
 
@@ -135,7 +162,7 @@ function computeAdaptiveLayout(graphData, fallbackLayout) {
     cols: metrics.cols,
     preventOverlap: true,
     nodeSize: [metrics.maxW, metrics.maxH],
-    preventOverlapPadding: Math.max(metrics.boundaryGapX, metrics.boundaryGapY),
+    preventOverlapPadding: Math.max(metrics.boundaryGapX, metrics.boundaryGapY, 44),
     sortBy: 'id',
     padding: [LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding],
   };
@@ -539,6 +566,10 @@ try {
       behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element'],
       transforms: ['process-parallel-edges']
     });
+
+    if (typeof graph.setZoomRange === 'function') {
+      graph.setZoomRange([0.05, AUTO_FIT_CONFIG.maxScale]);
+    }
 
     graph.render();
 
