@@ -5,6 +5,7 @@ if _MODE not in {"coarse", "fine"}:
     _MODE = "coarse"
 
 _WATCH_STACK = []
+_LAYOUT = os.environ.get("DSVIS_LAYOUT", "default")
 
 
 def set_mode(mode: str):
@@ -17,6 +18,15 @@ def set_mode(mode: str):
 
 def get_mode() -> str:
     return _MODE
+
+
+def set_layout(layout):
+    global _LAYOUT
+    _LAYOUT = layout
+
+
+def get_layout():
+    return _LAYOUT
 
 
 def push_watch_context(var_names, pointers):
