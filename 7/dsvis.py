@@ -39,19 +39,6 @@ _LAYOUT_PRESETS = {
     "snakelayout": {"type": "snake"},
 }
 
-_DEFAULT_LAYOUT = {
-    "type": "dagre",
-    "rankdir": "LR",
-    "nodesep": 120,
-    "ranksep": 220,
-}
-
-_LAYOUT_PRESETS = {
-    "default": dict(_DEFAULT_LAYOUT),
-    "concentriclayout": {"type": "concentric"},
-    "snakelayout": {"type": "snake"},
-}
-
 # ---------- helpers ----------
 
 def _typename(obj):
@@ -503,7 +490,7 @@ def _render_g6(nodes, edges, title="AutoViz Snapshot", layout=None):
     return html_path
 
 
-def _render_debugger(steps, source_lines, title="DSVis Debugger"):
+def _render_debugger(steps, source_lines, title="DSVis Debugger", layout=None):
     import tempfile
     import webbrowser
     import json
@@ -522,6 +509,7 @@ def _render_debugger(steps, source_lines, title="DSVis Debugger"):
     html = html.replace("__TITLE__", title)
     html = html.replace("__STEPS__", json.dumps(step_payload, ensure_ascii=False))
     html = html.replace("__SOURCE_LINES__", json.dumps(source_lines, ensure_ascii=False))
+    html = html.replace("__LAYOUT__", json.dumps(_normalize_layout(layout)))
 
     fd, path = tempfile.mkstemp(suffix=".html")
     html_path = Path(path)
