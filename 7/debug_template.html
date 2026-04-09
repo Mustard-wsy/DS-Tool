@@ -391,6 +391,20 @@ function initGraph(data) {
       }
       this.__prevBindRunCount = runs.length;
       rows.forEach((row, i) => {
+        const bindGroup = rowBindGroups[i];
+        if (bindGroup) {
+          this.upsert(`bind-bg-${i}`, 'rect', {
+            x: -w/2 + 4, y: -h/2 + headerH + paddingY + i * rowH + 1,
+            width: w - 8, height: rowH - 2, radius: 3,
+            fill: '#d9ecff', stroke: 'transparent'
+          }, container);
+        } else {
+          this.upsert(`bind-bg-${i}`, 'rect', {
+            x: -w/2 + 4, y: -h/2 + headerH + paddingY + i * rowH + 1,
+            width: w - 8, height: rowH - 2, radius: 3,
+            fill: 'transparent', stroke: 'transparent'
+          }, container);
+        }
         const rowDeltaType = Array.isArray(attributes.rowDeltaTypes) ? attributes.rowDeltaTypes[i] : null;
         const rowColor = rowDeltaType === 'added'
           ? DELTA_COLORS.added.line
@@ -404,6 +418,11 @@ function initGraph(data) {
       });
       const prevRowCount = this.__prevRowCount || 0;
       for (let i = rows.length; i < prevRowCount; i++) {
+        this.upsert(`bind-bg-${i}`, 'rect', {
+          x: -w/2 + 4, y: -h/2 + headerH + paddingY + i * rowH + 1,
+          width: w - 8, height: rowH - 2, radius: 3,
+          fill: 'transparent', stroke: 'transparent'
+        }, container);
         this.upsert(`r-${i}`, 'text', {
           x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: '',
           fontSize:11, fill:'#333', textBaseline:'top'
