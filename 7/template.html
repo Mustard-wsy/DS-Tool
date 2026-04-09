@@ -312,6 +312,8 @@ try {
       drawKeyShape(attributes, container) {
         const name = attributes.name || '';
         const rows = Array.isArray(attributes.rows) ? attributes.rows : [];
+        const rowBindGroups = Array.isArray(attributes.rowBindGroups) ? attributes.rowBindGroups : [];
+        const rowBindBlocks = Array.isArray(attributes.rowBindBlocks) ? attributes.rowBindBlocks : [];
         const size = attributes.size || [300, 80];
         const width = size[0];
         const height = size[1];
@@ -369,6 +371,72 @@ try {
         this.__prevHeaderLineCount = headerLines.length;
 
         const rowCount = Math.max(rows.length, 1);
+        const bindPalette = ['#d9ecff', '#d6f5e8', '#fbe6c8', '#e6dcff', '#ffe1ea'];
+        const colorForGroup = (group) => {
+          const s = String(group || '');
+          let h = 0;
+          for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) >>> 0;
+          return bindPalette[h % bindPalette.length];
+        };
+        const runs = [];
+        let runStart = null;
+        let runGroup = null;
+        let runBlock = null;
+        for (let i = 0; i < rowCount; i++) {
+          const g = rowBindGroups[i] || null;
+          const b = rowBindBlocks[i] || null;
+          if (!g || !b) {
+            if (runGroup !== null) {
+              runs.push({ group: runGroup, block: runBlock, start: runStart, end: i - 1 });
+              runStart = null;
+              runGroup = null;
+              runBlock = null;
+            }
+            continue;
+          }
+          if (runGroup === null || runBlock === null) {
+            runGroup = g;
+            runBlock = b;
+            runStart = i;
+            continue;
+          }
+          if (b !== runBlock) {
+            runs.push({ group: runGroup, block: runBlock, start: runStart, end: i - 1 });
+            runGroup = g;
+            runBlock = b;
+            runStart = i;
+          }
+        }
+        if (runGroup !== null) {
+          runs.push({ group: runGroup, block: runBlock, start: runStart, end: rowCount - 1 });
+        }
+
+        runs.forEach((run, i) => {
+          const y = -height / 2 + headerH + paddingY + run.start * rowH + 1;
+          const h = (run.end - run.start + 1) * rowH - 2;
+          this.upsert(`bind-block-${i}`, 'rect', {
+            x: -width / 2 + 4,
+            y,
+            width: width - 8,
+            height: Math.max(h, 2),
+            radius: 4,
+            fill: colorForGroup(run.group),
+            stroke: 'transparent',
+          }, container);
+        });
+        const prevRunCount = this.__prevBindRunCount || 0;
+        for (let i = runs.length; i < prevRunCount; i++) {
+          this.upsert(`bind-block-${i}`, 'rect', {
+            x: -width / 2 + 4,
+            y: -height / 2,
+            width: 0,
+            height: 0,
+            radius: 0,
+            fill: 'transparent',
+            stroke: 'transparent',
+          }, container);
+        }
+        this.__prevBindRunCount = runs.length;
 
         for (let i = 0; i < rowCount; i++) {
           const y = -height / 2 + headerH + paddingY + i * rowH + 2;
