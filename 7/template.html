@@ -168,34 +168,6 @@ function computeAdaptiveLayout(graphData, fallbackLayout) {
 }
 
 
-function applyCompactGridLayout(graphData, viewport = null) {
-  const metrics = analyzeLayoutMetrics(graphData, viewport || getContainerSize());
-  const workingData = JSON.parse(JSON.stringify(graphData || { nodes: [], edges: [] }));
-  const nodes = Array.isArray(workingData.nodes) ? workingData.nodes.slice() : [];
-  const cols = Math.max(1, metrics.cols);
-  const stepX = Math.max(metrics.maxW + metrics.boundaryGapX, 96);
-  const stepY = Math.max(metrics.maxH + metrics.boundaryGapY, 72);
-  const totalRows = Math.max(1, Math.ceil(nodes.length / cols));
-  const totalW = Math.max(0, (cols - 1) * stepX);
-  const totalH = Math.max(0, (totalRows - 1) * stepY);
-  const startX = -Math.floor(totalW / 2);
-  const startY = -Math.floor(totalH / 2);
-
-  nodes.sort((a, b) => String(a?.id ?? '').localeCompare(String(b?.id ?? '')));
-  nodes.forEach((node, idx) => {
-    const row = Math.floor(idx / cols);
-    const col = idx % cols;
-    node.style = node.style || {};
-    node.style.x = startX + col * stepX;
-    node.style.y = startY + row * stepY;
-  });
-
-  return {
-    data: workingData,
-    layout: { type: 'preset' },
-  };
-}
-
 function normalizeLayoutType(layoutTypeRaw) {
   const t = String(layoutTypeRaw || '').trim().toLowerCase();
   if (!t || t === 'default' || t === 'dagre') return 'default';
