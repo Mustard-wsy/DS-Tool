@@ -312,6 +312,7 @@ try {
       drawKeyShape(attributes, container) {
         const name = attributes.name || '';
         const rows = Array.isArray(attributes.rows) ? attributes.rows : [];
+        const rowBindGroups = Array.isArray(attributes.rowBindGroups) ? attributes.rowBindGroups : [];
         const size = attributes.size || [300, 80];
         const width = size[0];
         const height = size[1];
@@ -373,6 +374,28 @@ try {
         for (let i = 0; i < rowCount; i++) {
           const y = -height / 2 + headerH + paddingY + i * rowH + 2;
           const text = rows[i] || '';
+          const bindGroup = rowBindGroups[i];
+          if (bindGroup) {
+            this.upsert(`bind-bg-${i}`, 'rect', {
+              x: -width / 2 + 4,
+              y: y - 1,
+              width: width - 8,
+              height: rowH - 2,
+              radius: 3,
+              fill: '#d9ecff',
+              stroke: 'transparent',
+            }, container);
+          } else {
+            this.upsert(`bind-bg-${i}`, 'rect', {
+              x: -width / 2 + 4,
+              y: y - 1,
+              width: width - 8,
+              height: rowH - 2,
+              radius: 3,
+              fill: 'transparent',
+              stroke: 'transparent',
+            }, container);
+          }
           if (text) {
             this.upsert(`field-${i}`, 'text', {
               x: -width / 2 + paddingX,
