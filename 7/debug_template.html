@@ -497,6 +497,10 @@ function initGraph(data) {
     behaviors:['drag-canvas','zoom-canvas','drag-element']
   });
 
+  if (typeof graph.setZoomRange === 'function') {
+    graph.setZoomRange([0.05, AUTO_FIT_CONFIG.maxScale]);
+  }
+
   graph.on('node:dragstart', onDragStart);
   graph.on('node:drag', onDragMove);
   graph.on('node:dragging', onDragMove);
@@ -623,6 +627,7 @@ function fitGraph() {
       graph.fitView({
         padding: [fitPadding.top, fitPadding.right, fitPadding.bottom, fitPadding.left],
         when: 'always',
+        animation: false,
       });
       if (typeof graph.getZoom === 'function' && typeof graph.zoomTo === 'function') {
         const currentScale = Number(graph.getZoom());

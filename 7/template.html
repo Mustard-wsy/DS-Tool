@@ -572,6 +572,10 @@ try {
       transforms: ['process-parallel-edges']
     });
 
+    if (typeof graph.setZoomRange === 'function') {
+      graph.setZoomRange([0.05, AUTO_FIT_CONFIG.maxScale]);
+    }
+
     graph.render();
 
     function buildPortStyles(node, usedPorts) {
@@ -839,6 +843,7 @@ try {
         if (typeof graph.fitView === 'function') {
           graph.fitView({
             padding: [safePadding.top, safePadding.right, safePadding.bottom, safePadding.left],
+            animation: false,
           });
           clampZoomByConfig(viewportWidth, viewportHeight, safePadding);
         } else if (typeof graph.fitCenter === 'function') {
@@ -858,6 +863,7 @@ try {
         graph.fitView({
           padding: [safePadding.top, safePadding.right, safePadding.bottom, safePadding.left],
           when: 'always',
+          animation: false,
         });
         clampZoomByConfig(viewportWidth, viewportHeight, safePadding);
       } else {
