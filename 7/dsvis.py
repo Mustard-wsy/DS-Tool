@@ -1,4 +1,5 @@
-﻿import inspect
+﻿import functools
+import inspect
 import tempfile
 import webbrowser
 import json
@@ -6,7 +7,9 @@ import os
 from collections import deque
 from pathlib import Path
 
-__all__ = ["capture", "auto"]
+from runtime.config import get_mode, get_pointer_watchers, get_watch_vars, set_mode
+
+__all__ = ["capture", "auto", "watch_vars", "observe", "observe_ptr", "set_mode"]
 
 # ---------- helpers ----------
 
@@ -48,8 +51,12 @@ def _is_class_object(obj):
         return False
     return hasattr(obj, "__dict__") or hasattr(t, "__slots__")
 
-def _is_renderable(obj):
-    return _is_class_object(obj) or _is_primitive(obj)
+def _is_container(obj):
+    return isinstance(obj, (list, tuple, set, frozenset, dict, deque))
+
+
+def _is_renderable(obj, include_containers=False):
+    return _is_class_object(obj) or _is_primitive(obj) or (include_containers and _is_container(obj))
 
 def _format_typed_label(name, value):
     return f"{name}\n({_typename(value)})"
@@ -92,15 +99,43 @@ def _iter_object_items(obj, include_private=False):
 
 # ---------- 核心遍历 ----------
 
-def _walk(root_scope, max_nodes=300, include_private=False):
+def _walk(
+    root_scope,
+    max_nodes=300,
+    include_private=False,
+    include_containers=False,
+    focus_vars=None,
+    pointer_watchers=None,
+):
     visited = set()
     nodes = []
     edges = []
     node_index = {}
     q = deque()
+    focus_vars = set(focus_vars or [])
+    pointer_watchers = list(pointer_watchers or [])
+
+    def _add_pointer_node(pointer_name, container_name, pointer_value, text):
+        node_id = f"ptr:{pointer_name}->{container_name}:{len(nodes)}"
+        n = {
+            "id": node_id,
+            "label": f"{pointer_name} -> {container_name}",
+            "type": "Pointer",
+            "rows": [{"name": "value", "kind": "field", "text": text}],
+            "refs": [],
+            "class_name": "Pointer",
+            "is_class_object": False,
+        }
+        if pointer_value is not None:
+            n["rows"].append({
+                "name": "index",
+                "kind": "field",
+                "text": f"index = {_short(pointer_value)}",
+            })
+        nodes.append(n)
 
     def add_obj(obj, label, value_text=None):
-        if not _is_renderable(obj):
+        if not _is_renderable(obj, include_containers=include_containers):
             return None
         obj_id = id(obj)
         if obj_id in visited:
@@ -126,6 +161,30 @@ def _walk(root_scope, max_nodes=300, include_private=False):
             })
         nodes.append(n)
         node_index[obj_id] = n
+        if _is_container(obj):
+            items = list(_iter_container_items("item", obj))
+            n["rows"].append({
+                "name": "summary",
+                "kind": "field",
+                "text": f"size = {len(items)}",
+            })
+            for item_name, item_val in items[:12]:
+                if _is_primitive(item_val):
+                    n["rows"].append({
+                        "name": item_name,
+                        "kind": "field",
+                        "text": f"{item_name} = {_short(item_val)}",
+                    })
+                elif _is_class_object(item_val):
+                    cid = add_obj(item_val, _format_typed_label(item_name, item_val))
+                    if cid:
+                        n["rows"].append({
+                            "name": item_name,
+                            "kind": "ref",
+                            "text": item_name,
+                        })
+                        n["refs"].append({"name": item_name})
+                        edges.append({"src": obj_id, "dst": cid, "label": item_name})
         q.append(obj)
         return obj_id
 
@@ -136,7 +195,37 @@ def _walk(root_scope, max_nodes=300, include_private=False):
                 continue
             label = _format_typed_label(k, v)
             value_text = f"value = {_short(v)}" if _is_primitive(v) else None
+            should_force = k in focus_vars
+            if should_force and _is_container(v):
+                add_obj(v, label, value_text=f"value = {_short(v)}")
+                continue
+            if should_force and not _is_renderable(v, include_containers=include_containers):
+                add_obj(_short(v), label, value_text=f"value = {_short(v)}")
+                continue
             add_obj(v, label, value_text=value_text)
+
+    merged_scope = {}
+    merged_scope.update(root_scope.get("__globals__", {}))
+    merged_scope.update(root_scope.get("__locals__", {}))
+    for pointer_name, container_name in pointer_watchers:
+        pointer_value = merged_scope.get(pointer_name)
+        container_value = merged_scope.get(container_name)
+        if not isinstance(pointer_value, int):
+            _add_pointer_node(pointer_name, container_name, pointer_value, "status = non_int_index")
+            continue
+        if not _is_container(container_value):
+            _add_pointer_node(pointer_name, container_name, pointer_value, "status = missing_container")
+            continue
+        try:
+            pointed = container_value[pointer_value]
+            _add_pointer_node(
+                pointer_name,
+                container_name,
+                pointer_value,
+                f"value = {_short(pointed)}",
+            )
+        except Exception:
+            _add_pointer_node(pointer_name, container_name, pointer_value, "status = out_of_range_or_invalid")
 
     # BFS
     while q:
@@ -380,7 +469,15 @@ def _render_debugger(steps, source_lines, title="DSVis Debugger"):
 
 # ---------- 对外接口 ----------
 
-def capture(title="AutoViz Snapshot", max_nodes=300, include_private=False, _caller_frame=None):
+def capture(
+    title="AutoViz Snapshot",
+    max_nodes=300,
+    include_private=False,
+    include_containers=None,
+    focus_vars=None,
+    pointer_watchers=None,
+    _caller_frame=None,
+):
     frame = inspect.currentframe()
     caller = _caller_frame if _caller_frame is not None else (frame.f_back if frame else None)
 
@@ -394,10 +491,17 @@ def capture(title="AutoViz Snapshot", max_nodes=300, include_private=False, _cal
             "__globals__": dict(caller.f_globals)
         }
 
+        mode = get_mode()
+        container_flag = (mode == "fine") if include_containers is None else include_containers
+        merged_focus = set(get_watch_vars()) | set(focus_vars or [])
+        merged_pointers = list(get_pointer_watchers()) + list(pointer_watchers or [])
         nodes, edges = _walk(
             root_scope,
             max_nodes=max_nodes,
-            include_private=include_private
+            include_private=include_private,
+            include_containers=container_flag,
+            focus_vars=merged_focus,
+            pointer_watchers=merged_pointers,
         )
 
         return _render_g6(nodes, edges, title)
@@ -444,3 +548,32 @@ def auto():
 
     run_file(main_file)
     raise SystemExit(0)
+
+
+def watch_vars(*names, pointers=None):
+    pointers = list(pointers or [])
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            from runtime.config import pop_watch_context, push_watch_context
+
+            push_watch_context(set(names), pointers)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                pop_watch_context()
+
+        return wrapper
+
+    return decorator
+
+
+def observe(tag=None, vars=None, pointers=None):
+    from runtime.trigger import trigger
+
+    trigger(observed_vars=set(vars or []), pointer_watchers=list(pointers or []), tag=tag)
+
+
+def observe_ptr(name, container, tag=None):
+    observe(tag=tag, pointers=[(name, container)])
