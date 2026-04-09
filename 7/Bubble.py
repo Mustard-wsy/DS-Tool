@@ -1,4 +1,5 @@
 import dsvis
+dsvis.set_mode("fine")
 dsvis.auto()
 
 
