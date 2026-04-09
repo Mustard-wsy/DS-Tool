@@ -39,6 +39,19 @@ _LAYOUT_PRESETS = {
     "snakelayout": {"type": "snake"},
 }
 
+_DEFAULT_LAYOUT = {
+    "type": "dagre",
+    "rankdir": "LR",
+    "nodesep": 120,
+    "ranksep": 220,
+}
+
+_LAYOUT_PRESETS = {
+    "default": dict(_DEFAULT_LAYOUT),
+    "concentriclayout": {"type": "concentric"},
+    "snakelayout": {"type": "snake"},
+}
+
 # ---------- helpers ----------
 
 def _typename(obj):
