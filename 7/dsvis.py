@@ -25,8 +25,6 @@ __all__ = [
     "observe_ptr",
     "bind_field",
     "bind_fields",
-    "dsbind",
-    "bind",
     "bind_lists",
     "set_mode",
     "set_layout_model",
@@ -45,7 +43,6 @@ _LAYOUT_PRESETS = {
     "snakelayout": {"type": "snake"},
 }
 
-_INLINE_BIND_REGISTRY = {}
 _OBJECT_FIELD_BINDINGS = weakref.WeakKeyDictionary()
 
 # ---------- helpers ----------
@@ -190,44 +187,6 @@ def _parse_inline_bind_spec(spec):
     return group, ratio
 
 
-class _InlineBindMarker:
-    def __init__(self, group_or_spec, ratio=None):
-        if ratio is not None:
-            group = str(group_or_spec).strip()
-            try:
-                r = int(ratio)
-            except Exception:
-                raise ValueError("ratio 必须是正整数")
-            if not group or r <= 0:
-                raise ValueError("dsbind(group, ratio) 参数无效")
-            self.group, self.ratio = group, r
-            return
-
-        parsed = _parse_inline_bind_spec(group_or_spec)
-        if not parsed:
-            raise ValueError("bind 规格无效，应为 'A:3' / '@A:3' / 'A' 或 ('A', 3)")
-        self.group, self.ratio = parsed
-
-    def __rmatmul__(self, value):
-        if _is_container(value):
-            _INLINE_BIND_REGISTRY[id(value)] = (self.group, self.ratio)
-        return value
-
-    def __rlshift__(self, value):
-        if _is_container(value):
-            _INLINE_BIND_REGISTRY[id(value)] = (self.group, self.ratio)
-        return value
-
-
-def dsbind(group, ratio=1):
-    """
-    推荐行内绑定写法（避免使用 @）：
-        self.keys = [] << dsvis.dsbind("A", 3)
-        self.children = [] << dsvis.dsbind("A", 1)
-    """
-    return _InlineBindMarker(group, ratio=ratio)
-
-
 def bind_field(obj, field, group, ratio=1):
     """
     不改赋值表达式的绑定方式：
@@ -266,20 +225,6 @@ def bind_fields(obj, **field_specs):
             bind_field(obj, field, parsed[0], parsed[1])
             continue
         raise ValueError(f"字段 {field} 的绑定规格无效，需为 ('A', 3) 或 'A:3'")
-
-
-def bind(spec, ratio=None):
-    """
-    兼容旧写法（不推荐）：
-        self.keys = [] @ dsvis.bind("A:3")
-    或新参数风格：
-        self.keys = [] @ dsvis.bind("A", 3)
-    """
-    if ratio is not None:
-        return _InlineBindMarker(spec, ratio=ratio)
-    if isinstance(spec, tuple) and len(spec) == 2:
-        return _InlineBindMarker(spec[0], ratio=spec[1])
-    return _InlineBindMarker(spec)
 
 
 def _get_instance_bound_specs(obj):
@@ -506,25 +451,18 @@ def _walk(
         instance_specs = _get_instance_bound_specs(obj)
         for group_name, mapping in instance_specs.items():
             bind_groups.setdefault(group_name, {}).update(mapping)
-        for attr, val in object_items:
-            if not _is_container(val):
-                continue
-            inline = _INLINE_BIND_REGISTRY.get(id(val))
-            if not inline:
-                continue
-            group, ratio = inline
-            bind_groups.setdefault(group, {})[attr] = ratio
         bound_fields = set()
         for mapping in bind_groups.values():
             bound_fields.update(mapping.keys())
 
-        def _append_container_item(item_name, item_val, bind_group=None):
+        def _append_container_item(item_name, item_val, bind_group=None, bind_block=None):
             if _is_primitive(item_val):
                 owner["rows"].append({
                     "name": item_name,
                     "kind": "field",
                     "text": f"{item_name} = {_short(item_val)}",
                     "bind_group": bind_group,
+                    "bind_block": bind_block,
                 })
             elif _is_class_object(item_val):
                 cid = add_obj(item_val, _format_typed_label(item_name, item_val))
@@ -534,6 +472,7 @@ def _walk(
                         "kind": "ref",
                         "text": item_name,
                         "bind_group": bind_group,
+                        "bind_block": bind_block,
                     })
                     owner["refs"].append({"name": item_name})
                     edges.append({
@@ -547,6 +486,7 @@ def _walk(
                         "kind": "field",
                         "text": f"{item_name} = {_short(item_val)}",
                         "bind_group": bind_group,
+                        "bind_block": bind_block,
                     })
             else:
                 owner["rows"].append({
@@ -554,6 +494,7 @@ def _walk(
                     "kind": "field",
                     "text": f"{item_name} = {_short(item_val)}",
                     "bind_group": bind_group,
+                    "bind_block": bind_block,
                 })
 
         for group_name, mapping in bind_groups.items():
@@ -572,6 +513,7 @@ def _walk(
                 }
             if len(bound_streams) < 2:
                 continue
+            block_index = 0
             progressed = True
             while progressed:
                 progressed = False
@@ -582,10 +524,17 @@ def _walk(
                     take = stream["ratio"]
                     while take > 0 and stream["cursor"] < len(stream["items"]):
                         item_name, item_val = stream["items"][stream["cursor"]]
-                        _append_container_item(item_name, item_val, bind_group=group_name)
+                        _append_container_item(
+                            item_name,
+                            item_val,
+                            bind_group=group_name,
+                            bind_block=f"{group_name}#{block_index}",
+                        )
                         stream["cursor"] += 1
                         take -= 1
                         progressed = True
+                if progressed:
+                    block_index += 1
 
         for attr, val in object_items:
             if attr in bound_fields:
@@ -652,6 +601,7 @@ def _build_g6_data(nodes, edges):
         rows = n.get("rows", [])
         display_rows = [r.get("text", "") for r in rows]
         bind_groups = [r.get("bind_group") for r in rows]
+        bind_blocks = [r.get("bind_block") for r in rows]
         header_line_count = max(1, len(str(name).splitlines()))
         header_h = max(default_header_h, header_line_count * 16)
 
@@ -691,6 +641,7 @@ def _build_g6_data(nodes, edges):
                 "headerHeight": header_h,
                 "rows": display_rows,
                 "rowBindGroups": bind_groups,
+                "rowBindBlocks": bind_blocks,
                 "refRowIndices": ref_row_indices,
                 "sectionGap": section_gap,
                 "ports": ports

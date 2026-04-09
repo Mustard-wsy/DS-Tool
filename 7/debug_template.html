@@ -314,6 +314,7 @@ function initGraph(data) {
       const name = attributes.name || '';
       const rows = Array.isArray(attributes.rows) ? attributes.rows : [];
       const rowBindGroups = Array.isArray(attributes.rowBindGroups) ? attributes.rowBindGroups : [];
+      const rowBindBlocks = Array.isArray(attributes.rowBindBlocks) ? attributes.rowBindBlocks : [];
       const [w, h] = attributes.size || [160, 80];
       const paddingX = 10;
       const paddingY = 8;
@@ -351,29 +352,34 @@ function initGraph(data) {
       const runs = [];
       let runStart = null;
       let runGroup = null;
+      let runBlock = null;
       for (let i = 0; i < rowCount; i++) {
         const g = rowBindGroups[i] || null;
-        if (!g) {
+        const b = rowBindBlocks[i] || null;
+        if (!g || !b) {
           if (runGroup !== null) {
-            runs.push({ group: runGroup, start: runStart, end: i - 1 });
+            runs.push({ group: runGroup, block: runBlock, start: runStart, end: i - 1 });
             runStart = null;
             runGroup = null;
+            runBlock = null;
           }
           continue;
         }
-        if (runGroup === null) {
+        if (runGroup === null || runBlock === null) {
           runGroup = g;
+          runBlock = b;
           runStart = i;
           continue;
         }
-        if (g !== runGroup) {
-          runs.push({ group: runGroup, start: runStart, end: i - 1 });
+        if (b !== runBlock) {
+          runs.push({ group: runGroup, block: runBlock, start: runStart, end: i - 1 });
           runGroup = g;
+          runBlock = b;
           runStart = i;
         }
       }
       if (runGroup !== null) {
-        runs.push({ group: runGroup, start: runStart, end: rowCount - 1 });
+        runs.push({ group: runGroup, block: runBlock, start: runStart, end: rowCount - 1 });
       }
       runs.forEach((run, i) => {
         this.upsert(`bind-block-${i}`, 'rect', {
