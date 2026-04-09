@@ -74,6 +74,11 @@ const LAYOUT_PRESET = {
   aspectMax: 1.8,
 };
 const FIT_PADDING = { top: 44, right: 30, bottom: 44, left: 30 };
+const AUTO_FIT_CONFIG = {
+  maxScale: 1.25,
+  innerRingRatio: 0.08,
+  minInnerRingPx: 18,
+};
 const DELTA_COLORS = {
   unchanged: { fill: '#e8f0fe', stroke: '#5b8ff9', line: '#333' },
   changed: { fill: '#fff5e6', stroke: '#ff9800', line: '#c97200' },
@@ -603,11 +608,28 @@ function updateEdgePorts(focusNodeId = null) {
 function fitGraph() {
   requestAnimationFrame(() => {
     if (!graph) return;
+    const size = getGraphSize();
+    const ringInset = Math.max(
+      AUTO_FIT_CONFIG.minInnerRingPx,
+      Math.floor(Math.min(size.width, size.height) * AUTO_FIT_CONFIG.innerRingRatio)
+    );
+    const fitPadding = {
+      top: FIT_PADDING.top + ringInset,
+      right: FIT_PADDING.right + ringInset,
+      bottom: FIT_PADDING.bottom + ringInset,
+      left: FIT_PADDING.left + ringInset,
+    };
     if (typeof graph.fitView === 'function') {
       graph.fitView({
-        padding: [FIT_PADDING.top, FIT_PADDING.right, FIT_PADDING.bottom, FIT_PADDING.left],
+        padding: [fitPadding.top, fitPadding.right, fitPadding.bottom, fitPadding.left],
         when: 'always',
       });
+      if (typeof graph.getZoom === 'function' && typeof graph.zoomTo === 'function') {
+        const currentScale = Number(graph.getZoom());
+        if (Number.isFinite(currentScale) && currentScale > AUTO_FIT_CONFIG.maxScale) {
+          graph.zoomTo(AUTO_FIT_CONFIG.maxScale, { x: size.width / 2, y: size.height / 2 }, false);
+        }
+      }
       return;
     }
     if (typeof graph.fitCenter === 'function') {

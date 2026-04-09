@@ -24,6 +24,27 @@
     display: none;
     z-index: 10;
   }
+  #zoomControls {
+    position: fixed;
+    right: 14px;
+    bottom: 14px;
+    z-index: 20;
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid #d9d9d9;
+    border-radius: 8px;
+    padding: 8px 10px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+    font-family: Consolas, monospace;
+    font-size: 12px;
+    color: #333;
+    user-select: none;
+  }
+  #zoomControls label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+  }
 </style>
 <script src="https://unpkg.com/@antv/g6@5.0.51/dist/g6.min.js"></script>
 </head>
@@ -31,6 +52,12 @@
 <body style="margin:0">
 <div id="fallback">G6 加载失败或渲染出错（请检查控制台错误）。</div>
 <div id="container"></div>
+<div id="zoomControls">
+  <label>
+    <input id="autoFitToggle" type="checkbox" checked />
+    自动缩放
+  </label>
+</div>
 
 <script>
 const data = __DATA__;
@@ -49,6 +76,11 @@ const LAYOUT_PRESET = {
   treeConnectivityThreshold: 0.55,
   aspectMin: 0.6,
   aspectMax: 1.8,
+};
+const AUTO_FIT_CONFIG = {
+  maxScale: 1.25,
+  innerRingRatio: 0.08,
+  minInnerRingPx: 20,
 };
 
 function getContainerSize() {
@@ -719,7 +751,16 @@ try {
         return { top: 48, right: 48, bottom: 48, left: 48 };
       }
 
-      const base = { top: 28, right: 28, bottom: 28, left: 28 };
+      const ringInset = Math.max(
+        AUTO_FIT_CONFIG.minInnerRingPx,
+        Math.floor(Math.min(rect.width, rect.height) * AUTO_FIT_CONFIG.innerRingRatio)
+      );
+      const base = {
+        top: 28 + ringInset,
+        right: 28 + ringInset,
+        bottom: 28 + ringInset,
+        left: 28 + ringInset,
+      };
       const computed = getComputedStyle(document.documentElement);
       const cssPadding = {
         top: Number.parseFloat(computed.getPropertyValue('--dsvis-safe-top')) || 0,
@@ -767,7 +808,27 @@ try {
       };
     }
 
+    function isAutoFitEnabled() {
+      const toggle = document.getElementById('autoFitToggle');
+      return !toggle || toggle.checked;
+    }
+
+    function clampZoomByConfig(viewportWidth, viewportHeight, safePadding) {
+      const maxScale = AUTO_FIT_CONFIG.maxScale;
+      if (!Number.isFinite(maxScale) || maxScale <= 0 || typeof graph.getZoom !== 'function') {
+        return;
+      }
+      const currentScale = Number(graph.getZoom());
+      if (!Number.isFinite(currentScale) || currentScale <= maxScale) return;
+      const focusX = (safePadding.left + (viewportWidth - safePadding.right)) / 2;
+      const focusY = (safePadding.top + (viewportHeight - safePadding.bottom)) / 2;
+      if (typeof graph.zoomTo === 'function') {
+        graph.zoomTo(maxScale, { x: focusX, y: focusY }, false);
+      }
+    }
+
     function applyAutoFitViewport() {
+      if (!isAutoFitEnabled()) return;
       const container = document.getElementById('container');
       const viewportWidth = container?.clientWidth || window.innerWidth;
       const viewportHeight = container?.clientHeight || window.innerHeight;
@@ -779,6 +840,7 @@ try {
           graph.fitView({
             padding: [safePadding.top, safePadding.right, safePadding.bottom, safePadding.left],
           });
+          clampZoomByConfig(viewportWidth, viewportHeight, safePadding);
         } else if (typeof graph.fitCenter === 'function') {
           graph.fitCenter();
         }
@@ -797,6 +859,7 @@ try {
           padding: [safePadding.top, safePadding.right, safePadding.bottom, safePadding.left],
           when: 'always',
         });
+        clampZoomByConfig(viewportWidth, viewportHeight, safePadding);
       } else {
         if (typeof graph.fitCenter === 'function') {
           graph.fitCenter();
@@ -804,7 +867,7 @@ try {
         const focusX = (safePadding.left + (viewportWidth - safePadding.right)) / 2;
         const focusY = (safePadding.top + (viewportHeight - safePadding.bottom)) / 2;
         if (typeof graph.zoomTo === 'function') {
-          graph.zoomTo(safeScale, { x: focusX, y: focusY }, false);
+          graph.zoomTo(Math.min(safeScale, AUTO_FIT_CONFIG.maxScale), { x: focusX, y: focusY }, false);
         }
       }
     }
@@ -827,6 +890,15 @@ try {
     graph.on('element:drag', onDragMove);
 
     graph.on('element:dragend', onDragEnd);
+
+    const autoFitToggle = document.getElementById('autoFitToggle');
+    if (autoFitToggle) {
+      autoFitToggle.addEventListener('change', () => {
+        if (autoFitToggle.checked) {
+          requestAnimationFrame(applyAutoFitViewport);
+        }
+      });
+    }
   }
 } catch (err) {
   console.error(err);
