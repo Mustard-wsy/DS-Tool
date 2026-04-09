@@ -63,6 +63,13 @@
 const data = __DATA__;
 const fallback = document.getElementById('fallback');
 const baseLayout = __LAYOUT__;
+const staleZoomControls = document.getElementById('zoomControls');
+if (staleZoomControls) staleZoomControls.remove();
+const staleAutoFitToggle = document.getElementById('autoFitToggle');
+if (staleAutoFitToggle) {
+  const host = staleAutoFitToggle.closest('label, div');
+  if (host && host !== document.body) host.remove();
+}
 const LAYOUT_PRESET = {
   minNodeWidth: 120,
   minNodeHeight: 60,
@@ -152,8 +159,12 @@ function computeAdaptiveLayout(graphData, fallbackLayout) {
       ...(fallbackLayout || {}),
       type: 'dagre',
       rankdir: (fallbackLayout && fallbackLayout.rankdir) || 'LR',
-      nodesep: Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 80),
-      ranksep: Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 140),
+      nodesep: Math.max(
+        metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY,
+        Math.ceil(metrics.maxH * 0.32),
+        52
+      ),
+      ranksep: Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 68),
     };
   }
 
@@ -174,7 +185,7 @@ function applyCompactGridLayout(graphData, viewport = null) {
   const nodes = Array.isArray(workingData.nodes) ? workingData.nodes.slice() : [];
   const cols = Math.max(1, metrics.cols);
   const stepX = Math.max(metrics.maxW + metrics.boundaryGapX, 96);
-  const stepY = Math.max(metrics.maxH + metrics.boundaryGapY, 72);
+  const stepY = Math.max(Math.ceil(metrics.maxH * 1.12) + metrics.boundaryGapY, 92);
   const totalRows = Math.max(1, Math.ceil(nodes.length / cols));
   const totalW = Math.max(0, (cols - 1) * stepX);
   const totalH = Math.max(0, (totalRows - 1) * stepY);
