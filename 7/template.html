@@ -82,6 +82,7 @@ const AUTO_FIT_CONFIG = {
   innerRingRatio: 0.08,
   minInnerRingPx: 20,
 };
+const FIT_PADDING = { top: 44, right: 30, bottom: 44, left: 30 };
 
 function getContainerSize() {
   const el = document.getElementById('container');
@@ -164,6 +165,45 @@ function computeAdaptiveLayout(graphData, fallbackLayout) {
     preventOverlapPadding: Math.max(metrics.boundaryGapX, metrics.boundaryGapY, 44),
     sortBy: 'id',
     padding: [LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding],
+  };
+}
+
+function applyCompactGridLayout(graphData, viewport = null) {
+  const metrics = analyzeLayoutMetrics(graphData, viewport || getContainerSize());
+  const workingData = JSON.parse(JSON.stringify(graphData || { nodes: [], edges: [] }));
+  const nodes = Array.isArray(workingData.nodes) ? workingData.nodes.slice() : [];
+  const cols = Math.max(1, metrics.cols);
+  const stepX = Math.max(metrics.maxW + metrics.boundaryGapX, 96);
+  const stepY = Math.max(metrics.maxH + metrics.boundaryGapY, 72);
+  const totalRows = Math.max(1, Math.ceil(nodes.length / cols));
+  const totalW = Math.max(0, (cols - 1) * stepX);
+  const totalH = Math.max(0, (totalRows - 1) * stepY);
+  const startX = -Math.floor(totalW / 2);
+  const startY = -Math.floor(totalH / 2);
+
+  nodes.sort((a, b) => String(a?.id ?? '').localeCompare(String(b?.id ?? '')));
+  nodes.forEach((node, idx) => {
+    const row = Math.floor(idx / cols);
+    const col = idx % cols;
+    node.style = node.style || {};
+    node.style.x = startX + col * stepX;
+    node.style.y = startY + row * stepY;
+  });
+
+  return {
+    data: workingData,
+    layout: { type: 'preset' },
+  };
+}
+
+function prepareGraphForLayout(graphData, viewport = null) {
+  const metrics = analyzeLayoutMetrics(graphData, viewport || getContainerSize());
+  if (!metrics.treeLike) {
+    return applyCompactGridLayout(graphData, viewport || getContainerSize());
+  }
+  return {
+    data: graphData,
+    layout: computeAdaptiveLayout(graphData, viewport),
   };
 }
 
@@ -318,10 +358,7 @@ function applyPresetLayout(graphData, presetType) {
   };
 }
 
-const defaultLayoutMetrics = analyzeLayoutMetrics(data, getContainerSize());
-const prepared = defaultLayoutMetrics.treeLike
-  ? { data, layout: computeAdaptiveLayout(data, baseLayout), hasDisconnected: false, componentCount: 1 }
-  : { ...applyCompactGridLayout(data), hasDisconnected: false, componentCount: 1 };
+const prepared = prepareGraphForLayout(data, getContainerSize());
 
 function showFallback(err) {
   fallback.style.display = 'block';
@@ -799,52 +836,32 @@ try {
     }
 
     function applyAutoFitViewport() {
-      if (!isAutoFitEnabled()) return;
-      const container = document.getElementById('container');
-      const viewportWidth = container?.clientWidth || window.innerWidth;
-      const viewportHeight = container?.clientHeight || window.innerHeight;
-      const safePadding = getSafeViewportPadding();
-      const bounds = computeContentBounds();
-
-      if (!bounds) {
-        if (typeof graph.fitView === 'function') {
-          graph.fitView({
-            padding: [safePadding.top, safePadding.right, safePadding.bottom, safePadding.left],
-            animation: false,
-          });
-          if (typeof graph.fitCenter === 'function') {
-            graph.fitCenter();
-          }
-        } else if (typeof graph.fitCenter === 'function') {
-          graph.fitCenter();
-        }
-        return;
-      }
-
-      const availableWidth = Math.max(1, viewportWidth - safePadding.left - safePadding.right);
-      const availableHeight = Math.max(1, viewportHeight - safePadding.top - safePadding.bottom);
-      const scaleX = availableWidth / bounds.width;
-      const scaleY = availableHeight / bounds.height;
-      const targetScale = Math.min(scaleX, scaleY, 1);
-      const safeScale = Number.isFinite(targetScale) && targetScale > 0 ? targetScale : 1;
-
+      const size = getContainerSize();
+      const ringInset = Math.max(
+        AUTO_FIT_CONFIG.minInnerRingPx,
+        Math.floor(Math.min(size.width, size.height) * AUTO_FIT_CONFIG.innerRingRatio)
+      );
+      const fitPadding = {
+        top: FIT_PADDING.top + ringInset,
+        right: FIT_PADDING.right + ringInset,
+        bottom: FIT_PADDING.bottom + ringInset,
+        left: FIT_PADDING.left + ringInset,
+      };
       if (typeof graph.fitView === 'function') {
         graph.fitView({
-          padding: [safePadding.top, safePadding.right, safePadding.bottom, safePadding.left],
+          padding: [fitPadding.top, fitPadding.right, fitPadding.bottom, fitPadding.left],
           when: 'always',
           animation: false,
         });
-        if (typeof graph.fitCenter === 'function') {
-          graph.fitCenter();
+        if (typeof graph.getZoom === 'function' && typeof graph.zoomTo === 'function') {
+          const currentScale = Number(graph.getZoom());
+          if (Number.isFinite(currentScale) && currentScale > AUTO_FIT_CONFIG.maxScale) {
+            graph.zoomTo(AUTO_FIT_CONFIG.maxScale, { x: size.width / 2, y: size.height / 2 }, false);
+          }
         }
       } else {
         if (typeof graph.fitCenter === 'function') {
           graph.fitCenter();
-        }
-        const focusX = (safePadding.left + (viewportWidth - safePadding.right)) / 2;
-        const focusY = (safePadding.top + (viewportHeight - safePadding.bottom)) / 2;
-        if (typeof graph.zoomTo === 'function') {
-          graph.zoomTo(Math.min(safeScale, AUTO_FIT_CONFIG.maxScale), { x: focusX, y: focusY }, false);
         }
       }
     }
