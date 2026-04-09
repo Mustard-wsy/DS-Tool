@@ -39,25 +39,49 @@ const baseLayout = __LAYOUT__;
 
 function computeAdaptiveLayout(graphData, fallbackLayout) {
   const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  if (!nodes.length) {
+    return {
+      ...(fallbackLayout || {}),
+      type: 'dagre',
+      rankdir: 'LR',
+      nodesep: 70,
+      ranksep: 90,
+    };
+  }
+
   let maxH = 80;
   let maxW = 160;
+  let sumH = 0;
+  let sumW = 0;
   for (const n of nodes) {
     const size = n?.style?.size;
     if (Array.isArray(size) && size.length >= 2) {
-      maxW = Math.max(maxW, Number(size[0]) || 0);
-      maxH = Math.max(maxH, Number(size[1]) || 0);
+      const width = Number(size[0]) || 0;
+      const height = Number(size[1]) || 0;
+      maxW = Math.max(maxW, width);
+      maxH = Math.max(maxH, height);
+      sumW += width;
+      sumH += height;
     }
   }
 
-  const adaptiveNodeSep = Math.max(120, Math.ceil(maxH + 10));
-  const adaptiveRankSep = Math.max(220, Math.ceil(maxW + 10));
+  const avgW = Math.max(120, Math.ceil(sumW / Math.max(nodes.length, 1)));
+  const avgH = Math.max(60, Math.ceil(sumH / Math.max(nodes.length, 1)));
+  const boundaryGapX = Math.max(18, Math.ceil(avgW * 0.18));
+  const boundaryGapY = Math.max(14, Math.ceil(avgH * 0.16));
+  const viewportW = window.innerWidth || 1200;
+  const viewportH = window.innerHeight || 800;
+  const aspect = Math.max(0.6, Math.min(1.8, viewportW / Math.max(viewportH, 1)));
+  const cols = Math.max(1, Math.ceil(Math.sqrt(nodes.length * aspect)));
 
   return {
-    ...(fallbackLayout || {}),
-    type: (fallbackLayout && fallbackLayout.type) || 'dagre',
-    rankdir: (fallbackLayout && fallbackLayout.rankdir) || 'LR',
-    nodesep: adaptiveNodeSep,
-    ranksep: adaptiveRankSep,
+    type: 'grid',
+    cols,
+    preventOverlap: true,
+    nodeSize: [maxW, maxH],
+    preventOverlapPadding: Math.max(boundaryGapX, boundaryGapY),
+    sortBy: 'id',
+    padding: [8, 8, 8, 8],
   };
 }
 
