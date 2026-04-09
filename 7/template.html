@@ -39,6 +39,7 @@ const baseLayout = __LAYOUT__;
 
 function computeAdaptiveLayout(graphData, fallbackLayout) {
   const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
   if (!nodes.length) {
     return {
       ...(fallbackLayout || {}),
@@ -73,6 +74,23 @@ function computeAdaptiveLayout(graphData, fallbackLayout) {
   const viewportH = window.innerHeight || 800;
   const aspect = Math.max(0.6, Math.min(1.8, viewportW / Math.max(viewportH, 1)));
   const cols = Math.max(1, Math.ceil(Math.sqrt(nodes.length * aspect)));
+  const connectedNodeIds = new Set();
+  for (const e of edges) {
+    if (e?.source !== undefined) connectedNodeIds.add(String(e.source));
+    if (e?.target !== undefined) connectedNodeIds.add(String(e.target));
+  }
+  const connectedRatio = connectedNodeIds.size / Math.max(nodes.length, 1);
+  const treeLike = edges.length > 0 && (connectedRatio >= 0.55 || edges.length >= nodes.length - 1);
+
+  if (treeLike) {
+    return {
+      ...(fallbackLayout || {}),
+      type: 'dagre',
+      rankdir: (fallbackLayout && fallbackLayout.rankdir) || 'LR',
+      nodesep: Math.max(32, boundaryGapY + 12),
+      ranksep: Math.max(48, boundaryGapX + 18),
+    };
+  }
 
   return {
     type: 'grid',
