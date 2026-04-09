@@ -423,12 +423,13 @@ def _walk(
         for mapping in bind_groups.values():
             bound_fields.update(mapping.keys())
 
-        def _append_container_item(item_name, item_val):
+        def _append_container_item(item_name, item_val, bind_group=None):
             if _is_primitive(item_val):
                 owner["rows"].append({
                     "name": item_name,
                     "kind": "field",
                     "text": f"{item_name} = {_short(item_val)}",
+                    "bind_group": bind_group,
                 })
             elif _is_class_object(item_val):
                 cid = add_obj(item_val, _format_typed_label(item_name, item_val))
@@ -437,6 +438,7 @@ def _walk(
                         "name": item_name,
                         "kind": "ref",
                         "text": item_name,
+                        "bind_group": bind_group,
                     })
                     owner["refs"].append({"name": item_name})
                     edges.append({
@@ -449,12 +451,14 @@ def _walk(
                         "name": item_name,
                         "kind": "field",
                         "text": f"{item_name} = {_short(item_val)}",
+                        "bind_group": bind_group,
                     })
             else:
                 owner["rows"].append({
                     "name": item_name,
                     "kind": "field",
                     "text": f"{item_name} = {_short(item_val)}",
+                    "bind_group": bind_group,
                 })
 
         for group_name, mapping in bind_groups.items():
@@ -483,7 +487,7 @@ def _walk(
                     take = stream["ratio"]
                     while take > 0 and stream["cursor"] < len(stream["items"]):
                         item_name, item_val = stream["items"][stream["cursor"]]
-                        _append_container_item(item_name, item_val)
+                        _append_container_item(item_name, item_val, bind_group=group_name)
                         stream["cursor"] += 1
                         take -= 1
                         progressed = True
@@ -552,6 +556,7 @@ def _build_g6_data(nodes, edges):
 
         rows = n.get("rows", [])
         display_rows = [r.get("text", "") for r in rows]
+        bind_groups = [r.get("bind_group") for r in rows]
         header_line_count = max(1, len(str(name).splitlines()))
         header_h = max(default_header_h, header_line_count * 16)
 
@@ -590,6 +595,7 @@ def _build_g6_data(nodes, edges):
                 "name": name,
                 "headerHeight": header_h,
                 "rows": display_rows,
+                "rowBindGroups": bind_groups,
                 "refRowIndices": ref_row_indices,
                 "sectionGap": section_gap,
                 "ports": ports
