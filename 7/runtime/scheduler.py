@@ -2,7 +2,7 @@ import dsvis
 import json
 import atexit
 from pathlib import Path
-from .config import get_layout, get_mode, get_pointer_watchers, get_watch_vars
+from .config import get_mode, get_pointer_watchers, get_watch_vars
 
 
 class Scheduler:
@@ -97,7 +97,7 @@ class Scheduler:
             self.steps,
             self.source_lines,
             title=f"DSVis Debugger ({Path(self.source_file).name if self.source_file else 'script'})",
-            layout=get_layout(),
+            layout=None,
         )
         self.steps = []
 
