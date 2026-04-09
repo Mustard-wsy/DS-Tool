@@ -36,6 +36,8 @@ _DEFAULT_LAYOUT = {
 
 _OBJECT_FIELD_BINDINGS = weakref.WeakKeyDictionary()
 
+_OBJECT_FIELD_BINDINGS = weakref.WeakKeyDictionary()
+
 # ---------- helpers ----------
 
 def _typename(obj):
