@@ -7,6 +7,8 @@ if str(ROOT) not in sys.path:
 
 import dsvis
 dsvis.auto()
+# 全局切换布局模型（可选：default / ConcentricLayout / SnakeLayout）
+dsvis.set_layout_model("ConcentricLayout")
 
 
 class Node:
@@ -28,4 +30,5 @@ numbers = []
 numbers.append(a.value)
 
 # 手动 capture 仍可保留，AST 插桩会自动追加 trigger。
+# 也可以在单次调用里覆盖：dsvis.capture(layout="SnakeLayout")
 dsvis.capture()
