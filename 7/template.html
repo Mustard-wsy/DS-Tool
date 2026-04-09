@@ -36,28 +36,102 @@
 const data = __DATA__;
 const fallback = document.getElementById('fallback');
 const baseLayout = __LAYOUT__;
+const LAYOUT_PRESET = {
+  minNodeWidth: 120,
+  minNodeHeight: 60,
+  minGapX: 28,
+  minGapY: 22,
+  gapRatioX: 0.24,
+  gapRatioY: 0.22,
+  dagreExtraX: 24,
+  dagreExtraY: 18,
+  gridPadding: 14,
+  treeConnectivityThreshold: 0.55,
+  aspectMin: 0.6,
+  aspectMax: 1.8,
+};
 
-function computeAdaptiveLayout(graphData, fallbackLayout) {
+function getContainerSize() {
+  const el = document.getElementById('container');
+  return {
+    width: Math.max(200, el?.clientWidth || window.innerWidth || 1200),
+    height: Math.max(200, el?.clientHeight || window.innerHeight || 800),
+  };
+}
+
+function analyzeLayoutMetrics(graphData, viewport) {
   const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
   let maxH = 80;
   let maxW = 160;
+  let sumH = 0;
+  let sumW = 0;
   for (const n of nodes) {
     const size = n?.style?.size;
     if (Array.isArray(size) && size.length >= 2) {
-      maxW = Math.max(maxW, Number(size[0]) || 0);
-      maxH = Math.max(maxH, Number(size[1]) || 0);
+      const width = Number(size[0]) || 0;
+      const height = Number(size[1]) || 0;
+      maxW = Math.max(maxW, width);
+      maxH = Math.max(maxH, height);
+      sumW += width;
+      sumH += height;
     }
   }
 
-  const adaptiveNodeSep = Math.max(120, Math.ceil(maxH + 10));
-  const adaptiveRankSep = Math.max(220, Math.ceil(maxW + 10));
+  const avgW = Math.max(LAYOUT_PRESET.minNodeWidth, Math.ceil(sumW / Math.max(nodes.length, 1)));
+  const avgH = Math.max(LAYOUT_PRESET.minNodeHeight, Math.ceil(sumH / Math.max(nodes.length, 1)));
+  const boundaryGapX = Math.max(LAYOUT_PRESET.minGapX, Math.ceil(avgW * LAYOUT_PRESET.gapRatioX));
+  const boundaryGapY = Math.max(LAYOUT_PRESET.minGapY, Math.ceil(avgH * LAYOUT_PRESET.gapRatioY));
+  const aspect = Math.max(
+    LAYOUT_PRESET.aspectMin,
+    Math.min(LAYOUT_PRESET.aspectMax, viewport.width / Math.max(viewport.height, 1))
+  );
+  const cols = Math.max(1, Math.ceil(Math.sqrt(nodes.length * aspect)));
+  const connectedNodeIds = new Set();
+  for (const e of edges) {
+    if (e?.source !== undefined) connectedNodeIds.add(String(e.source));
+    if (e?.target !== undefined) connectedNodeIds.add(String(e.target));
+  }
+  const connectedRatio = connectedNodeIds.size / Math.max(nodes.length, 1);
+  const treeLike = edges.length > 0 && (
+    connectedRatio >= LAYOUT_PRESET.treeConnectivityThreshold ||
+    edges.length >= nodes.length - 1
+  );
+
+  return { nodes, maxW, maxH, cols, boundaryGapX, boundaryGapY, treeLike };
+}
+
+function computeAdaptiveLayout(graphData, fallbackLayout) {
+  const viewport = getContainerSize();
+  const metrics = analyzeLayoutMetrics(graphData, viewport);
+  if (!metrics.nodes.length) {
+    return {
+      ...(fallbackLayout || {}),
+      type: 'dagre',
+      rankdir: 'LR',
+      nodesep: 80,
+      ranksep: 110,
+    };
+  }
+
+  if (metrics.treeLike) {
+    return {
+      ...(fallbackLayout || {}),
+      type: 'dagre',
+      rankdir: (fallbackLayout && fallbackLayout.rankdir) || 'LR',
+      nodesep: Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 44),
+      ranksep: Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 68),
+    };
+  }
 
   return {
-    ...(fallbackLayout || {}),
-    type: (fallbackLayout && fallbackLayout.type) || 'dagre',
-    rankdir: (fallbackLayout && fallbackLayout.rankdir) || 'LR',
-    nodesep: adaptiveNodeSep,
-    ranksep: adaptiveRankSep,
+    type: 'grid',
+    cols: metrics.cols,
+    preventOverlap: true,
+    nodeSize: [metrics.maxW, metrics.maxH],
+    preventOverlapPadding: Math.max(metrics.boundaryGapX, metrics.boundaryGapY),
+    sortBy: 'id',
+    padding: [LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding],
   };
 }
 
