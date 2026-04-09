@@ -22,6 +22,7 @@ __all__ = [
     "watch_vars",
     "observe",
     "observe_ptr",
+    "dsbind",
     "bind",
     "bind_lists",
     "set_mode",
@@ -186,10 +187,21 @@ def _parse_inline_bind_spec(spec):
 
 
 class _InlineBindMarker:
-    def __init__(self, spec):
-        parsed = _parse_inline_bind_spec(spec)
+    def __init__(self, group_or_spec, ratio=None):
+        if ratio is not None:
+            group = str(group_or_spec).strip()
+            try:
+                r = int(ratio)
+            except Exception:
+                raise ValueError("ratio 必须是正整数")
+            if not group or r <= 0:
+                raise ValueError("dsbind(group, ratio) 参数无效")
+            self.group, self.ratio = group, r
+            return
+
+        parsed = _parse_inline_bind_spec(group_or_spec)
         if not parsed:
-            raise ValueError("bind 规格无效，应为 'A:3' / '@A:3' / 'A'")
+            raise ValueError("bind 规格无效，应为 'A:3' / '@A:3' / 'A' 或 ('A', 3)")
         self.group, self.ratio = parsed
 
     def __rmatmul__(self, value):
@@ -197,13 +209,32 @@ class _InlineBindMarker:
             _INLINE_BIND_REGISTRY[id(value)] = (self.group, self.ratio)
         return value
 
+    def __rlshift__(self, value):
+        if _is_container(value):
+            _INLINE_BIND_REGISTRY[id(value)] = (self.group, self.ratio)
+        return value
 
-def bind(spec):
+
+def dsbind(group, ratio=1):
     """
-    行内绑定标记，支持：
+    推荐行内绑定写法（避免使用 @）：
+        self.keys = [] << dsvis.dsbind("A", 3)
+        self.children = [] << dsvis.dsbind("A", 1)
+    """
+    return _InlineBindMarker(group, ratio=ratio)
+
+
+def bind(spec, ratio=None):
+    """
+    兼容旧写法（不推荐）：
         self.keys = [] @ dsvis.bind("A:3")
-        self.children = [] @ dsvis.bind("A:1")
+    或新参数风格：
+        self.keys = [] @ dsvis.bind("A", 3)
     """
+    if ratio is not None:
+        return _InlineBindMarker(spec, ratio=ratio)
+    if isinstance(spec, tuple) and len(spec) == 2:
+        return _InlineBindMarker(spec[0], ratio=spec[1])
     return _InlineBindMarker(spec)
 
 

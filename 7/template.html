@@ -370,6 +370,67 @@ try {
         this.__prevHeaderLineCount = headerLines.length;
 
         const rowCount = Math.max(rows.length, 1);
+        const bindPalette = ['#d9ecff', '#d6f5e8', '#fbe6c8', '#e6dcff', '#ffe1ea'];
+        const colorForGroup = (group) => {
+          const s = String(group || '');
+          let h = 0;
+          for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) >>> 0;
+          return bindPalette[h % bindPalette.length];
+        };
+        const runs = [];
+        let runStart = null;
+        let runGroup = null;
+        for (let i = 0; i < rowCount; i++) {
+          const g = rowBindGroups[i] || null;
+          if (!g) {
+            if (runGroup !== null) {
+              runs.push({ group: runGroup, start: runStart, end: i - 1 });
+              runStart = null;
+              runGroup = null;
+            }
+            continue;
+          }
+          if (runGroup === null) {
+            runGroup = g;
+            runStart = i;
+            continue;
+          }
+          if (g !== runGroup) {
+            runs.push({ group: runGroup, start: runStart, end: i - 1 });
+            runGroup = g;
+            runStart = i;
+          }
+        }
+        if (runGroup !== null) {
+          runs.push({ group: runGroup, start: runStart, end: rowCount - 1 });
+        }
+
+        runs.forEach((run, i) => {
+          const y = -height / 2 + headerH + paddingY + run.start * rowH + 1;
+          const h = (run.end - run.start + 1) * rowH - 2;
+          this.upsert(`bind-block-${i}`, 'rect', {
+            x: -width / 2 + 4,
+            y,
+            width: width - 8,
+            height: Math.max(h, 2),
+            radius: 4,
+            fill: colorForGroup(run.group),
+            stroke: 'transparent',
+          }, container);
+        });
+        const prevRunCount = this.__prevBindRunCount || 0;
+        for (let i = runs.length; i < prevRunCount; i++) {
+          this.upsert(`bind-block-${i}`, 'rect', {
+            x: -width / 2 + 4,
+            y: -height / 2,
+            width: 0,
+            height: 0,
+            radius: 0,
+            fill: 'transparent',
+            stroke: 'transparent',
+          }, container);
+        }
+        this.__prevBindRunCount = runs.length;
 
         for (let i = 0; i < rowCount; i++) {
           const y = -height / 2 + headerH + paddingY + i * rowH + 2;
