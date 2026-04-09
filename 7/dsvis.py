@@ -22,6 +22,7 @@ __all__ = [
     "watch_vars",
     "observe",
     "observe_ptr",
+    "bind",
     "bind_lists",
     "set_mode",
     "set_layout_model",
@@ -39,6 +40,8 @@ _LAYOUT_PRESETS = {
     "concentriclayout": {"type": "concentric"},
     "snakelayout": {"type": "snake"},
 }
+
+_INLINE_BIND_REGISTRY = {}
 
 # ---------- helpers ----------
 
@@ -155,6 +158,53 @@ def _parse_bind_token(token):
     if ratio <= 0:
         return None
     return field, group, ratio
+
+
+def _parse_inline_bind_spec(spec):
+    if not isinstance(spec, str):
+        return None
+    text = spec.strip()
+    if not text:
+        return None
+    if text.startswith("@"):
+        text = text[1:].strip()
+    if not text:
+        return None
+    if ":" in text:
+        group, ratio_text = text.split(":", 1)
+        group = group.strip() or "default"
+        try:
+            ratio = int(ratio_text.strip())
+        except Exception:
+            return None
+    else:
+        group = text
+        ratio = 1
+    if ratio <= 0:
+        return None
+    return group, ratio
+
+
+class _InlineBindMarker:
+    def __init__(self, spec):
+        parsed = _parse_inline_bind_spec(spec)
+        if not parsed:
+            raise ValueError("bind 规格无效，应为 'A:3' / '@A:3' / 'A'")
+        self.group, self.ratio = parsed
+
+    def __rmatmul__(self, value):
+        if _is_container(value):
+            _INLINE_BIND_REGISTRY[id(value)] = (self.group, self.ratio)
+        return value
+
+
+def bind(spec):
+    """
+    行内绑定标记，支持：
+        self.keys = [] @ dsvis.bind("A:3")
+        self.children = [] @ dsvis.bind("A:1")
+    """
+    return _InlineBindMarker(spec)
 
 
 def _get_bound_specs(obj):
@@ -361,6 +411,14 @@ def _walk(
 
         object_items = list(_iter_object_items(obj, include_private))
         bind_groups = _get_bound_specs(obj)
+        for attr, val in object_items:
+            if not _is_container(val):
+                continue
+            inline = _INLINE_BIND_REGISTRY.get(id(val))
+            if not inline:
+                continue
+            group, ratio = inline
+            bind_groups.setdefault(group, {})[attr] = ratio
         bound_fields = set()
         for mapping in bind_groups.values():
             bound_fields.update(mapping.keys())
@@ -415,12 +473,6 @@ def _walk(
                 }
             if len(bound_streams) < 2:
                 continue
-            owner["rows"].append({
-                "name": f"@{group_name}",
-                "kind": "field",
-                "text": f"@{group_name} bind = "
-                        + ", ".join([f"{k}:{bound_streams[k]['ratio']}" for k in ordered_fields if k in bound_streams]),
-            })
             progressed = True
             while progressed:
                 progressed = False
