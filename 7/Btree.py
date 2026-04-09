@@ -11,8 +11,9 @@ class BTreeNode:
     def __init__(self, t, leaf=False):
         self.t = t                  # 最小度数
         self.leaf = leaf            # 是否叶子节点
-        self.keys = [] << dsvis.dsbind("A", 3)          # 存储键
-        self.children = [] << dsvis.dsbind("A", 1)      # 子节点
+        self.keys = []                                  # 存储键
+        self.children = []                              # 子节点
+        dsvis.bind_fields(self, keys=("A", 3), children=("A", 1))
 
 
 class BTree:

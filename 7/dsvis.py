@@ -4,6 +4,7 @@ import tempfile
 import webbrowser
 import json
 import os
+import weakref
 from collections import deque
 from pathlib import Path
 
@@ -22,6 +23,8 @@ __all__ = [
     "watch_vars",
     "observe",
     "observe_ptr",
+    "bind_field",
+    "bind_fields",
     "dsbind",
     "bind",
     "bind_lists",
@@ -43,6 +46,7 @@ _LAYOUT_PRESETS = {
 }
 
 _INLINE_BIND_REGISTRY = {}
+_OBJECT_FIELD_BINDINGS = weakref.WeakKeyDictionary()
 
 # ---------- helpers ----------
 
@@ -224,6 +228,46 @@ def dsbind(group, ratio=1):
     return _InlineBindMarker(group, ratio=ratio)
 
 
+def bind_field(obj, field, group, ratio=1):
+    """
+    不改赋值表达式的绑定方式：
+        self.keys = []
+        dsvis.bind_field(self, "keys", "A", 3)
+    """
+    if obj is None:
+        return
+    field_name = str(field).strip()
+    group_name = str(group).strip()
+    try:
+        r = int(ratio)
+    except Exception:
+        raise ValueError("ratio 必须是正整数")
+    if not field_name or not group_name or r <= 0:
+        raise ValueError("bind_field 参数无效")
+    mapping = _OBJECT_FIELD_BINDINGS.setdefault(obj, {})
+    mapping[field_name] = (group_name, r)
+
+
+def bind_fields(obj, **field_specs):
+    """
+    批量绑定（推荐）：
+        self.keys = []
+        self.children = []
+        dsvis.bind_fields(self, keys=("A", 3), children=("A", 1))
+    """
+    for field, spec in field_specs.items():
+        if isinstance(spec, tuple) and len(spec) == 2:
+            bind_field(obj, field, spec[0], spec[1])
+            continue
+        if isinstance(spec, str):
+            parsed = _parse_inline_bind_spec(spec)
+            if not parsed:
+                raise ValueError(f"字段 {field} 的绑定规格无效")
+            bind_field(obj, field, parsed[0], parsed[1])
+            continue
+        raise ValueError(f"字段 {field} 的绑定规格无效，需为 ('A', 3) 或 'A:3'")
+
+
 def bind(spec, ratio=None):
     """
     兼容旧写法（不推荐）：
@@ -236,6 +280,23 @@ def bind(spec, ratio=None):
     if isinstance(spec, tuple) and len(spec) == 2:
         return _InlineBindMarker(spec[0], ratio=spec[1])
     return _InlineBindMarker(spec)
+
+
+def _get_instance_bound_specs(obj):
+    raw = _OBJECT_FIELD_BINDINGS.get(obj, {})
+    out = {}
+    for field, pair in raw.items():
+        if not isinstance(pair, tuple) or len(pair) != 2:
+            continue
+        group, ratio = pair
+        try:
+            r = int(ratio)
+        except Exception:
+            continue
+        if r <= 0:
+            continue
+        out.setdefault(str(group), {})[str(field)] = r
+    return out
 
 
 def _get_bound_specs(obj):
@@ -442,6 +503,9 @@ def _walk(
 
         object_items = list(_iter_object_items(obj, include_private))
         bind_groups = _get_bound_specs(obj)
+        instance_specs = _get_instance_bound_specs(obj)
+        for group_name, mapping in instance_specs.items():
+            bind_groups.setdefault(group_name, {}).update(mapping)
         for attr, val in object_items:
             if not _is_container(val):
                 continue
