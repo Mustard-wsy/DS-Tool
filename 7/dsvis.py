@@ -22,6 +22,8 @@ __all__ = [
     "watch_vars",
     "observe",
     "observe_ptr",
+    "bind",
+    "bind_lists",
     "set_mode",
     "set_layout_model",
 ]
@@ -38,6 +40,8 @@ _LAYOUT_PRESETS = {
     "concentriclayout": {"type": "concentric"},
     "snakelayout": {"type": "snake"},
 }
+
+_INLINE_BIND_REGISTRY = {}
 
 # ---------- helpers ----------
 
@@ -124,6 +128,118 @@ def _iter_object_items(obj, include_private=False):
             yield str(name), getattr(obj, name)
         except Exception:
             continue
+
+def _parse_bind_token(token):
+    """
+    解析类似 `keys@A:3` 的声明：
+    - keys: 字段名
+    - A: 分组名
+    - 3: 比例（每轮取 3 个）
+    """
+    if not isinstance(token, str):
+        return None
+    text = token.strip()
+    if "@" not in text:
+        return None
+    left, right = text.split("@", 1)
+    field = left.strip()
+    if not field or not right.strip():
+        return None
+    if ":" in right:
+        group, ratio_text = right.split(":", 1)
+        group = group.strip() or "default"
+        try:
+            ratio = int(ratio_text.strip())
+        except Exception:
+            return None
+    else:
+        group = right.strip() or "default"
+        ratio = 1
+    if ratio <= 0:
+        return None
+    return field, group, ratio
+
+
+def _parse_inline_bind_spec(spec):
+    if not isinstance(spec, str):
+        return None
+    text = spec.strip()
+    if not text:
+        return None
+    if text.startswith("@"):
+        text = text[1:].strip()
+    if not text:
+        return None
+    if ":" in text:
+        group, ratio_text = text.split(":", 1)
+        group = group.strip() or "default"
+        try:
+            ratio = int(ratio_text.strip())
+        except Exception:
+            return None
+    else:
+        group = text
+        ratio = 1
+    if ratio <= 0:
+        return None
+    return group, ratio
+
+
+class _InlineBindMarker:
+    def __init__(self, spec):
+        parsed = _parse_inline_bind_spec(spec)
+        if not parsed:
+            raise ValueError("bind 规格无效，应为 'A:3' / '@A:3' / 'A'")
+        self.group, self.ratio = parsed
+
+    def __rmatmul__(self, value):
+        if _is_container(value):
+            _INLINE_BIND_REGISTRY[id(value)] = (self.group, self.ratio)
+        return value
+
+
+def bind(spec):
+    """
+    行内绑定标记，支持：
+        self.keys = [] @ dsvis.bind("A:3")
+        self.children = [] @ dsvis.bind("A:1")
+    """
+    return _InlineBindMarker(spec)
+
+
+def _get_bound_specs(obj):
+    """
+    支持两种定义方式：
+    1) __dsvis_bindings__ = ["keys@A:3", "children@A:1", "vals@B:2", ...]
+    2) __dsvis_bindings__ = {"A": {"keys": 3, "children": 1}, "B": {...}}
+    """
+    raw = getattr(obj, "__dsvis_bindings__", None)
+    groups = {}
+
+    if isinstance(raw, (list, tuple)):
+        for token in raw:
+            parsed = _parse_bind_token(token)
+            if not parsed:
+                continue
+            field, group, ratio = parsed
+            groups.setdefault(group, {})[field] = ratio
+        return groups
+
+    if isinstance(raw, dict):
+        for group_name, mapping in raw.items():
+            if not isinstance(mapping, dict):
+                continue
+            clean = {}
+            for field, ratio in mapping.items():
+                try:
+                    r = int(ratio)
+                except Exception:
+                    continue
+                if r > 0:
+                    clean[str(field)] = r
+            if clean:
+                groups[str(group_name)] = clean
+    return groups
 
 
 def _normalize_layout(layout):
@@ -293,7 +409,88 @@ def _walk(
         if owner is None or not owner.get("is_class_object"):
             continue
 
-        for attr, val in _iter_object_items(obj, include_private):
+        object_items = list(_iter_object_items(obj, include_private))
+        bind_groups = _get_bound_specs(obj)
+        for attr, val in object_items:
+            if not _is_container(val):
+                continue
+            inline = _INLINE_BIND_REGISTRY.get(id(val))
+            if not inline:
+                continue
+            group, ratio = inline
+            bind_groups.setdefault(group, {})[attr] = ratio
+        bound_fields = set()
+        for mapping in bind_groups.values():
+            bound_fields.update(mapping.keys())
+
+        def _append_container_item(item_name, item_val):
+            if _is_primitive(item_val):
+                owner["rows"].append({
+                    "name": item_name,
+                    "kind": "field",
+                    "text": f"{item_name} = {_short(item_val)}",
+                })
+            elif _is_class_object(item_val):
+                cid = add_obj(item_val, _format_typed_label(item_name, item_val))
+                if cid:
+                    owner["rows"].append({
+                        "name": item_name,
+                        "kind": "ref",
+                        "text": item_name,
+                    })
+                    owner["refs"].append({"name": item_name})
+                    edges.append({
+                        "src": obj_id,
+                        "dst": cid,
+                        "label": item_name
+                    })
+                else:
+                    owner["rows"].append({
+                        "name": item_name,
+                        "kind": "field",
+                        "text": f"{item_name} = {_short(item_val)}",
+                    })
+            else:
+                owner["rows"].append({
+                    "name": item_name,
+                    "kind": "field",
+                    "text": f"{item_name} = {_short(item_val)}",
+                })
+
+        for group_name, mapping in bind_groups.items():
+            ordered_fields = [attr for attr, _ in object_items if attr in mapping]
+            if len(ordered_fields) < 2:
+                continue
+            bound_streams = {}
+            for attr in ordered_fields:
+                val = dict(object_items).get(attr)
+                if not isinstance(val, (list, tuple, set, frozenset, dict, deque)):
+                    continue
+                bound_streams[attr] = {
+                    "ratio": mapping.get(attr, 1),
+                    "items": list(_iter_container_items(attr, val)),
+                    "cursor": 0,
+                }
+            if len(bound_streams) < 2:
+                continue
+            progressed = True
+            while progressed:
+                progressed = False
+                for attr in ordered_fields:
+                    stream = bound_streams.get(attr)
+                    if not stream:
+                        continue
+                    take = stream["ratio"]
+                    while take > 0 and stream["cursor"] < len(stream["items"]):
+                        item_name, item_val = stream["items"][stream["cursor"]]
+                        _append_container_item(item_name, item_val)
+                        stream["cursor"] += 1
+                        take -= 1
+                        progressed = True
+
+        for attr, val in object_items:
+            if attr in bound_fields:
+                continue
             if _is_primitive(val):
                 owner["rows"].append({
                     "name": attr,
@@ -311,38 +508,7 @@ def _walk(
                     continue
 
                 for item_name, item_val in items:
-                    if _is_primitive(item_val):
-                        owner["rows"].append({
-                            "name": item_name,
-                            "kind": "field",
-                            "text": f"{item_name} = {_short(item_val)}",
-                        })
-                    elif _is_class_object(item_val):
-                        cid = add_obj(item_val, _format_typed_label(item_name, item_val))
-                        if cid:
-                            owner["rows"].append({
-                                "name": item_name,
-                                "kind": "ref",
-                                "text": item_name,
-                            })
-                            owner["refs"].append({"name": item_name})
-                            edges.append({
-                                "src": obj_id,
-                                "dst": cid,
-                                "label": item_name
-                            })
-                        else:
-                            owner["rows"].append({
-                                "name": item_name,
-                                "kind": "field",
-                                "text": f"{item_name} = {_short(item_val)}",
-                            })
-                    else:
-                        owner["rows"].append({
-                            "name": item_name,
-                            "kind": "field",
-                            "text": f"{item_name} = {_short(item_val)}",
-                        })
+                    _append_container_item(item_name, item_val)
             elif _is_class_object(val):
                 cid = add_obj(val, _format_typed_label(attr, val))
                 if cid:
@@ -632,3 +798,20 @@ def observe(tag=None, vars=None, pointers=None):
 
 def observe_ptr(name, container, tag=None):
     observe(tag=tag, pointers=[(name, container)])
+
+
+def bind_lists(*tokens):
+    """
+    类装饰器：为数据结构声明“列表绑定”关系。
+
+    示例：
+        @bind_lists("keys@A:3", "children@A:1", "vals2@B:2", "children2@B:1")
+        class Node: ...
+    """
+    parsed_tokens = [t for t in tokens if _parse_bind_token(t)]
+
+    def decorator(cls):
+        setattr(cls, "__dsvis_bindings__", list(parsed_tokens))
+        return cls
+
+    return decorator

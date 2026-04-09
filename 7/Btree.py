@@ -6,8 +6,8 @@ class BTreeNode:
     def __init__(self, t, leaf=False):
         self.t = t                  # 最小度数
         self.leaf = leaf            # 是否叶子节点
-        self.keys = []              # 存储键
-        self.children = []          # 子节点
+        self.keys = [] @ dsvis.bind("A:3")          # 存储键
+        self.children = [] @ dsvis.bind("A:1")      # 子节点
 
 
 class BTree:
