@@ -812,11 +812,6 @@ try {
       };
     }
 
-    function isAutoFitEnabled() {
-      const toggle = document.getElementById('autoFitToggle');
-      return !toggle || toggle.checked;
-    }
-
     function clampZoomByConfig(viewportWidth, viewportHeight, safePadding) {
       const maxScale = AUTO_FIT_CONFIG.maxScale;
       if (!Number.isFinite(maxScale) || maxScale <= 0 || typeof graph.getZoom !== 'function') {
@@ -897,14 +892,6 @@ try {
 
     graph.on('element:dragend', onDragEnd);
 
-    const autoFitToggle = document.getElementById('autoFitToggle');
-    if (autoFitToggle) {
-      autoFitToggle.addEventListener('change', () => {
-        if (autoFitToggle.checked) {
-          requestAnimationFrame(applyAutoFitViewport);
-        }
-      });
-    }
   }
 } catch (err) {
   console.error(err);

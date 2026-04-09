@@ -27,6 +27,7 @@
   #controls { min-height:64px; display:flex; align-items:center; gap:12px; padding:8px 12px; border-top:1px solid #ddd; background:#fff; }
   button { padding:6px 12px; font-size:14px; }
   #stepInput { width:72px; padding:4px 6px; font-size:14px; font-family:Consolas, monospace; }
+  #autoFitWrap { margin-left:auto; font-size:13px; user-select:none; display:flex; align-items:center; gap:6px; }
 </style>
 </head>
 <body>
@@ -46,6 +47,10 @@
         / <span id="stepTotal">0</span>
         &nbsp;|&nbsp; line <span id="lineInfo">-</span>
       </span>
+      <label id="autoFitWrap">
+        <input id="autoFitToggle" type="checkbox" checked />
+        自动缩放
+      </label>
     </div>
   </div>
 </div>
@@ -612,6 +617,8 @@ function updateEdgePorts(focusNodeId = null) {
 function fitGraph() {
   requestAnimationFrame(() => {
     if (!graph) return;
+    const autoFitToggle = document.getElementById('autoFitToggle');
+    if (autoFitToggle && !autoFitToggle.checked) return;
     const size = getGraphSize();
     const ringInset = Math.max(
       AUTO_FIT_CONFIG.minInnerRingPx,
@@ -883,6 +890,14 @@ stepInput.addEventListener('keydown', (evt) => {
   if (!Number.isFinite(raw)) return;
   renderStep(raw - 1);
 });
+const autoFitToggle = document.getElementById('autoFitToggle');
+if (autoFitToggle) {
+  autoFitToggle.addEventListener('change', () => {
+    if (autoFitToggle.checked) {
+      fitGraph();
+    }
+  });
+}
 
 renderAllCode();
 computeStepDiffs();
