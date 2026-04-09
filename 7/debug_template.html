@@ -65,22 +65,67 @@ const DELTA_COLORS = {
   added: { fill: '#eafaf0', stroke: '#34a853', line: '#1e8e3e' },
 };
 
-function computeAdaptiveLayout(graphData) {
+function computeAdaptiveLayout(graphData, viewport = null) {
   const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+  if (!nodes.length) {
+    return {
+      type: 'dagre',
+      rankdir: 'LR',
+      nodesep: 70,
+      ranksep: 90,
+    };
+  }
+
   let maxH = 80;
   let maxW = 160;
+  let sumH = 0;
+  let sumW = 0;
   for (const n of nodes) {
     const size = n?.style?.size;
     if (Array.isArray(size) && size.length >= 2) {
-      maxW = Math.max(maxW, Number(size[0]) || 0);
-      maxH = Math.max(maxH, Number(size[1]) || 0);
+      const width = Number(size[0]) || 0;
+      const height = Number(size[1]) || 0;
+      maxW = Math.max(maxW, width);
+      maxH = Math.max(maxH, height);
+      sumW += width;
+      sumH += height;
     }
   }
+
+  const avgW = Math.max(120, Math.ceil(sumW / Math.max(nodes.length, 1)));
+  const avgH = Math.max(60, Math.ceil(sumH / Math.max(nodes.length, 1)));
+  const boundaryGapX = Math.max(18, Math.ceil(avgW * 0.18));
+  const boundaryGapY = Math.max(14, Math.ceil(avgH * 0.16));
+  const width = viewport?.width || window.innerWidth || 1200;
+  const height = viewport?.height || window.innerHeight || 800;
+  const aspect = Math.max(0.6, Math.min(1.8, width / Math.max(height, 1)));
+  const cols = Math.max(1, Math.ceil(Math.sqrt(nodes.length * aspect)));
+  const connectedNodeIds = new Set();
+  for (const e of edges) {
+    if (e?.source !== undefined) connectedNodeIds.add(String(e.source));
+    if (e?.target !== undefined) connectedNodeIds.add(String(e.target));
+  }
+  const connectedRatio = connectedNodeIds.size / Math.max(nodes.length, 1);
+  const treeLike = edges.length > 0 && (connectedRatio >= 0.55 || edges.length >= nodes.length - 1);
+
+  if (treeLike) {
+    return {
+      type: 'dagre',
+      rankdir: 'LR',
+      nodesep: Math.max(32, boundaryGapY + 12),
+      ranksep: Math.max(48, boundaryGapX + 18),
+    };
+  }
+
   return {
-    type: 'dagre',
-    rankdir: 'LR',
-    nodesep: Math.max(120, Math.ceil(maxH + 10)),
-    ranksep: Math.max(220, Math.ceil(maxW + 20)),
+    type: 'grid',
+    cols,
+    preventOverlap: true,
+    nodeSize: [maxW, maxH],
+    preventOverlapPadding: Math.max(boundaryGapX, boundaryGapY),
+    sortBy: 'id',
+    padding: [8, 8, 8, 8],
   };
 }
 
@@ -157,7 +202,7 @@ function initGraph(data) {
     height:size.height,
     autoResize:true,
     data,
-    layout: computeAdaptiveLayout(data),
+    layout: computeAdaptiveLayout(data, size),
     node:{
       type:'card',
       style: { port: true }
@@ -501,7 +546,7 @@ function renderStep(i) {
   if (!graph) {
     initGraph(graphData);
   } else {
-    const nextLayout = computeAdaptiveLayout(graphData);
+    const nextLayout = computeAdaptiveLayout(graphData, getGraphSize());
     if (typeof graph.setOptions === 'function') {
       graph.setOptions({ layout: nextLayout });
     } else if (typeof graph.setLayout === 'function') {
