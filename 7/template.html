@@ -135,6 +135,166 @@ function computeAdaptiveLayout(graphData, fallbackLayout) {
   };
 }
 
+function normalizeLayoutType(layoutTypeRaw) {
+  const t = String(layoutTypeRaw || '').trim().toLowerCase();
+  if (!t || t === 'default' || t === 'dagre') return 'default';
+  if (t === 'concentriclayout' || t === 'concentric') return 'concentric';
+  if (t === 'snakelayout' || t === 'snake') return 'snake';
+  return 'default';
+}
+
+function buildUndirectedAdj(graphData) {
+  const nodeIds = Array.isArray(graphData?.nodes) ? graphData.nodes.map((n) => String(n.id)) : [];
+  const adj = new Map(nodeIds.map((id) => [id, new Set()]));
+  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+  for (const e of edges) {
+    const s = String(e?.source ?? '');
+    const t = String(e?.target ?? '');
+    if (!adj.has(s) || !adj.has(t) || s === t) continue;
+    adj.get(s).add(t);
+    adj.get(t).add(s);
+  }
+  return adj;
+}
+
+function getConnectedComponents(graphData) {
+  const adj = buildUndirectedAdj(graphData);
+  const seen = new Set();
+  const components = [];
+  for (const id of adj.keys()) {
+    if (seen.has(id)) continue;
+    const queue = [id];
+    seen.add(id);
+    const comp = [];
+    while (queue.length) {
+      const cur = queue.shift();
+      comp.push(cur);
+      for (const nxt of adj.get(cur) || []) {
+        if (seen.has(nxt)) continue;
+        seen.add(nxt);
+        queue.push(nxt);
+      }
+    }
+    components.push(comp.sort());
+  }
+  components.sort((a, b) => b.length - a.length);
+  return components;
+}
+
+function arrangeSnake(componentIds, originX, originY, gapX, gapY) {
+  const out = new Map();
+  const cols = Math.max(1, Math.ceil(Math.sqrt(componentIds.length)));
+  for (let i = 0; i < componentIds.length; i++) {
+    const row = Math.floor(i / cols);
+    const col = i % cols;
+    const snakeCol = row % 2 === 0 ? col : (cols - 1 - col);
+    out.set(componentIds[i], {
+      x: originX + snakeCol * gapX,
+      y: originY + row * gapY,
+    });
+  }
+  return out;
+}
+
+function arrangeConcentric(componentIds, adj, originX, originY, ringStep) {
+  const out = new Map();
+  if (!componentIds.length) return out;
+  const center = componentIds.slice().sort((a, b) => (adj.get(b)?.size || 0) - (adj.get(a)?.size || 0))[0];
+  const levelByNode = new Map([[center, 0]]);
+  const queue = [center];
+  while (queue.length) {
+    const cur = queue.shift();
+    const level = levelByNode.get(cur);
+    for (const nxt of (adj.get(cur) || [])) {
+      if (levelByNode.has(nxt)) continue;
+      levelByNode.set(nxt, level + 1);
+      queue.push(nxt);
+    }
+  }
+
+  const levels = new Map();
+  for (const id of componentIds) {
+    const lv = levelByNode.get(id);
+    const key = Number.isFinite(lv) ? lv : Number.MAX_SAFE_INTEGER;
+    if (!levels.has(key)) levels.set(key, []);
+    levels.get(key).push(id);
+  }
+
+  for (const [lv, ids] of levels.entries()) {
+    ids.sort();
+    if (lv === 0) {
+      out.set(ids[0], { x: originX, y: originY });
+      continue;
+    }
+    if (!Number.isFinite(lv) || lv >= Number.MAX_SAFE_INTEGER) {
+      const loose = arrangeSnake(
+        ids,
+        originX - ringStep,
+        originY + ringStep,
+        ringStep,
+        Math.max(56, Math.floor(ringStep * 0.6))
+      );
+      for (const [id, pos] of loose.entries()) out.set(id, pos);
+      continue;
+    }
+    const radius = ringStep * lv;
+    const count = ids.length;
+    for (let i = 0; i < count; i++) {
+      const theta = (Math.PI * 2 * i) / Math.max(1, count);
+      out.set(ids[i], {
+        x: originX + radius * Math.cos(theta),
+        y: originY + radius * Math.sin(theta),
+      });
+    }
+  }
+  return out;
+}
+
+function applyPresetLayout(graphData, presetType) {
+  const metrics = analyzeLayoutMetrics(graphData, getContainerSize());
+  const workingData = JSON.parse(JSON.stringify(graphData || { nodes: [], edges: [] }));
+  const nodeMap = new Map((workingData.nodes || []).map((n) => [String(n.id), n]));
+  const components = getConnectedComponents(workingData);
+  const compCols = Math.max(1, Math.ceil(Math.sqrt(Math.max(components.length, 1))));
+  const blockW = Math.max(metrics.maxW * 3.4, 360);
+  const blockH = Math.max(metrics.maxH * 3.2, 280);
+  const adj = buildUndirectedAdj(workingData);
+
+  components.forEach((comp, idx) => {
+    const row = Math.floor(idx / compCols);
+    const col = idx % compCols;
+    const originX = col * blockW;
+    const originY = row * blockH;
+    const local = presetType === 'snake'
+      ? arrangeSnake(comp, originX, originY, Math.max(metrics.maxW + metrics.boundaryGapX, 120), Math.max(metrics.maxH + metrics.boundaryGapY, 88))
+      : arrangeConcentric(comp, adj, originX, originY, Math.max(metrics.maxW + metrics.boundaryGapX, 110));
+    for (const [id, pos] of local.entries()) {
+      const node = nodeMap.get(String(id));
+      if (!node) continue;
+      node.style = node.style || {};
+      node.style.x = pos.x;
+      node.style.y = pos.y;
+    }
+  });
+
+  return {
+    data: workingData,
+    layout: { type: 'preset' },
+    hasDisconnected: components.length > 1,
+    componentCount: components.length,
+  };
+}
+
+const layoutType = normalizeLayoutType(baseLayout?.type);
+const shouldUsePreset = layoutType === 'snake' || layoutType === 'concentric';
+const prepared = shouldUsePreset
+  ? applyPresetLayout(data, layoutType)
+  : { data, layout: computeAdaptiveLayout(data, baseLayout), hasDisconnected: false, componentCount: 1 };
+
+if (shouldUsePreset && prepared.hasDisconnected) {
+  console.info(`[dsvis] ${layoutType} layout: detected ${prepared.componentCount} disconnected components; applied component-aware placement.`);
+}
+
 function showFallback(err) {
   fallback.style.display = 'block';
   if (err && err.message) {
@@ -237,9 +397,9 @@ try {
       width: window.innerWidth,
       height: window.innerHeight,
       autoResize: true,
-      data,
+      data: prepared.data,
 
-      layout: computeAdaptiveLayout(data, baseLayout),
+      layout: prepared.layout,
 
       node: {
         type: 'card',

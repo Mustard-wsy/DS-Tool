@@ -7,9 +7,37 @@ import os
 from collections import deque
 from pathlib import Path
 
-from runtime.config import get_mode, get_pointer_watchers, get_watch_vars, set_mode
+from runtime.config import (
+    get_layout,
+    get_mode,
+    get_pointer_watchers,
+    get_watch_vars,
+    set_layout,
+    set_mode,
+)
 
-__all__ = ["capture", "auto", "watch_vars", "observe", "observe_ptr", "set_mode"]
+__all__ = [
+    "capture",
+    "auto",
+    "watch_vars",
+    "observe",
+    "observe_ptr",
+    "set_mode",
+    "set_layout_model",
+]
+
+_DEFAULT_LAYOUT = {
+    "type": "dagre",
+    "rankdir": "LR",
+    "nodesep": 120,
+    "ranksep": 220,
+}
+
+_LAYOUT_PRESETS = {
+    "default": dict(_DEFAULT_LAYOUT),
+    "concentriclayout": {"type": "concentric"},
+    "snakelayout": {"type": "snake"},
+}
 
 # ---------- helpers ----------
 
@@ -96,6 +124,35 @@ def _iter_object_items(obj, include_private=False):
             yield str(name), getattr(obj, name)
         except Exception:
             continue
+
+
+def _normalize_layout(layout):
+    if layout is None:
+        return dict(_DEFAULT_LAYOUT)
+
+    if isinstance(layout, str):
+        key = layout.strip().lower()
+        if key in _LAYOUT_PRESETS:
+            return dict(_LAYOUT_PRESETS[key])
+        raise ValueError(
+            "layout 必须是 default / ConcentricLayout / SnakeLayout 或布局字典"
+        )
+
+    if isinstance(layout, dict):
+        merged = dict(_DEFAULT_LAYOUT)
+        merged.update(layout)
+        return merged
+
+    raise ValueError("layout 参数类型无效，必须是字符串或字典")
+
+
+def set_layout_model(layout="default"):
+    """
+    设置全局默认布局模型。
+    可选值：default / ConcentricLayout / SnakeLayout / 布局字典。
+    """
+    normalized = _normalize_layout(layout)
+    set_layout(normalized)
 
 # ---------- 核心遍历 ----------
 
@@ -405,19 +462,14 @@ def _build_g6_data(nodes, edges):
     return g6_data
 
 
-def _render_g6(nodes, edges, title="AutoViz Snapshot"):
+def _render_g6(nodes, edges, title="AutoViz Snapshot", layout=None):
     import tempfile
     import webbrowser
     import json
     from pathlib import Path
 
     g6_data = _build_g6_data(nodes, edges)
-    layout = {
-        "type": "dagre",
-        "rankdir": "LR",
-        "nodesep": 120,
-        "ranksep": 220
-    }
+    layout = _normalize_layout(layout)
 
     template_path = Path(__file__).parent / "template.html"
     html = template_path.read_text(encoding="utf-8")
@@ -438,7 +490,7 @@ def _render_g6(nodes, edges, title="AutoViz Snapshot"):
     return html_path
 
 
-def _render_debugger(steps, source_lines, title="DSVis Debugger"):
+def _render_debugger(steps, source_lines, title="DSVis Debugger", layout=None):
     import tempfile
     import webbrowser
     import json
@@ -457,6 +509,7 @@ def _render_debugger(steps, source_lines, title="DSVis Debugger"):
     html = html.replace("__TITLE__", title)
     html = html.replace("__STEPS__", json.dumps(step_payload, ensure_ascii=False))
     html = html.replace("__SOURCE_LINES__", json.dumps(source_lines, ensure_ascii=False))
+    html = html.replace("__LAYOUT__", json.dumps(_normalize_layout(layout)))
 
     fd, path = tempfile.mkstemp(suffix=".html")
     html_path = Path(path)
@@ -476,6 +529,7 @@ def capture(
     include_containers=None,
     focus_vars=None,
     pointer_watchers=None,
+    layout=None,
     _caller_frame=None,
 ):
     frame = inspect.currentframe()
@@ -504,7 +558,8 @@ def capture(
             pointer_watchers=merged_pointers,
         )
 
-        return _render_g6(nodes, edges, title)
+        effective_layout = get_layout() if layout is None else layout
+        return _render_g6(nodes, edges, title, layout=effective_layout)
 
     finally:
         del frame
