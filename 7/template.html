@@ -151,8 +151,8 @@ function computeAdaptiveLayout(graphData, fallbackLayout) {
       ...(fallbackLayout || {}),
       type: 'dagre',
       rankdir: (fallbackLayout && fallbackLayout.rankdir) || 'LR',
-      nodesep: Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 44),
-      ranksep: Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 68),
+      nodesep: Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 80),
+      ranksep: Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 140),
     };
   }
 
@@ -161,7 +161,7 @@ function computeAdaptiveLayout(graphData, fallbackLayout) {
     cols: metrics.cols,
     preventOverlap: true,
     nodeSize: [metrics.maxW, metrics.maxH],
-    preventOverlapPadding: Math.max(metrics.boundaryGapX, metrics.boundaryGapY),
+    preventOverlapPadding: Math.max(metrics.boundaryGapX, metrics.boundaryGapY, 44),
     sortBy: 'id',
     padding: [LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding],
   };
@@ -812,7 +812,9 @@ try {
             padding: [safePadding.top, safePadding.right, safePadding.bottom, safePadding.left],
             animation: false,
           });
-          clampZoomByConfig(viewportWidth, viewportHeight, safePadding);
+          if (typeof graph.fitCenter === 'function') {
+            graph.fitCenter();
+          }
         } else if (typeof graph.fitCenter === 'function') {
           graph.fitCenter();
         }
@@ -832,7 +834,9 @@ try {
           when: 'always',
           animation: false,
         });
-        clampZoomByConfig(viewportWidth, viewportHeight, safePadding);
+        if (typeof graph.fitCenter === 'function') {
+          graph.fitCenter();
+        }
       } else {
         if (typeof graph.fitCenter === 'function') {
           graph.fitCenter();
