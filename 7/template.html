@@ -63,313 +63,30 @@
 const data = __DATA__;
 const fallback = document.getElementById('fallback');
 const baseLayout = __LAYOUT__;
-const staleZoomControls = document.getElementById('zoomControls');
-if (staleZoomControls) staleZoomControls.remove();
-const staleAutoFitToggle = document.getElementById('autoFitToggle');
-if (staleAutoFitToggle) {
-  const host = staleAutoFitToggle.closest('label, div');
-  if (host && host !== document.body) host.remove();
-}
-const LAYOUT_PRESET = {
-  minNodeWidth: 120,
-  minNodeHeight: 60,
-  minGapX: 28,
-  minGapY: 22,
-  gapRatioX: 0.24,
-  gapRatioY: 0.22,
-  dagreExtraX: 24,
-  dagreExtraY: 18,
-  gridPadding: 14,
-  treeConnectivityThreshold: 0.55,
-  aspectMin: 0.6,
-  aspectMax: 1.8,
-};
-const AUTO_FIT_CONFIG = {
-  maxScale: 1.25,
-  innerRingRatio: 0.08,
-  minInnerRingPx: 20,
-};
-const FIT_PADDING = { top: 44, right: 30, bottom: 44, left: 30 };
 
-function getContainerSize() {
-  const el = document.getElementById('container');
-  return {
-    width: Math.max(200, el?.clientWidth || window.innerWidth || 1200),
-    height: Math.max(200, el?.clientHeight || window.innerHeight || 800),
-  };
-}
-
-function analyzeLayoutMetrics(graphData, viewport) {
+function computeAdaptiveLayout(graphData, fallbackLayout) {
   const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
-  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
   let maxH = 80;
   let maxW = 160;
-  let sumH = 0;
-  let sumW = 0;
   for (const n of nodes) {
     const size = n?.style?.size;
     if (Array.isArray(size) && size.length >= 2) {
-      const width = Number(size[0]) || 0;
-      const height = Number(size[1]) || 0;
-      maxW = Math.max(maxW, width);
-      maxH = Math.max(maxH, height);
-      sumW += width;
-      sumH += height;
+      maxW = Math.max(maxW, Number(size[0]) || 0);
+      maxH = Math.max(maxH, Number(size[1]) || 0);
     }
   }
 
-  const avgW = Math.max(LAYOUT_PRESET.minNodeWidth, Math.ceil(sumW / Math.max(nodes.length, 1)));
-  const avgH = Math.max(LAYOUT_PRESET.minNodeHeight, Math.ceil(sumH / Math.max(nodes.length, 1)));
-  const boundaryGapX = Math.max(LAYOUT_PRESET.minGapX, Math.ceil(avgW * LAYOUT_PRESET.gapRatioX));
-  const boundaryGapY = Math.max(LAYOUT_PRESET.minGapY, Math.ceil(avgH * LAYOUT_PRESET.gapRatioY));
-  const aspect = Math.max(
-    LAYOUT_PRESET.aspectMin,
-    Math.min(LAYOUT_PRESET.aspectMax, viewport.width / Math.max(viewport.height, 1))
-  );
-  const cols = Math.max(1, Math.ceil(Math.sqrt(nodes.length * aspect)));
-  const connectedNodeIds = new Set();
-  for (const e of edges) {
-    if (e?.source !== undefined) connectedNodeIds.add(String(e.source));
-    if (e?.target !== undefined) connectedNodeIds.add(String(e.target));
-  }
-  const connectedRatio = connectedNodeIds.size / Math.max(nodes.length, 1);
-  const treeLike = edges.length > 0 && (
-    connectedRatio >= LAYOUT_PRESET.treeConnectivityThreshold ||
-    edges.length >= nodes.length - 1
-  );
-
-  return { nodes, maxW, maxH, cols, boundaryGapX, boundaryGapY, treeLike };
-}
-
-function computeAdaptiveLayout(graphData, fallbackLayout) {
-  const viewport = getContainerSize();
-  const metrics = analyzeLayoutMetrics(graphData, viewport);
-  if (!metrics.nodes.length) {
-    return {
-      ...(fallbackLayout || {}),
-      type: 'dagre',
-      rankdir: 'LR',
-      nodesep: 80,
-      ranksep: 110,
-    };
-  }
-
-  if (metrics.treeLike) {
-    return {
-      ...(fallbackLayout || {}),
-      type: 'dagre',
-      rankdir: (fallbackLayout && fallbackLayout.rankdir) || 'LR',
-      nodesep: Math.max(
-        metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY,
-        Math.ceil(metrics.maxH * 0.32),
-        52
-      ),
-      ranksep: Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 68),
-    };
-  }
+  const adaptiveNodeSep = Math.max(120, Math.ceil(maxH + 10));
+  const adaptiveRankSep = Math.max(220, Math.ceil(maxW + 10));
 
   return {
-    type: 'grid',
-    cols: metrics.cols,
-    preventOverlap: true,
-    nodeSize: [metrics.maxW, metrics.maxH],
-    preventOverlapPadding: Math.max(metrics.boundaryGapX, metrics.boundaryGapY, 44),
-    sortBy: 'id',
-    padding: [LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding],
+    ...(fallbackLayout || {}),
+    type: (fallbackLayout && fallbackLayout.type) || 'dagre',
+    rankdir: (fallbackLayout && fallbackLayout.rankdir) || 'LR',
+    nodesep: adaptiveNodeSep,
+    ranksep: adaptiveRankSep,
   };
 }
-
-function applyCompactGridLayout(graphData, viewport = null) {
-  const metrics = analyzeLayoutMetrics(graphData, viewport || getContainerSize());
-  const workingData = JSON.parse(JSON.stringify(graphData || { nodes: [], edges: [] }));
-  const nodes = Array.isArray(workingData.nodes) ? workingData.nodes.slice() : [];
-  const cols = Math.max(1, metrics.cols);
-  const stepX = Math.max(metrics.maxW + metrics.boundaryGapX, 96);
-  const stepY = Math.max(Math.ceil(metrics.maxH * 1.12) + metrics.boundaryGapY, 92);
-  const totalRows = Math.max(1, Math.ceil(nodes.length / cols));
-  const totalW = Math.max(0, (cols - 1) * stepX);
-  const totalH = Math.max(0, (totalRows - 1) * stepY);
-  const startX = -Math.floor(totalW / 2);
-  const startY = -Math.floor(totalH / 2);
-
-  nodes.sort((a, b) => String(a?.id ?? '').localeCompare(String(b?.id ?? '')));
-  nodes.forEach((node, idx) => {
-    const row = Math.floor(idx / cols);
-    const col = idx % cols;
-    node.style = node.style || {};
-    node.style.x = startX + col * stepX;
-    node.style.y = startY + row * stepY;
-  });
-
-  return {
-    data: workingData,
-    layout: { type: 'preset' },
-  };
-}
-
-function prepareGraphForLayout(graphData, viewport = null) {
-  const metrics = analyzeLayoutMetrics(graphData, viewport || getContainerSize());
-  if (!metrics.treeLike) {
-    return applyCompactGridLayout(graphData, viewport || getContainerSize());
-  }
-  return {
-    data: graphData,
-    layout: computeAdaptiveLayout(graphData, viewport),
-  };
-}
-
-
-function normalizeLayoutType(layoutTypeRaw) {
-  const t = String(layoutTypeRaw || '').trim().toLowerCase();
-  if (!t || t === 'default' || t === 'dagre') return 'default';
-  if (t === 'concentriclayout' || t === 'concentric') return 'concentric';
-  if (t === 'snakelayout' || t === 'snake') return 'snake';
-  return 'default';
-}
-
-function buildUndirectedAdj(graphData) {
-  const nodeIds = Array.isArray(graphData?.nodes) ? graphData.nodes.map((n) => String(n.id)) : [];
-  const adj = new Map(nodeIds.map((id) => [id, new Set()]));
-  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
-  for (const e of edges) {
-    const s = String(e?.source ?? '');
-    const t = String(e?.target ?? '');
-    if (!adj.has(s) || !adj.has(t) || s === t) continue;
-    adj.get(s).add(t);
-    adj.get(t).add(s);
-  }
-  return adj;
-}
-
-function getConnectedComponents(graphData) {
-  const adj = buildUndirectedAdj(graphData);
-  const seen = new Set();
-  const components = [];
-  for (const id of adj.keys()) {
-    if (seen.has(id)) continue;
-    const queue = [id];
-    seen.add(id);
-    const comp = [];
-    while (queue.length) {
-      const cur = queue.shift();
-      comp.push(cur);
-      for (const nxt of adj.get(cur) || []) {
-        if (seen.has(nxt)) continue;
-        seen.add(nxt);
-        queue.push(nxt);
-      }
-    }
-    components.push(comp.sort());
-  }
-  components.sort((a, b) => b.length - a.length);
-  return components;
-}
-
-function arrangeSnake(componentIds, originX, originY, gapX, gapY) {
-  const out = new Map();
-  const cols = Math.max(1, Math.ceil(Math.sqrt(componentIds.length)));
-  for (let i = 0; i < componentIds.length; i++) {
-    const row = Math.floor(i / cols);
-    const col = i % cols;
-    const snakeCol = row % 2 === 0 ? col : (cols - 1 - col);
-    out.set(componentIds[i], {
-      x: originX + snakeCol * gapX,
-      y: originY + row * gapY,
-    });
-  }
-  return out;
-}
-
-function arrangeConcentric(componentIds, adj, originX, originY, ringStep) {
-  const out = new Map();
-  if (!componentIds.length) return out;
-  const center = componentIds.slice().sort((a, b) => (adj.get(b)?.size || 0) - (adj.get(a)?.size || 0))[0];
-  const levelByNode = new Map([[center, 0]]);
-  const queue = [center];
-  while (queue.length) {
-    const cur = queue.shift();
-    const level = levelByNode.get(cur);
-    for (const nxt of (adj.get(cur) || [])) {
-      if (levelByNode.has(nxt)) continue;
-      levelByNode.set(nxt, level + 1);
-      queue.push(nxt);
-    }
-  }
-
-  const levels = new Map();
-  for (const id of componentIds) {
-    const lv = levelByNode.get(id);
-    const key = Number.isFinite(lv) ? lv : Number.MAX_SAFE_INTEGER;
-    if (!levels.has(key)) levels.set(key, []);
-    levels.get(key).push(id);
-  }
-
-  for (const [lv, ids] of levels.entries()) {
-    ids.sort();
-    if (lv === 0) {
-      out.set(ids[0], { x: originX, y: originY });
-      continue;
-    }
-    if (!Number.isFinite(lv) || lv >= Number.MAX_SAFE_INTEGER) {
-      const loose = arrangeSnake(
-        ids,
-        originX - ringStep,
-        originY + ringStep,
-        ringStep,
-        Math.max(56, Math.floor(ringStep * 0.6))
-      );
-      for (const [id, pos] of loose.entries()) out.set(id, pos);
-      continue;
-    }
-    const radius = ringStep * lv;
-    const count = ids.length;
-    for (let i = 0; i < count; i++) {
-      const theta = (Math.PI * 2 * i) / Math.max(1, count);
-      out.set(ids[i], {
-        x: originX + radius * Math.cos(theta),
-        y: originY + radius * Math.sin(theta),
-      });
-    }
-  }
-  return out;
-}
-
-function applyPresetLayout(graphData, presetType) {
-  const metrics = analyzeLayoutMetrics(graphData, getContainerSize());
-  const workingData = JSON.parse(JSON.stringify(graphData || { nodes: [], edges: [] }));
-  const nodeMap = new Map((workingData.nodes || []).map((n) => [String(n.id), n]));
-  const components = getConnectedComponents(workingData);
-  const compCols = Math.max(1, Math.ceil(Math.sqrt(Math.max(components.length, 1))));
-  const blockW = Math.max(metrics.maxW * 3.4, 360);
-  const blockH = Math.max(metrics.maxH * 3.2, 280);
-  const adj = buildUndirectedAdj(workingData);
-
-  components.forEach((comp, idx) => {
-    const row = Math.floor(idx / compCols);
-    const col = idx % compCols;
-    const originX = col * blockW;
-    const originY = row * blockH;
-    const local = presetType === 'snake'
-      ? arrangeSnake(comp, originX, originY, Math.max(metrics.maxW + metrics.boundaryGapX, 120), Math.max(metrics.maxH + metrics.boundaryGapY, 88))
-      : arrangeConcentric(comp, adj, originX, originY, Math.max(metrics.maxW + metrics.boundaryGapX, 110));
-    for (const [id, pos] of local.entries()) {
-      const node = nodeMap.get(String(id));
-      if (!node) continue;
-      node.style = node.style || {};
-      node.style.x = pos.x;
-      node.style.y = pos.y;
-    }
-  });
-
-  return {
-    data: workingData,
-    layout: { type: 'preset' },
-    hasDisconnected: components.length > 1,
-    componentCount: components.length,
-  };
-}
-
-const prepared = prepareGraphForLayout(data, getContainerSize());
 
 function showFallback(err) {
   fallback.style.display = 'block';
@@ -388,9 +105,7 @@ try {
       drawKeyShape(attributes, container) {
         const name = attributes.name || '';
         const rows = Array.isArray(attributes.rows) ? attributes.rows : [];
-        const rowBindGroups = Array.isArray(attributes.rowBindGroups) ? attributes.rowBindGroups : [];
-        const rowBindBlocks = Array.isArray(attributes.rowBindBlocks) ? attributes.rowBindBlocks : [];
-        const size = attributes.size || [160, 80];
+        const size = attributes.size || [300, 80];
         const width = size[0];
         const height = size[1];
 
@@ -436,99 +151,11 @@ try {
         }
         this.__prevHeaderLineCount = headerLines.length;
 
-        const rowCount = rows.length;
-        const bindPalette = ['#d9ecff', '#d6f5e8', '#fbe6c8', '#e6dcff', '#ffe1ea'];
-        const colorForGroup = (group) => {
-          const s = String(group || '');
-          let h = 0;
-          for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) >>> 0;
-          return bindPalette[h % bindPalette.length];
-        };
-        const runs = [];
-        let runStart = null;
-        let runGroup = null;
-        let runBlock = null;
-        for (let i = 0; i < rowCount; i++) {
-          const g = rowBindGroups[i] || null;
-          const b = rowBindBlocks[i] || null;
-          if (!g || !b) {
-            if (runGroup !== null) {
-              runs.push({ group: runGroup, block: runBlock, start: runStart, end: i - 1 });
-              runStart = null;
-              runGroup = null;
-              runBlock = null;
-            }
-            continue;
-          }
-          if (runGroup === null || runBlock === null) {
-            runGroup = g;
-            runBlock = b;
-            runStart = i;
-            continue;
-          }
-          if (b !== runBlock) {
-            runs.push({ group: runGroup, block: runBlock, start: runStart, end: i - 1 });
-            runGroup = g;
-            runBlock = b;
-            runStart = i;
-          }
-        }
-        if (runGroup !== null) {
-          runs.push({ group: runGroup, block: runBlock, start: runStart, end: rowCount - 1 });
-        }
-
-        runs.forEach((run, i) => {
-          const y = -height / 2 + headerH + paddingY + run.start * rowH + 1;
-          const h = (run.end - run.start + 1) * rowH - 2;
-          this.upsert(`bind-block-${i}`, 'rect', {
-            x: -width / 2 + 4,
-            y,
-            width: width - 8,
-            height: Math.max(h, 2),
-            radius: 4,
-            fill: colorForGroup(run.group),
-            stroke: 'transparent',
-          }, container);
-        });
-        const prevRunCount = this.__prevBindRunCount || 0;
-        for (let i = runs.length; i < prevRunCount; i++) {
-          this.upsert(`bind-block-${i}`, 'rect', {
-            x: -width / 2 + 4,
-            y: -height / 2,
-            width: 0,
-            height: 0,
-            radius: 0,
-            fill: 'transparent',
-            stroke: 'transparent',
-          }, container);
-        }
-        this.__prevBindRunCount = runs.length;
+        const rowCount = Math.max(rows.length, 1);
 
         for (let i = 0; i < rowCount; i++) {
           const y = -height / 2 + headerH + paddingY + i * rowH + 2;
           const text = rows[i] || '';
-          const bindGroup = rowBindGroups[i];
-          if (bindGroup) {
-            this.upsert(`bind-bg-${i}`, 'rect', {
-              x: -width / 2 + 4,
-              y: y - 1,
-              width: width - 8,
-              height: rowH - 2,
-              radius: 3,
-              fill: '#d9ecff',
-              stroke: 'transparent',
-            }, container);
-          } else {
-            this.upsert(`bind-bg-${i}`, 'rect', {
-              x: -width / 2 + 4,
-              y: y - 1,
-              width: width - 8,
-              height: rowH - 2,
-              radius: 3,
-              fill: 'transparent',
-              stroke: 'transparent',
-            }, container);
-          }
           if (text) {
             this.upsert(`field-${i}`, 'text', {
               x: -width / 2 + paddingX,
@@ -553,9 +180,9 @@ try {
       width: window.innerWidth,
       height: window.innerHeight,
       autoResize: true,
-      data: prepared.data,
+      data,
 
-      layout: prepared.layout,
+      layout: computeAdaptiveLayout(data, baseLayout),
 
       node: {
         type: 'card',
