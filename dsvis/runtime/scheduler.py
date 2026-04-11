@@ -1,4 +1,3 @@
-import dsvis
 import json
 import atexit
 from pathlib import Path
@@ -65,6 +64,9 @@ class Scheduler:
         if caller_frame is None:
             return
 
+        # 延迟导入以避免循环导入
+        from .. import dsvis
+
         self._ensure_source_loaded(caller_frame)
         root_scope = {
             "__locals__": dict(caller_frame.f_locals),
@@ -104,6 +106,9 @@ class Scheduler:
             return
         
         try:
+            # 延迟导入以避免循环导入
+            from .. import dsvis
+            
             # 生成默认标题
             title = f"DSVis Debugger ({Path(self.source_file).name if self.source_file else 'script'})"
             

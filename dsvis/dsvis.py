@@ -8,21 +8,18 @@ import weakref
 from collections import deque
 from pathlib import Path
 
-from runtime.config import (
+from .runtime.config import (
     get_mode,
     get_pointer_watchers,
     get_watch_vars,
     set_mode,
 )
-from runtime.scheduler import scheduler
+from .runtime.scheduler import scheduler
 
 __all__ = [
     "capture",
     "auto",
-    "watch_vars",
-    "observe",
     "bind_fields",
-    "bind_lists",
     "set_mode",
 ]
 
@@ -32,8 +29,6 @@ _DEFAULT_LAYOUT = {
     "nodesep": 120,
     "ranksep": 220,
 }
-
-_OBJECT_FIELD_BINDINGS = weakref.WeakKeyDictionary()
 
 _OBJECT_FIELD_BINDINGS = weakref.WeakKeyDictionary()
 
@@ -218,6 +213,9 @@ def bind_fields(obj, **field_specs):
             _bind_field_internal(obj, field, parsed[0], parsed[1])
             continue
         raise ValueError(f"字段 {field} 的绑定规格无效，需为 ('A', 3) 或 'A:3'")
+
+
+
 
 
 def _get_instance_bound_specs(obj):
@@ -582,6 +580,8 @@ def _build_g6_data(nodes, edges):
         display_rows = [r.get("text", "") for r in rows]
         bind_groups = [r.get("bind_group") for r in rows]
         bind_blocks = [r.get("bind_block") for r in rows]
+        bind_groups = [r.get("bind_group") for r in rows]
+        bind_blocks = [r.get("bind_block") for r in rows]
         header_line_count = max(1, len(str(name).splitlines()))
         header_h = max(default_header_h, header_line_count * 16)
 
@@ -747,69 +747,65 @@ def _find_main_script():
     return None
 
 
-def auto():
+def auto(fn=None):
     """
-    显式启用 AST 自动插桩模式：
-    用户在脚本顶部写：
-
+    自动追踪模式，支持两种用法：
+    
+    1) 装饰器用法（顶层使用）：
+        @dsvis.auto()
+        def main():
+            pass
+    
+    2) 脚本顶部调用（启用 AST 自动插桩）：
         import dsvis
-        dsvis.auto()
+        dsvis.auto()  # 如果没有被用作装饰器
     """
-    if os.environ.get("DSVIS_AST_RUNNING") == "1":
-        return
-
-    main_file = _find_main_script()
-    if not main_file:
-        raise RuntimeError("dsvis.auto() 只能在脚本主模块中调用")
-    if Path(main_file).resolve() == Path(__file__).resolve():
-        return
-
-    from runtime.ast_hook import run_file
-
-    run_file(main_file)
-    raise SystemExit(0)
-
-
-def watch_vars(*names, pointers=None):
-    pointers = list(pointers or [])
-
-    def decorator(fn):
+    
+    def make_decorator():
+        """返回实际的装饰器"""
+        def decorator(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                # 装饰器模式：在函数执行期间收集所有变化
+                result = fn(*args, **kwargs)
+                
+                # 函数执行完后刷新调度器以生成可视化
+                scheduler.flush()
+                
+                return result
+            
+            return wrapper
+        return decorator
+    
+    # 如果 fn 是可调用的，说明被用作 @auto 不带括号
+    if callable(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            from runtime.config import pop_watch_context, push_watch_context
-
-            push_watch_context(set(names), pointers)
-            try:
-                return fn(*args, **kwargs)
-            finally:
-                pop_watch_context()
-
+            result = fn(*args, **kwargs)
+            scheduler.flush()
+            return result
         return wrapper
+    
+    # fn 为 None，说明是 @auto() 带括号的装饰器用法或脚本顶部调用
+    # 先尝试检查调用栈，看是否在装饰器上下文中
+    frame = inspect.currentframe()
+    try:
+        # 查看调用栈，是否下一帧就是被装饰的函数定义
+        caller = frame.f_back if frame else None
+        if caller and caller.f_code.co_name == '<module>':
+            # 在模块级别被调用，可能是装饰器或脚本顶部调用
+            # 检查环境变量看是否已经在 AST 运行中
+            if os.environ.get("DSVIS_AST_RUNNING") != "1":
+                # 第一次调用且在主模块，执行 AST 模式
+                main_file = _find_main_script()
+                if main_file and Path(main_file).resolve() != Path(__file__).resolve():
+                    from .runtime.ast_hook import run_file
+                    run_file(main_file)
+                    raise SystemExit(0)
+    finally:
+        del frame
+    
+    # 返回装饰器
+    return make_decorator()
 
-    return decorator
 
-
-def observe(vars=None, pointers=None):
-    from runtime.trigger import trigger
-
-    trigger(observed_vars=set(vars or []), pointer_watchers=list(pointers or []))
-
-
-
-
-
-def bind_lists(*tokens):
-    """
-    类装饰器：为数据结构声明“列表绑定”关系。
-
-    示例：
-        @bind_lists("keys@A:3", "children@A:1", "vals2@B:2", "children2@B:1")
-        class Node: ...
-    """
-    parsed_tokens = [t for t in tokens if _parse_bind_token(t)]
-
-    def decorator(cls):
-        setattr(cls, "__dsvis_bindings__", list(parsed_tokens))
-        return cls
-
-    return decorator

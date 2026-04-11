@@ -1,14 +1,14 @@
 import random
 import dsvis
-
+dsvis.auto()
 
 class BTreeNode:
 
     def __init__(self, t, leaf=False):
         self.t = t                  # 最小度数
         self.leaf = leaf            # 是否叶子节点
-        self.children = []          # 子节点
-        self.keys = []              # 存储键
+        self.children = []                              # 子节点
+        self.keys = []                                  # 存储键
 
         dsvis.bind_fields(self, keys=("A", 1), children=("A", 1))
 
@@ -142,17 +142,14 @@ def build_random_btree():
 
     for num in data:
         btree.insert(num)
+        #dsvis.capture()
 
     return btree
 
 
-@dsvis.auto()
-def main():
+if __name__ == "__main__":
     # 执行构建
     btree_instance = build_random_btree()
     ok, msg = btree_instance.validate()
     assert ok, f"BTree 校验失败: {msg}"
-
-
-if __name__ == "__main__":
-    main()
+dsvis.capture()
