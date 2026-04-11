@@ -14,7 +14,6 @@ class Scheduler:
         self.max_nodes = 300  # 默认值，可被 capture 覆盖
         self.include_private = False  # 默认值，可被 capture 覆盖
         self.effective_layout = None  # 由 capture 设置
-        self.custom_title = None  # 由 capture 设置
         atexit.register(self.flush)
 
     @staticmethod
@@ -62,7 +61,7 @@ class Scheduler:
         self.source_file = str(p)
         self.source_lines = p.read_text(encoding="utf-8").splitlines()
 
-    def request_update(self, caller_frame=None, lineno=None, observed_vars=None, pointer_watchers=None, tag=None, max_nodes=None, include_private=None):
+    def request_update(self, caller_frame=None, lineno=None, observed_vars=None, pointer_watchers=None, max_nodes=None, include_private=None):
         if caller_frame is None:
             return
 
@@ -97,7 +96,6 @@ class Scheduler:
                 "lineno": lineno or caller_frame.f_lineno,
                 "nodes": nodes,
                 "edges": edges,
-                "tag": tag,
             }
         )
 
@@ -106,11 +104,8 @@ class Scheduler:
             return
         
         try:
-            # 确定最终的标题：优先使用自定义标题，否则使用默认格式
-            if self.custom_title:
-                title = self.custom_title
-            else:
-                title = f"DSVis Debugger ({Path(self.source_file).name if self.source_file else 'script'})"
+            # 生成默认标题
+            title = f"DSVis Debugger ({Path(self.source_file).name if self.source_file else 'script'})"
             
             # 调用渲染函数
             dsvis._render_debugger(
@@ -127,7 +122,6 @@ class Scheduler:
             self.source_lines = []
             self.source_file = None
             self.effective_layout = None
-            self.custom_title = None
 
 
 scheduler = Scheduler()

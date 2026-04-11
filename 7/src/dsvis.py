@@ -21,8 +21,6 @@ __all__ = [
     "auto",
     "watch_vars",
     "observe",
-    "observe_ptr",
-    "bind_field",
     "bind_fields",
     "bind_lists",
     "set_mode",
@@ -156,6 +154,24 @@ def _parse_bind_token(token):
     return field, group, ratio
 
 
+def _bind_field_internal(obj, field, group, ratio=1):
+    """
+    内部函数，用于绑定单个字段。
+    """
+    if obj is None:
+        return
+    field_name = str(field).strip()
+    group_name = str(group).strip()
+    try:
+        r = int(ratio)
+    except Exception:
+        raise ValueError("ratio 必须是正整数")
+    if not field_name or not group_name or r <= 0:
+        raise ValueError("字段绑定参数无效")
+    mapping = _OBJECT_FIELD_BINDINGS.setdefault(obj, {})
+    mapping[field_name] = (group_name, r)
+
+
 def _parse_inline_bind_spec(spec):
     if not isinstance(spec, str):
         return None
@@ -181,24 +197,7 @@ def _parse_inline_bind_spec(spec):
     return group, ratio
 
 
-def bind_field(obj, field, group, ratio=1):
-    """
-    不改赋值表达式的绑定方式：
-        self.keys = []
-        dsvis.bind_field(self, "keys", "A", 3)
-    """
-    if obj is None:
-        return
-    field_name = str(field).strip()
-    group_name = str(group).strip()
-    try:
-        r = int(ratio)
-    except Exception:
-        raise ValueError("ratio 必须是正整数")
-    if not field_name or not group_name or r <= 0:
-        raise ValueError("bind_field 参数无效")
-    mapping = _OBJECT_FIELD_BINDINGS.setdefault(obj, {})
-    mapping[field_name] = (group_name, r)
+
 
 
 def bind_fields(obj, **field_specs):
@@ -210,13 +209,13 @@ def bind_fields(obj, **field_specs):
     """
     for field, spec in field_specs.items():
         if isinstance(spec, tuple) and len(spec) == 2:
-            bind_field(obj, field, spec[0], spec[1])
+            _bind_field_internal(obj, field, spec[0], spec[1])
             continue
         if isinstance(spec, str):
             parsed = _parse_inline_bind_spec(spec)
             if not parsed:
                 raise ValueError(f"字段 {field} 的绑定规格无效")
-            bind_field(obj, field, parsed[0], parsed[1])
+            _bind_field_internal(obj, field, parsed[0], parsed[1])
             continue
         raise ValueError(f"字段 {field} 的绑定规格无效，需为 ('A', 3) 或 'A:3'")
 
@@ -661,34 +660,6 @@ def _build_g6_data(nodes, edges):
     return g6_data
 
 
-def _render_g6(nodes, edges, title="AutoViz Snapshot", layout=None):
-    import tempfile
-    import webbrowser
-    import json
-    from pathlib import Path
-
-    g6_data = _build_g6_data(nodes, edges)
-    layout = _normalize_layout(layout)
-
-    template_path = Path(__file__).parent / "template.html"
-    html = template_path.read_text(encoding="utf-8")
-
-    html = html.replace("__DATA__", json.dumps(g6_data))
-    html = html.replace("__LAYOUT__", json.dumps(layout))
-    html = html.replace("__TITLE__", title)
-
-    fd, path = tempfile.mkstemp(suffix=".html")
-    html_path = Path(path)
-
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(html)
-
-    webbrowser.open(html_path.as_uri())
-    print(f"[dsvis] G6 HTML 输出：{html_path}")
-
-    return html_path
-
-
 def _render_debugger(steps, source_lines, title="DSVis Debugger", layout=None):
     import tempfile
     import webbrowser
@@ -703,7 +674,7 @@ def _render_debugger(steps, source_lines, title="DSVis Debugger", layout=None):
             "graph": _build_g6_data(step.get("nodes", []), step.get("edges", [])),
         })
 
-    template_path = Path(__file__).parent / "debug_template.html"
+    template_path = Path(__file__).parent / "template.html"
     html = template_path.read_text(encoding="utf-8")
     html = html.replace("__TITLE__", title)
     html = html.replace("__STEPS__", json.dumps(step_payload, ensure_ascii=False))
@@ -716,19 +687,17 @@ def _render_debugger(steps, source_lines, title="DSVis Debugger", layout=None):
         f.write(html)
 
     webbrowser.open(html_path.as_uri())
-    print(f"[dsvis] Debugger HTML 输出：{html_path}")
+    print(f"[dsvis] HTML 输出：{html_path}")
     return html_path
 
 # ---------- 对外接口 ----------
 
 def capture(
-    title="AutoViz Snapshot",
     max_nodes=300,
     include_private=False,
     include_containers=None,
     focus_vars=None,
     pointer_watchers=None,
-    layout=None,
     _caller_frame=None,
 ):
     frame = inspect.currentframe()
@@ -746,10 +715,6 @@ def capture(
         merged_focus = set(get_watch_vars()) | set(focus_vars or [])
         merged_pointers = list(get_pointer_watchers()) + list(pointer_watchers or [])
         
-        # 只在第一个 capture 时设置 scheduler 的标题
-        if not scheduler.custom_title and title and title != "AutoViz Snapshot":
-            scheduler.custom_title = title
-        
         # 调用 scheduler 的 request_update，就像 trigger 一样
         # 这会检查数据是否变化，如果变化就添加到 steps 中
         scheduler.request_update(
@@ -757,7 +722,6 @@ def capture(
             lineno=caller.f_lineno,
             observed_vars=merged_focus,
             pointer_watchers=merged_pointers,
-            tag=title,
             max_nodes=max_nodes,
             include_private=include_private,
         )
@@ -825,14 +789,13 @@ def watch_vars(*names, pointers=None):
     return decorator
 
 
-def observe(tag=None, vars=None, pointers=None):
+def observe(vars=None, pointers=None):
     from runtime.trigger import trigger
 
-    trigger(observed_vars=set(vars or []), pointer_watchers=list(pointers or []), tag=tag)
+    trigger(observed_vars=set(vars or []), pointer_watchers=list(pointers or []))
 
 
-def observe_ptr(name, container, tag=None):
-    observe(tag=tag, pointers=[(name, container)])
+
 
 
 def bind_lists(*tokens):

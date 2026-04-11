@@ -3,7 +3,7 @@ import inspect
 from .scheduler import scheduler
 
 
-def trigger(lineno=None, observed_vars=None, pointer_watchers=None, tag=None):
+def trigger(lineno=None, observed_vars=None, pointer_watchers=None):
     frame = inspect.currentframe()
     caller = frame.f_back if frame else None
     try:
@@ -12,7 +12,6 @@ def trigger(lineno=None, observed_vars=None, pointer_watchers=None, tag=None):
             lineno=lineno,
             observed_vars=observed_vars,
             pointer_watchers=pointer_watchers,
-            tag=tag,
         )
     finally:
         del frame

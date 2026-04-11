@@ -1,0 +1,74 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# Test & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+*.out
+
+# Generated files & Reports (keep only API docs in version control)
+BUGFIX_SUMMARY.md
+COMPLETION_REPORT.md
+FINAL_REPORT.md
+TEST_COMPREHENSIVE_GUIDE.md
+TEST_QUICK_REFERENCE.md
+TEST_SUMMARY_REPORT.md
+debug-logs/
+*.html
+!template.html
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (if any frontend build tools)
+node_modules/
+npm-debug.log
+yarn-error.log

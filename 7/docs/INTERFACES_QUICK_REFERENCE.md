@@ -195,7 +195,7 @@ head.next.next = Node(3)
 dsvis.capture(title="继续添加")
 ```
 
-**输出：** debug_template.html，包含 3 个步骤，可用 Prev/Next 导航
+**输出：** template.html，包含 3 个步骤，可用 Prev/Next 导航
 
 ---
 
@@ -216,7 +216,7 @@ bst.insert(3)
 bst.insert(7)
 ```
 
-**输出：** debug_template.html，包含所有自动 trigger 的步骤
+**输出：** template.html，包含所有自动 trigger 的步骤
 
 ---
 
@@ -269,7 +269,7 @@ dsvis.capture(title="扩展children")
 
 所有模式都输出同一个调试界面格式：
 
-**debug_template.html** 
+**template.html** 
 - 左：数据结构可视化（G6 图表）
 - 中：源代码查看器
 - 右/下：步骤导航和控制
@@ -349,7 +349,7 @@ dsvis.capture(title="Initial state")
 
 dsvis.capture(title="After changes")
 
-# 程序结束时自动打开 debug_template.html
+# 程序结束時自动打开 template.html
 ```
 
 ### 最自动的方式 - Auto

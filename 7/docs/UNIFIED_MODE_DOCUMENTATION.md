@@ -16,7 +16,7 @@
 - `dsvis.capture()` 将步骤添加到 scheduler
 - 所有 capture 被收集到 steps 列表中
 - 程序结束时统一通过 `scheduler.flush()` 渲染
-- 使用 `debug_template.html` 渲染，支持多步骤导航
+- 使用 `template.html` 渲染，支持多步骤导航
 
 ### 2. 核心实现变更
 
@@ -46,10 +46,10 @@ def request_update(self, caller_frame=None, lineno=None, observed_vars=None,
 
 ```
 Auto 模式：
-代码 → AST 注入 trigger() → scheduler.request_update() → scheduler.flush() → debug_template.html
+代码 → AST 注入 trigger() → scheduler.request_update() → scheduler.flush() → template.html
 
 Capture 模式（改造后）：
-代码 → 手动 capture() → scheduler.request_update() → scheduler.flush() → debug_template.html
+代码 → 手动 capture() → scheduler.request_update() → scheduler.flush() → template.html
 
 两者现在完全统一！
 ```
@@ -68,7 +68,7 @@ dsvis.capture()  # 生成第二个 HTML，覆盖前面的
 # 所有 capture 被收集到一个 HTML 中，可以导航
 dsvis.capture(title="Step 1")
 dsvis.capture(title="Step 2")
-# 程序结束时会生成一个 debug_template.html，可以 Prev/Next 在各步骤间切换
+# 程序结束時会生成一个 template.html，可以 Prev/Next 在各步骤间切换
 ```
 
 ### 5. 与 Auto 模式的协作
@@ -116,11 +116,11 @@ dsvis.capture(title="Step 2")
 ✓ 完全向后兼容
 - 用户代码无需改动
 - `capture()` 的所有参数仍然有效
-- 现有的 `template.html` 和 `debug_template.html` 无需改动
+- 现有的 `template.html` 已经是所有功能的统一模板
 
 ## 优势
 
-1. **统一的调试界面** - capture 和 auto 使用同一个 debug_template.html
+1. **统一的调试界面** - capture 和 auto 使用同一个 template.html
 2. **多步骤导航** - 可以在各个 capture 点间切换
 3. **代码同步显示** - 源代码和当前行自动高亮
 4. **灵活的标记** - capture 可以标记每个步骤

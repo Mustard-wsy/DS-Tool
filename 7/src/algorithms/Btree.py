@@ -3,10 +3,6 @@ import dsvis
 dsvis.auto()
 
 class BTreeNode:
-    # __dsvis_bindings__ = [
-    #     "keys@A:3",
-    #     "children@A:1",
-    # ]
 
     def __init__(self, t, leaf=False):
         self.t = t                  # 最小度数
