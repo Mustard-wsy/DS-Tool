@@ -1,3 +1,7 @@
+# ============================================================================
+# DSVis .gitignore - 仅上传核心库和文档
+# ============================================================================
+
 # Python
 __pycache__/
 *.py[cod]
@@ -33,20 +37,19 @@ env/
 *.swp
 *.swo
 *~
-.DS_Store
 .project
 .pydevproject
 .settings/
 *.sublime-project
 *.sublime-workspace
 
-# Test & Coverage
+# Test & Coverage (测试代码不上传)
+tests/
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
 .hypothesis/
-tests/
 
 # Temporary files
 *.tmp
@@ -54,22 +57,32 @@ tests/
 *.log
 *.out
 
-# Generated files & Reports (keep only API docs in version control)
+# Generated HTML files (except template.html which is part of the library)
+debug-logs/
+*.html
+!dsvis/template.html
+
+# Development documentation (不上传)
+OPTIMIZATION_SUMMARY.md
+PROJECT_REORGANIZATION.md
+LIBRARY_REFACTOR_SUMMARY.md
+QUICKSTART.md
+GITIGNORE_GUIDE.md
+run_examples.py
+
+# Old report files
 BUGFIX_SUMMARY.md
 COMPLETION_REPORT.md
 FINAL_REPORT.md
 TEST_COMPREHENSIVE_GUIDE.md
 TEST_QUICK_REFERENCE.md
 TEST_SUMMARY_REPORT.md
-debug-logs/
-*.html
-!template.html
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Node (if any frontend build tools)
+# Node
 node_modules/
 npm-debug.log
 yarn-error.log
