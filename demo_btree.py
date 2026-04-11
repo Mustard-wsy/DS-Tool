@@ -1,7 +1,6 @@
 import random
 import dsvis
 dsvis.auto()
-
 class BTreeNode:
 
     def __init__(self, t, leaf=False):
