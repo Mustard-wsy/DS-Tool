@@ -46,6 +46,7 @@ env/
 htmlcov/
 .tox/
 .hypothesis/
+tests/
 
 # Temporary files
 *.tmp
