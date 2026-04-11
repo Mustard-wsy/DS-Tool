@@ -24,27 +24,6 @@
     display: none;
     z-index: 10;
   }
-  #zoomControls {
-    position: fixed;
-    right: 14px;
-    bottom: 14px;
-    z-index: 20;
-    background: rgba(255, 255, 255, 0.92);
-    border: 1px solid #d9d9d9;
-    border-radius: 8px;
-    padding: 8px 10px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
-    font-family: Consolas, monospace;
-    font-size: 12px;
-    color: #333;
-    user-select: none;
-  }
-  #zoomControls label {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    cursor: pointer;
-  }
 </style>
 <script src="https://unpkg.com/@antv/g6@5.0.51/dist/g6.min.js"></script>
 </head>
@@ -52,12 +31,6 @@
 <body style="margin:0">
 <div id="fallback">G6 加载失败或渲染出错（请检查控制台错误）。</div>
 <div id="container"></div>
-<div id="zoomControls">
-  <label>
-    <input id="autoFitToggle" type="checkbox" checked />
-    自动缩放
-  </label>
-</div>
 
 <script>
 const data = __DATA__;
@@ -122,8 +95,18 @@ try {
           width,
           height,
           radius: 4,
-          fill: attributes.fill || '#e8f0fe',
-          stroke: attributes.stroke || '#5b8ff9',
+          fill: '#e8f0fe',
+          stroke: '#5b8ff9',
+        }, container);
+
+        this.upsert('header-bg', 'rect', {
+          x: -width / 2,
+          y: -height / 2,
+          width,
+          height: headerH + paddingY,
+          fill: '#dbe7ff',
+          stroke: 'transparent',
+          radius: 4,
         }, container);
 
         const prevHeaderLineCount = this.__prevHeaderLineCount || 0;
@@ -187,6 +170,10 @@ try {
       node: {
         type: 'card',
         style: {
+          fill: '#e8f0fe',
+          stroke: '#5b8ff9',
+          radius: 4,
+          label: false,
           port: true
         }
       },
@@ -204,10 +191,6 @@ try {
       behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element'],
       transforms: ['process-parallel-edges']
     });
-
-    if (typeof graph.setZoomRange === 'function') {
-      graph.setZoomRange([0.05, AUTO_FIT_CONFIG.maxScale]);
-    }
 
     graph.render();
 
@@ -388,16 +371,7 @@ try {
         return { top: 48, right: 48, bottom: 48, left: 48 };
       }
 
-      const ringInset = Math.max(
-        AUTO_FIT_CONFIG.minInnerRingPx,
-        Math.floor(Math.min(rect.width, rect.height) * AUTO_FIT_CONFIG.innerRingRatio)
-      );
-      const base = {
-        top: 28 + ringInset,
-        right: 28 + ringInset,
-        bottom: 28 + ringInset,
-        left: 28 + ringInset,
-      };
+      const base = { top: 28, right: 28, bottom: 28, left: 28 };
       const computed = getComputedStyle(document.documentElement);
       const cssPadding = {
         top: Number.parseFloat(computed.getPropertyValue('--dsvis-safe-top')) || 0,
@@ -446,32 +420,43 @@ try {
     }
 
     function applyAutoFitViewport() {
-      const size = getContainerSize();
-      const ringInset = Math.max(
-        AUTO_FIT_CONFIG.minInnerRingPx,
-        Math.floor(Math.min(size.width, size.height) * AUTO_FIT_CONFIG.innerRingRatio)
-      );
-      const fitPadding = {
-        top: FIT_PADDING.top + ringInset,
-        right: FIT_PADDING.right + ringInset,
-        bottom: FIT_PADDING.bottom + ringInset,
-        left: FIT_PADDING.left + ringInset,
-      };
+      const container = document.getElementById('container');
+      const viewportWidth = container?.clientWidth || window.innerWidth;
+      const viewportHeight = container?.clientHeight || window.innerHeight;
+      const safePadding = getSafeViewportPadding();
+      const bounds = computeContentBounds();
+
+      if (!bounds) {
+        if (typeof graph.fitView === 'function') {
+          graph.fitView({
+            padding: [safePadding.top, safePadding.right, safePadding.bottom, safePadding.left],
+          });
+        } else if (typeof graph.fitCenter === 'function') {
+          graph.fitCenter();
+        }
+        return;
+      }
+
+      const availableWidth = Math.max(1, viewportWidth - safePadding.left - safePadding.right);
+      const availableHeight = Math.max(1, viewportHeight - safePadding.top - safePadding.bottom);
+      const scaleX = availableWidth / bounds.width;
+      const scaleY = availableHeight / bounds.height;
+      const targetScale = Math.min(scaleX, scaleY, 1);
+      const safeScale = Number.isFinite(targetScale) && targetScale > 0 ? targetScale : 1;
+
       if (typeof graph.fitView === 'function') {
         graph.fitView({
-          padding: [fitPadding.top, fitPadding.right, fitPadding.bottom, fitPadding.left],
+          padding: [safePadding.top, safePadding.right, safePadding.bottom, safePadding.left],
           when: 'always',
-          animation: false,
         });
-        if (typeof graph.getZoom === 'function' && typeof graph.zoomTo === 'function') {
-          const currentScale = Number(graph.getZoom());
-          if (Number.isFinite(currentScale) && currentScale > AUTO_FIT_CONFIG.maxScale) {
-            graph.zoomTo(AUTO_FIT_CONFIG.maxScale, { x: size.width / 2, y: size.height / 2 }, false);
-          }
-        }
       } else {
         if (typeof graph.fitCenter === 'function') {
           graph.fitCenter();
+        }
+        const focusX = (safePadding.left + (viewportWidth - safePadding.right)) / 2;
+        const focusY = (safePadding.top + (viewportHeight - safePadding.bottom)) / 2;
+        if (typeof graph.zoomTo === 'function') {
+          graph.zoomTo(safeScale, { x: focusX, y: focusY }, false);
         }
       }
     }
@@ -494,7 +479,6 @@ try {
     graph.on('element:drag', onDragMove);
 
     graph.on('element:dragend', onDragEnd);
-
   }
 } catch (err) {
   console.error(err);

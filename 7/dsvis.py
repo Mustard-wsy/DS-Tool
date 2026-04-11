@@ -14,6 +14,7 @@ from runtime.config import (
     get_watch_vars,
     set_mode,
 )
+from runtime.scheduler import scheduler
 
 __all__ = [
     "capture",
@@ -738,26 +739,28 @@ def capture(
         return
 
     try:
-        root_scope = {
-            "__locals__": dict(caller.f_locals),
-            "__globals__": dict(caller.f_globals)
-        }
-
+        # 统一模式：capture 现在使用 scheduler，就像 trigger 一样
+        # 这样 capture 就和 auto 模式统一了，都通过 scheduler 收集 steps，最后一起渲染
         mode = get_mode()
         container_flag = (mode == "fine") if include_containers is None else include_containers
         merged_focus = set(get_watch_vars()) | set(focus_vars or [])
         merged_pointers = list(get_pointer_watchers()) + list(pointer_watchers or [])
-        nodes, edges = _walk(
-            root_scope,
+        
+        # 只在第一个 capture 时设置 scheduler 的标题
+        if not scheduler.custom_title and title and title != "AutoViz Snapshot":
+            scheduler.custom_title = title
+        
+        # 调用 scheduler 的 request_update，就像 trigger 一样
+        # 这会检查数据是否变化，如果变化就添加到 steps 中
+        scheduler.request_update(
+            caller_frame=caller,
+            lineno=caller.f_lineno,
+            observed_vars=merged_focus,
+            pointer_watchers=merged_pointers,
+            tag=title,
             max_nodes=max_nodes,
             include_private=include_private,
-            include_containers=container_flag,
-            focus_vars=merged_focus,
-            pointer_watchers=merged_pointers,
         )
-
-        effective_layout = _normalize_layout(layout)
-        return _render_g6(nodes, edges, title, layout=effective_layout)
 
     finally:
         del frame

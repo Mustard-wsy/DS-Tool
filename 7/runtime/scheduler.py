@@ -11,6 +11,10 @@ class Scheduler:
         self.steps = []
         self.source_lines = []
         self.source_file = None
+        self.max_nodes = 300  # 默认值，可被 capture 覆盖
+        self.include_private = False  # 默认值，可被 capture 覆盖
+        self.effective_layout = None  # 由 capture 设置
+        self.custom_title = None  # 由 capture 设置
         atexit.register(self.flush)
 
     @staticmethod
@@ -58,7 +62,7 @@ class Scheduler:
         self.source_file = str(p)
         self.source_lines = p.read_text(encoding="utf-8").splitlines()
 
-    def request_update(self, caller_frame=None, lineno=None, observed_vars=None, pointer_watchers=None, tag=None):
+    def request_update(self, caller_frame=None, lineno=None, observed_vars=None, pointer_watchers=None, tag=None, max_nodes=None, include_private=None):
         if caller_frame is None:
             return
 
@@ -70,8 +74,15 @@ class Scheduler:
         mode = get_mode()
         merged_focus = set(get_watch_vars()) | set(observed_vars or [])
         merged_pointers = list(get_pointer_watchers()) + list(pointer_watchers or [])
+        
+        # 使用提供的参数，或者使用 scheduler 的默认值
+        effective_max_nodes = max_nodes if max_nodes is not None else self.max_nodes
+        effective_include_private = include_private if include_private is not None else self.include_private
+        
         nodes, edges = dsvis._walk(
             root_scope,
+            max_nodes=effective_max_nodes,
+            include_private=effective_include_private,
             include_containers=(mode == "fine"),
             focus_vars=merged_focus,
             pointer_watchers=merged_pointers,
@@ -93,13 +104,30 @@ class Scheduler:
     def flush(self):
         if not self.steps:
             return
-        dsvis._render_debugger(
-            self.steps,
-            self.source_lines,
-            title=f"DSVis Debugger ({Path(self.source_file).name if self.source_file else 'script'})",
-            layout=None,
-        )
-        self.steps = []
+        
+        try:
+            # 确定最终的标题：优先使用自定义标题，否则使用默认格式
+            if self.custom_title:
+                title = self.custom_title
+            else:
+                title = f"DSVis Debugger ({Path(self.source_file).name if self.source_file else 'script'})"
+            
+            # 调用渲染函数
+            dsvis._render_debugger(
+                self.steps,
+                self.source_lines,
+                title=title,
+            )
+        except Exception as e:
+            print(f"[dsvis] Scheduler flush 出错：{e}")
+        finally:
+            # 清空状态，为下一轮做准备
+            self.steps = []
+            self.last_signature = None
+            self.source_lines = []
+            self.source_file = None
+            self.effective_layout = None
+            self.custom_title = None
 
 
 scheduler = Scheduler()

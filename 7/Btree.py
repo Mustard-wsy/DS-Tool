@@ -3,17 +3,18 @@ import dsvis
 dsvis.auto()
 
 class BTreeNode:
-    __dsvis_bindings__ = [
-        "keys@A:3",
-        "children@A:1",
-    ]
+    # __dsvis_bindings__ = [
+    #     "keys@A:3",
+    #     "children@A:1",
+    # ]
 
     def __init__(self, t, leaf=False):
         self.t = t                  # 最小度数
         self.leaf = leaf            # 是否叶子节点
-        self.keys = []                                  # 存储键
         self.children = []                              # 子节点
-        dsvis.bind_fields(self, keys=("A", 3), children=("A", 1))
+        self.keys = []                                  # 存储键
+
+        dsvis.bind_fields(self, keys=("A", 1), children=("A", 1))
 
 
 class BTree:
@@ -155,3 +156,4 @@ if __name__ == "__main__":
     btree_instance = build_random_btree()
     ok, msg = btree_instance.validate()
     assert ok, f"BTree 校验失败: {msg}"
+dsvis.capture()
