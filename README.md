@@ -1,93 +1,178 @@
-# DS工具
+# DSVis - 数据结构可视化库
 
+> 一个可以直接集成到你项目中的实时可视化工具。让算法执行过程一目了然！
 
+## 快速开始
 
-## Getting started
+### 1. 复制库到你的项目
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
-```
-cd existing_repo
-git remote add origin https://git.nju.edu.cn/Mustard/ds.git
-git branch -M main
-git push -uf origin main
+```bash
+your_project/
+├── main.py         # 你的脚本
+└── dsvis/          # 复制本项目的 dsvis/ 文件夹过来
+    ├── __init__.py
+    ├── dsvis.py
+    ├── runtime/
+    └── template.html
 ```
 
-## Integrate with your tools
+### 2. 在代码中使用
 
-* [Set up project integrations](https://git.nju.edu.cn/Mustard/ds/-/settings/integrations)
+```python
+from dsvis import auto
 
-## Collaborate with your team
+auto()
+def my_algorithm():
+    arr = [5, 2, 8, 1, 9]
+    arr.sort()
+    return arr
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+if __name__ == "__main__":
+    my_algorithm()
+```
 
-## Test and Deploy
+运行后浏览器会自动打开可视化界面。
 
-Use the built-in continuous integration in GitLab.
+---
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+## ✨ 核心特性
 
-***
+- 🎬 **单步执行跟踪** - 看到每一步执行过程
+- 📊 **自动数据结构可视化** - 数组、链表、树等自动展示
+- 💻 **零配置使用** - 一个装饰器搞定
+- 🌐 **浏览器可视化** - 交互式 HTML 界面
+- 📦 **易于集成** - 直接复制到项目中，无依赖
 
-# Editing this README
+---
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+## 📖 核心概念
 
-## Suggestions for a good README
+### `capture()` - 手动模式-捕获当前状态
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+```python
+from dsvis import capture
 
-## Name
-Choose a self-explaining name for your project.
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+def algorithm():
+    line 1
+    capture() # 将当前这一步加入到捕获队列
+    line 2
+    pass
+```
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+### `auto()` - 自动模式-捕获可能有用的状态
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+```python
+from dsvis import auto
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+auto()
+def process():
+    # 所有变量改变都被追踪
+    pass
+```
+你可以通过 `dsvis.set_mode()` 来切换精简模式和详细模式。在没有特殊声明的时候,模式默认为精简模式。
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+- 精简模式（coarse）只会捕获**数据结构的关键变化**，包括属性修改（如 `node.next = x`）、容器修改（如 `arr[i] = x`）、删除操作以及可能影响结构的方法调用（如 `list.append()`）。该模式噪音低，适合可视化核心结构变化。
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+- 详细模式（fine）会捕获**更细粒度的执行过程**，包括所有赋值操作（如 `i = 1`）、每一轮循环的执行，以及所有函数调用语句，从而提供更完整的执行轨迹。
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+---
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+## 实际例子
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+### 例子 1：排序可视化
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+```python
+import dsvis
+dsvis.set_mode("fine")
+dsvis.auto()
+def bubble_sort(arr):
+    n = len(arr)
+    for i in range(n):
+        for j in range(0, n - i - 1):
+            if arr[j] > arr[j + 1]:
+                arr[j], arr[j + 1] = arr[j + 1], arr[j]
+    return arr
 
-## License
-For open source projects, say how it is licensed.
+if __name__ == "__main__":
+    bubble_sort([3, 1, 4, 1, 5, 9])
+```
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+### 例子 2：自定义数据结构
+
+```python
+from dsvis import auto, bind_fields
+auto()
+
+class TreeNode:
+    def __init__(self, val):
+        self.val = val
+        self.left = None
+        self.right = None
+
+
+def build_tree():
+    root = TreeNode(1)
+    root.left = TreeNode(2)
+    root.right = TreeNode(3)
+    
+    bind_fields(root, val=("值", 1), left=("左", 1), right=("右", 1))
+    return root
+
+if __name__ == "__main__":
+    tree = build_tree()
+```
+
+> 你可以从项目根目录所有`demo_*.py`来查看更多具体的本项目应用场景
+
+## 📁 项目结构
+
+```
+DSVis/
+├── dsvis/              # 👈 复制这个到你的项目
+│   ├── __init__.py     # 公共 API 导出
+│   ├── dsvis.py        # 核心模块
+│   ├── runtime/        # 运行时系统
+│   └── template.html   # 可视化前端
+├── docs/              # 详细文档
+├── README.md          # 本文件
+└── .gitignore
+```
+
+**只需 `dsvis/` 目录就能工作！**
+
+
+
+## 🚀 集成步骤
+
+```bash
+# 1. 将 dsvis/ 目录复制到你的项目
+cp -r dsvis/ my_project/
+
+# 2. 在代码中导入
+import dsvis
+
+# 3. 使用接口
+dsvis.auto()
+def algorithm():
+    pass
+
+# 4. 运行
+python my_script.py
+```
+
+---
+
+## 📚 完整文档导航
+
+| 文档 | 内容 |
+|------|------|
+| [docs/API_REFERENCE.md](docs/API_REFERENCE.md) | 完整 API 文档 |
+| [docs/INTERFACES_QUICK_REFERENCE.md](docs/INTERFACES_QUICK_REFERENCE.md) | 快速速查表 |
+| [docs/UNIFIED_MODE_DOCUMENTATION.md](docs/UNIFIED_MODE_DOCUMENTATION.md) | 深入理解 |
+| [examples/](examples/) | 代码示例 |
+
+---
+
+**版本**: 0.0.1 | **最后更新**: 2026-04-11

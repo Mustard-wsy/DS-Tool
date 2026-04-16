@@ -1,0 +1,88 @@
+# ============================================================================
+# DSVis .gitignore - 仅上传核心库和文档
+# ============================================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# Test & Coverage (测试代码不上传)
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+*.out
+
+# Generated HTML files (except template.html which is part of the library)
+debug-logs/
+*.html
+!dsvis/template.html
+
+# Development documentation (不上传)
+OPTIMIZATION_SUMMARY.md
+PROJECT_REORGANIZATION.md
+LIBRARY_REFACTOR_SUMMARY.md
+QUICKSTART.md
+GITIGNORE_GUIDE.md
+run_examples.py
+
+# Old report files
+BUGFIX_SUMMARY.md
+COMPLETION_REPORT.md
+FINAL_REPORT.md
+TEST_COMPREHENSIVE_GUIDE.md
+TEST_QUICK_REFERENCE.md
+TEST_SUMMARY_REPORT.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log

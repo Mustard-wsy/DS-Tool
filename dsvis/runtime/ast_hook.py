@@ -27,7 +27,7 @@ def run_file(filepath):
 
     global_env = {
         "trigger": trigger,
-        "__name__": "__ast_exec__",
+        "__name__": "__main__",
         "__file__": filepath,
     }
     try:
