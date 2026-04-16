@@ -3,12 +3,20 @@
 <head>
 <meta charset="utf-8"/>
 <title>__TITLE__</title>
-<script src="https://unpkg.com/@antv/g6@5.0.51/dist/g6.min.js"></script>
 <style>
   html, body { width:100%; height:100%; margin:0; font-family:Consolas, monospace; }
   #root { display:flex; width:100%; height:100%; }
-  #left { width:65%; height:100%; border-right:1px solid #ddd; position:relative; }
-  #graph { width:100%; height:100%; }
+  #left { width:65%; height:100%; border-right:1px solid #ddd; overflow:auto; background:#f5f7fb; }
+  #stackPane { padding:10px; }
+  .stack-card { width:420px; max-width:100%; border:1px solid #96addc; border-radius:0; background:#fff; margin:0; }
+  .stack-card + .stack-card { margin-top:0; }
+  .stack-title { background:#e8f0fe; color:#0f2c63; padding:6px 10px; font-weight:700; border-bottom:1px solid #c8d6f5; }
+  .stack-rows { padding:4px 0; }
+  .stack-row { display:flex; gap:8px; padding:2px 10px; font-size:12px; line-height:18px; }
+  .stack-row .name { color:#6a737d; width:140px; flex:0 0 140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .stack-row .value { color:#222; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .stack-row.param { background:#fff1cf; }
+  .stack-empty { color:#8a8a8a; font-style:italic; padding:4px 10px; font-size:12px; }
   #right { width:35%; height:100%; display:flex; flex-direction:column; background:#fafafa; }
   #codeHeader { padding:10px 12px; border-bottom:1px solid #ddd; font-weight:600; background:#fff; }
   #codeView { flex:1; overflow:auto; padding:8px 0; }
@@ -20,20 +28,16 @@
   .tok-string { color:#0b7a0b; }
   .tok-keyword { color:#8a2be2; font-weight:600; }
   .tok-number { color:#b75501; }
-  .tok-function { color:#005cc5; font-weight:600; }
-  .tok-class { color:#1f6feb; font-weight:600; }
   .tok-operator { color:#d73a49; }
-
   #controls { min-height:64px; display:flex; align-items:center; gap:12px; padding:8px 12px; border-top:1px solid #ddd; background:#fff; }
   button { padding:6px 12px; font-size:14px; }
   #stepInput { width:72px; padding:4px 6px; font-size:14px; font-family:Consolas, monospace; }
-  #autoFitWrap { margin-left:auto; font-size:13px; user-select:none; display:flex; align-items:center; gap:6px; }
 </style>
 </head>
 <body>
 <div id="root">
   <div id="left">
-    <div id="graph"></div>
+    <div id="stackPane"></div>
   </div>
   <div id="right">
     <div id="codeHeader">Original Source (full file, auto-scroll to current line)</div>
@@ -47,10 +51,6 @@
         / <span id="stepTotal">0</span>
         &nbsp;|&nbsp; line <span id="lineInfo">-</span>
       </span>
-      <label id="autoFitWrap">
-        <input id="autoFitToggle" type="checkbox" checked />
-        自动缩放
-      </label>
     </div>
   </div>
 </div>
@@ -58,642 +58,8 @@
 <script>
 const STEPS = __STEPS__;
 const SOURCE_LINES = __SOURCE_LINES__;
-const baseLayout = __LAYOUT__;
-const STEP_DIFFS = [];
 let current = 0;
-let graph = null;
 let codeRows = [];
-let graphResizeObserver = null;
-const LAYOUT_PRESET = {
-  minNodeWidth: 120,
-  minNodeHeight: 60,
-  minGapX: 28,
-  minGapY: 22,
-  gapRatioX: 0.24,
-  gapRatioY: 0.22,
-  dagreExtraX: 24,
-  dagreExtraY: 18,
-  gridPadding: 14,
-  treeConnectivityThreshold: 0.55,
-  aspectMin: 0.6,
-  aspectMax: 1.8,
-};
-const FIT_PADDING = { top: 44, right: 30, bottom: 44, left: 30 };
-const AUTO_FIT_CONFIG = {
-  maxScale: 1.25,
-  innerRingRatio: 0.08,
-  minInnerRingPx: 18,
-};
-const DELTA_COLORS = {
-  unchanged: { fill: '#e8f0fe', stroke: '#5b8ff9', line: '#333' },
-  changed: { fill: '#fff5e6', stroke: '#ff9800', line: '#c97200' },
-  added: { fill: '#eafaf0', stroke: '#34a853', line: '#1e8e3e' },
-};
-
-function analyzeLayoutMetrics(graphData, viewport) {
-  const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
-  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
-  let maxH = 80;
-  let maxW = 160;
-  let sumH = 0;
-  let sumW = 0;
-  for (const n of nodes) {
-    const size = n?.style?.size;
-    if (Array.isArray(size) && size.length >= 2) {
-      const width = Number(size[0]) || 0;
-      const height = Number(size[1]) || 0;
-      maxW = Math.max(maxW, width);
-      maxH = Math.max(maxH, height);
-      sumW += width;
-      sumH += height;
-    }
-  }
-
-  const avgW = Math.max(LAYOUT_PRESET.minNodeWidth, Math.ceil(sumW / Math.max(nodes.length, 1)));
-  const avgH = Math.max(LAYOUT_PRESET.minNodeHeight, Math.ceil(sumH / Math.max(nodes.length, 1)));
-  const boundaryGapX = Math.max(LAYOUT_PRESET.minGapX, Math.ceil(avgW * LAYOUT_PRESET.gapRatioX));
-  const boundaryGapY = Math.max(LAYOUT_PRESET.minGapY, Math.ceil(avgH * LAYOUT_PRESET.gapRatioY));
-  const width = viewport?.width || window.innerWidth || 1200;
-  const height = viewport?.height || window.innerHeight || 800;
-  const aspect = Math.max(
-    LAYOUT_PRESET.aspectMin,
-    Math.min(LAYOUT_PRESET.aspectMax, width / Math.max(height, 1))
-  );
-  const cols = Math.max(1, Math.ceil(Math.sqrt(nodes.length * aspect)));
-  const connectedNodeIds = new Set();
-  for (const e of edges) {
-    if (e?.source !== undefined) connectedNodeIds.add(String(e.source));
-    if (e?.target !== undefined) connectedNodeIds.add(String(e.target));
-  }
-  const connectedRatio = connectedNodeIds.size / Math.max(nodes.length, 1);
-  const treeLike = edges.length > 0 && (
-    connectedRatio >= LAYOUT_PRESET.treeConnectivityThreshold ||
-    edges.length >= nodes.length - 1
-  );
-
-  return { nodes, maxW, maxH, cols, boundaryGapX, boundaryGapY, treeLike };
-}
-
-function computeAdaptiveLayout(graphData, viewport = null) {
-  const metrics = analyzeLayoutMetrics(graphData, viewport);
-  if (!metrics.nodes.length) {
-    return {
-      type: 'dagre',
-      rankdir: 'LR',
-      nodesep: 80,
-      ranksep: 110,
-    };
-  }
-
-  if (metrics.treeLike) {
-    return {
-      type: 'dagre',
-      rankdir: 'LR',
-      nodesep: Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 44),
-      ranksep: Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 68),
-    };
-  }
-
-  return {
-    type: 'grid',
-    cols: metrics.cols,
-    preventOverlap: true,
-    nodeSize: [metrics.maxW, metrics.maxH],
-    preventOverlapPadding: Math.max(metrics.boundaryGapX, metrics.boundaryGapY),
-    sortBy: 'id',
-    padding: [LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding],
-  };
-}
-
-
-function applyCompactGridLayout(graphData, viewport = null) {
-  const metrics = analyzeLayoutMetrics(graphData, viewport || getGraphSize());
-  const workingData = JSON.parse(JSON.stringify(graphData || { nodes: [], edges: [] }));
-  const nodes = Array.isArray(workingData.nodes) ? workingData.nodes.slice() : [];
-  const cols = Math.max(1, metrics.cols);
-  const stepX = Math.max(metrics.maxW + metrics.boundaryGapX, 96);
-  const stepY = Math.max(metrics.maxH + metrics.boundaryGapY, 72);
-  const totalRows = Math.max(1, Math.ceil(nodes.length / cols));
-  const totalW = Math.max(0, (cols - 1) * stepX);
-  const totalH = Math.max(0, (totalRows - 1) * stepY);
-  const startX = -Math.floor(totalW / 2);
-  const startY = -Math.floor(totalH / 2);
-
-  nodes.sort((a, b) => String(a?.id ?? '').localeCompare(String(b?.id ?? '')));
-  nodes.forEach((node, idx) => {
-    const row = Math.floor(idx / cols);
-    const col = idx % cols;
-    node.style = node.style || {};
-    node.style.x = startX + col * stepX;
-    node.style.y = startY + row * stepY;
-  });
-
-  return {
-    data: workingData,
-    layout: { type: 'preset' },
-  };
-}
-
-function normalizeLayoutType(layoutTypeRaw) {
-  const t = String(layoutTypeRaw || '').trim().toLowerCase();
-  if (!t || t === 'default' || t === 'dagre') return 'default';
-  if (t === 'concentriclayout' || t === 'concentric') return 'concentric';
-  if (t === 'snakelayout' || t === 'snake') return 'snake';
-  return 'default';
-}
-
-function buildUndirectedAdj(graphData) {
-  const nodeIds = Array.isArray(graphData?.nodes) ? graphData.nodes.map((n) => String(n.id)) : [];
-  const adj = new Map(nodeIds.map((id) => [id, new Set()]));
-  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
-  for (const e of edges) {
-    const s = String(e?.source ?? '');
-    const t = String(e?.target ?? '');
-    if (!adj.has(s) || !adj.has(t) || s === t) continue;
-    adj.get(s).add(t);
-    adj.get(t).add(s);
-  }
-  return adj;
-}
-
-function getConnectedComponents(graphData) {
-  const adj = buildUndirectedAdj(graphData);
-  const seen = new Set();
-  const components = [];
-  for (const id of adj.keys()) {
-    if (seen.has(id)) continue;
-    const queue = [id];
-    seen.add(id);
-    const comp = [];
-    while (queue.length) {
-      const cur = queue.shift();
-      comp.push(cur);
-      for (const nxt of adj.get(cur) || []) {
-        if (seen.has(nxt)) continue;
-        seen.add(nxt);
-        queue.push(nxt);
-      }
-    }
-    components.push(comp.sort());
-  }
-  components.sort((a, b) => b.length - a.length);
-  return components;
-}
-
-function arrangeSnake(componentIds, originX, originY, gapX, gapY) {
-  const out = new Map();
-  const cols = Math.max(1, Math.ceil(Math.sqrt(componentIds.length)));
-  for (let i = 0; i < componentIds.length; i++) {
-    const row = Math.floor(i / cols);
-    const col = i % cols;
-    const snakeCol = row % 2 === 0 ? col : (cols - 1 - col);
-    out.set(componentIds[i], { x: originX + snakeCol * gapX, y: originY + row * gapY });
-  }
-  return out;
-}
-
-function arrangeConcentric(componentIds, adj, originX, originY, ringStep) {
-  const out = new Map();
-  if (!componentIds.length) return out;
-  const center = componentIds.slice().sort((a, b) => (adj.get(b)?.size || 0) - (adj.get(a)?.size || 0))[0];
-  const levelByNode = new Map([[center, 0]]);
-  const queue = [center];
-  while (queue.length) {
-    const cur = queue.shift();
-    const level = levelByNode.get(cur);
-    for (const nxt of (adj.get(cur) || [])) {
-      if (levelByNode.has(nxt)) continue;
-      levelByNode.set(nxt, level + 1);
-      queue.push(nxt);
-    }
-  }
-
-  const levels = new Map();
-  for (const id of componentIds) {
-    const lv = levelByNode.get(id);
-    const key = Number.isFinite(lv) ? lv : Number.MAX_SAFE_INTEGER;
-    if (!levels.has(key)) levels.set(key, []);
-    levels.get(key).push(id);
-  }
-
-  for (const [lv, ids] of levels.entries()) {
-    ids.sort();
-    if (lv === 0) {
-      out.set(ids[0], { x: originX, y: originY });
-      continue;
-    }
-    if (!Number.isFinite(lv) || lv >= Number.MAX_SAFE_INTEGER) {
-      const loose = arrangeSnake(ids, originX - ringStep, originY + ringStep, ringStep, Math.max(56, Math.floor(ringStep * 0.6)));
-      for (const [id, pos] of loose.entries()) out.set(id, pos);
-      continue;
-    }
-    const radius = ringStep * lv;
-    for (let i = 0; i < ids.length; i++) {
-      const theta = (Math.PI * 2 * i) / Math.max(1, ids.length);
-      out.set(ids[i], { x: originX + radius * Math.cos(theta), y: originY + radius * Math.sin(theta) });
-    }
-  }
-  return out;
-}
-
-function applyPresetLayout(graphData, presetType, viewport = null) {
-  const metrics = analyzeLayoutMetrics(graphData, viewport || getGraphSize());
-  const workingData = JSON.parse(JSON.stringify(graphData || { nodes: [], edges: [] }));
-  const nodeMap = new Map((workingData.nodes || []).map((n) => [String(n.id), n]));
-  const components = getConnectedComponents(workingData);
-  const compCols = Math.max(1, Math.ceil(Math.sqrt(Math.max(components.length, 1))));
-  const blockW = Math.max(metrics.maxW * 3.4, 360);
-  const blockH = Math.max(metrics.maxH * 3.2, 280);
-  const adj = buildUndirectedAdj(workingData);
-
-  components.forEach((comp, idx) => {
-    const row = Math.floor(idx / compCols);
-    const col = idx % compCols;
-    const originX = col * blockW;
-    const originY = row * blockH;
-    const local = presetType === 'snake'
-      ? arrangeSnake(comp, originX, originY, Math.max(metrics.maxW + metrics.boundaryGapX, 120), Math.max(metrics.maxH + metrics.boundaryGapY, 88))
-      : arrangeConcentric(comp, adj, originX, originY, Math.max(metrics.maxW + metrics.boundaryGapX, 110));
-    for (const [id, pos] of local.entries()) {
-      const node = nodeMap.get(String(id));
-      if (!node) continue;
-      node.style = node.style || {};
-      node.style.x = pos.x;
-      node.style.y = pos.y;
-    }
-  });
-
-  return { data: workingData, layout: { type: 'preset' } };
-}
-
-function prepareGraphForLayout(graphData, viewport = null) {
-  const metrics = analyzeLayoutMetrics(graphData, viewport || getGraphSize());
-  if (!metrics.treeLike) {
-    return applyCompactGridLayout(graphData, viewport || getGraphSize());
-  }
-  return {
-    data: graphData,
-    layout: computeAdaptiveLayout(graphData, viewport),
-  };
-}
-
-function getGraphSize() {
-  const el = document.getElementById('graph');
-  return {
-    width: Math.max(200, el.clientWidth),
-    height: Math.max(200, el.clientHeight),
-  };
-}
-
-function initGraph(data) {
-  const { register, BaseNode } = G6;
-
-  class CardNode extends BaseNode {
-    drawKeyShape(attributes, container) {
-      const name = attributes.name || '';
-      const rows = Array.isArray(attributes.rows) ? attributes.rows : [];
-      const rowBindGroups = Array.isArray(attributes.rowBindGroups) ? attributes.rowBindGroups : [];
-      const rowBindBlocks = Array.isArray(attributes.rowBindBlocks) ? attributes.rowBindBlocks : [];
-      const [w, h] = attributes.size || [160, 80];
-      const paddingX = 10;
-      const paddingY = 8;
-      const rowH = 18;
-      const headerH = attributes.headerHeight || 22;
-      const headerLines = String(name).split('\n');
-      const key = this.upsert('key', 'rect', {
-        x: -w/2, y: -h/2, width:w, height:h, radius:4,
-        fill: attributes.fill || DELTA_COLORS.unchanged.fill,
-        stroke: attributes.stroke || DELTA_COLORS.unchanged.stroke,
-        lineWidth: attributes.lineWidth || 1
-      }, container);
-      const prevHeaderLineCount = this.__prevHeaderLineCount || 0;
-      headerLines.forEach((line, i) => {
-        this.upsert(`title-${i}`, 'text', {
-          x: -w/2 + paddingX, y: -h/2 + paddingY + 2 + i * 14, text:line,
-          fontSize:12, fill:'#111', textBaseline:'top'
-        }, container);
-      });
-      for (let i = headerLines.length; i < prevHeaderLineCount; i++) {
-        this.upsert(`title-${i}`, 'text', {
-          x: -w/2 + paddingX, y: -h/2 + paddingY + 2 + i * 14, text:'',
-          fontSize:12, fill:'#111', textBaseline:'top'
-        }, container);
-      }
-      this.__prevHeaderLineCount = headerLines.length;
-      const rowCount = rows.length;
-      const bindPalette = ['#d9ecff', '#d6f5e8', '#fbe6c8', '#e6dcff', '#ffe1ea'];
-      const colorForGroup = (group) => {
-        const s = String(group || '');
-        let h = 0;
-        for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) >>> 0;
-        return bindPalette[h % bindPalette.length];
-      };
-      const runs = [];
-      let runStart = null;
-      let runGroup = null;
-      let runBlock = null;
-      for (let i = 0; i < rowCount; i++) {
-        const g = rowBindGroups[i] || null;
-        const b = rowBindBlocks[i] || null;
-        if (!g || !b) {
-          if (runGroup !== null) {
-            runs.push({ group: runGroup, block: runBlock, start: runStart, end: i - 1 });
-            runStart = null;
-            runGroup = null;
-            runBlock = null;
-          }
-          continue;
-        }
-        if (runGroup === null || runBlock === null) {
-          runGroup = g;
-          runBlock = b;
-          runStart = i;
-          continue;
-        }
-        if (b !== runBlock) {
-          runs.push({ group: runGroup, block: runBlock, start: runStart, end: i - 1 });
-          runGroup = g;
-          runBlock = b;
-          runStart = i;
-        }
-      }
-      if (runGroup !== null) {
-        runs.push({ group: runGroup, block: runBlock, start: runStart, end: rowCount - 1 });
-      }
-      runs.forEach((run, i) => {
-        this.upsert(`bind-block-${i}`, 'rect', {
-          x: -w/2 + 4, y: -h/2 + headerH + paddingY + run.start * rowH + 1,
-          width: w - 8, height: Math.max((run.end - run.start + 1) * rowH - 2, 2), radius: 4,
-          fill: colorForGroup(run.group), stroke: 'transparent'
-        }, container);
-      });
-      const prevRunCount = this.__prevBindRunCount || 0;
-      for (let i = runs.length; i < prevRunCount; i++) {
-        this.upsert(`bind-block-${i}`, 'rect', {
-          x: -w/2 + 4, y: -h/2, width: 0, height: 0, radius: 0,
-          fill: 'transparent', stroke: 'transparent'
-        }, container);
-      }
-      this.__prevBindRunCount = runs.length;
-      rows.forEach((row, i) => {
-        const bindGroup = rowBindGroups[i];
-        if (bindGroup) {
-          this.upsert(`bind-bg-${i}`, 'rect', {
-            x: -w/2 + 4, y: -h/2 + headerH + paddingY + i * rowH + 1,
-            width: w - 8, height: rowH - 2, radius: 3,
-            fill: '#d9ecff', stroke: 'transparent'
-          }, container);
-        } else {
-          this.upsert(`bind-bg-${i}`, 'rect', {
-            x: -w/2 + 4, y: -h/2 + headerH + paddingY + i * rowH + 1,
-            width: w - 8, height: rowH - 2, radius: 3,
-            fill: 'transparent', stroke: 'transparent'
-          }, container);
-        }
-        const rowDeltaType = Array.isArray(attributes.rowDeltaTypes) ? attributes.rowDeltaTypes[i] : null;
-        const rowColor = rowDeltaType === 'added'
-          ? DELTA_COLORS.added.line
-          : rowDeltaType === 'changed'
-            ? DELTA_COLORS.changed.line
-            : '#333';
-        this.upsert(`r-${i}`, 'text', {
-          x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: row,
-          fontSize:11, fill: rowColor, fontWeight: rowDeltaType ? 600 : 400, textBaseline:'top'
-        }, container);
-      });
-      const prevRowCount = this.__prevRowCount || 0;
-      for (let i = rows.length; i < prevRowCount; i++) {
-        this.upsert(`bind-bg-${i}`, 'rect', {
-          x: -w/2 + 4, y: -h/2 + headerH + paddingY + i * rowH + 1,
-          width: w - 8, height: rowH - 2, radius: 3,
-          fill: 'transparent', stroke: 'transparent'
-        }, container);
-        this.upsert(`r-${i}`, 'text', {
-          x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: '',
-          fontSize:11, fill:'#333', textBaseline:'top'
-        }, container);
-      }
-      this.__prevRowCount = rows.length;
-      return key;
-    }
-  }
-
-  register('node', 'card', CardNode);
-  const size = getGraphSize();
-  const prepared = prepareGraphForLayout(data, size);
-  graph = new G6.Graph({
-    container:'graph',
-    width:size.width,
-    height:size.height,
-    autoResize:true,
-    data: prepared.data,
-    layout: prepared.layout,
-    node:{
-      type:'card',
-      style: { port: true }
-    },
-    edge:{
-      style:{
-        endArrow:true,
-        stroke:'#888',
-        router: { type: 'polyline' }
-      }
-    },
-    behaviors:['drag-canvas','zoom-canvas','drag-element']
-  });
-
-  if (typeof graph.setZoomRange === 'function') {
-    graph.setZoomRange([0.05, AUTO_FIT_CONFIG.maxScale]);
-  }
-
-  graph.on('node:dragstart', onDragStart);
-  graph.on('node:drag', onDragMove);
-  graph.on('node:dragging', onDragMove);
-  graph.on('node:dragend', onDragEnd);
-  graph.on('element:dragstart', onDragStart);
-  graph.on('element:drag', onDragMove);
-  graph.on('element:dragend', onDragEnd);
-
-  if (typeof graph.once === 'function') {
-    graph.once('afterlayout', refreshGraphVisuals);
-    graph.once('afterrender', refreshGraphVisuals);
-  }
-  graph.render();
-
-  if (typeof ResizeObserver !== 'undefined') {
-    graphResizeObserver = new ResizeObserver(() => {
-      if (!graph) return;
-      const size = getGraphSize();
-      if (typeof graph.setSize === 'function') {
-        graph.setSize(size.width, size.height);
-      }
-      refreshGraphVisuals();
-    });
-    graphResizeObserver.observe(document.getElementById('graph'));
-  }
-}
-
-function buildPortStyles(node, usedPorts) {
-  const ports = Array.isArray(node?.style?.ports) ? node.style.ports : [];
-  return ports.map((p) => {
-    const key = p.key;
-    const active = usedPorts.has(key);
-    return {
-      ...p,
-      r: active ? 2.5 : 0,
-      fill: active ? '#5b8ff9' : 'transparent',
-      stroke: active ? '#2b6cd4' : 'transparent',
-    };
-  });
-}
-
-function resolvePortsForEdge(e, nodeMap) {
-  const src = nodeMap.get(e.source);
-  const tgt = nodeMap.get(e.target);
-  if (!src || !tgt) return null;
-  const refIndex = e.data ? e.data.refIndex : null;
-  if (refIndex === null || refIndex === undefined) return null;
-  const sx = src.style?.x ?? 0;
-  const tx = tgt.style?.x ?? 0;
-  const useLeft = tx < sx;
-  return {
-    sourcePort: useLeft ? `pl${refIndex}` : `pr${refIndex}`,
-    targetPort: useLeft ? 'inR' : 'inL',
-  };
-}
-
-function updateEdgePorts(focusNodeId = null) {
-  if (!graph) return;
-  const allEdges = graph.getEdgeData();
-  const nodeDataList = graph.getNodeData();
-  const nodeMap = new Map(nodeDataList.map((n) => [n.id, n]));
-  const relatedNodeIds = new Set();
-
-  const edgesToUpdate = focusNodeId
-    ? allEdges.filter((e) => e.source === focusNodeId || e.target === focusNodeId)
-    : allEdges;
-
-  const edgeUpdates = [];
-  for (const e of edgesToUpdate) {
-    const ports = resolvePortsForEdge(e, nodeMap);
-    if (!ports) continue;
-    edgeUpdates.push({ id: e.id, style: ports });
-    relatedNodeIds.add(e.source);
-    relatedNodeIds.add(e.target);
-  }
-  if (edgeUpdates.length > 0) {
-    graph.updateEdgeData(edgeUpdates);
-  }
-
-  const nodeIdsToRefresh = focusNodeId
-    ? Array.from(relatedNodeIds)
-    : nodeDataList.map((n) => n.id);
-
-  const nodeUpdates = [];
-  for (const nodeId of nodeIdsToRefresh) {
-    const node = nodeMap.get(nodeId);
-    if (!node) continue;
-    const usedPorts = new Set();
-    for (const e of allEdges) {
-      if (e.source !== nodeId && e.target !== nodeId) continue;
-      const ports = resolvePortsForEdge(e, nodeMap);
-      if (!ports) continue;
-      if (e.source === nodeId) usedPorts.add(ports.sourcePort);
-      if (e.target === nodeId) usedPorts.add(ports.targetPort);
-    }
-    nodeUpdates.push({
-      id: nodeId,
-      style: { ports: buildPortStyles(node, usedPorts) },
-    });
-  }
-  if (nodeUpdates.length > 0) {
-    graph.updateNodeData(nodeUpdates);
-  }
-  if (edgeUpdates.length > 0 || nodeUpdates.length > 0 || !focusNodeId) {
-    graph.draw();
-  }
-}
-
-function fitGraph() {
-  requestAnimationFrame(() => {
-    if (!graph) return;
-    const autoFitToggle = document.getElementById('autoFitToggle');
-    if (autoFitToggle && !autoFitToggle.checked) return;
-    const size = getGraphSize();
-    const ringInset = Math.max(
-      AUTO_FIT_CONFIG.minInnerRingPx,
-      Math.floor(Math.min(size.width, size.height) * AUTO_FIT_CONFIG.innerRingRatio)
-    );
-    const fitPadding = {
-      top: FIT_PADDING.top + ringInset,
-      right: FIT_PADDING.right + ringInset,
-      bottom: FIT_PADDING.bottom + ringInset,
-      left: FIT_PADDING.left + ringInset,
-    };
-    if (typeof graph.fitView === 'function') {
-      graph.fitView({
-        padding: [fitPadding.top, fitPadding.right, fitPadding.bottom, fitPadding.left],
-        when: 'always',
-        animation: false,
-      });
-      if (typeof graph.getZoom === 'function' && typeof graph.zoomTo === 'function') {
-        const currentScale = Number(graph.getZoom());
-        if (Number.isFinite(currentScale) && currentScale > AUTO_FIT_CONFIG.maxScale) {
-          graph.zoomTo(AUTO_FIT_CONFIG.maxScale, { x: size.width / 2, y: size.height / 2 }, false);
-        }
-      }
-      return;
-    }
-    if (typeof graph.fitCenter === 'function') {
-      graph.fitCenter();
-    }
-  });
-}
-
-function refreshGraphVisuals() {
-  updateEdgePorts();
-  fitGraph();
-}
-
-let rafId = null;
-let dragging = false;
-let draggingNodeId = null;
-
-function getDragNodeId(evt) {
-  return evt?.target?.id || evt?.item?.id || evt?.data?.id || evt?.id || null;
-}
-
-function scheduleUpdate(nodeId = null) {
-  if (nodeId) draggingNodeId = nodeId;
-  if (rafId !== null) return;
-  rafId = requestAnimationFrame(() => {
-    updateEdgePorts(draggingNodeId);
-    rafId = null;
-    if (dragging) scheduleUpdate(draggingNodeId);
-  });
-}
-
-function onDragStart(evt) {
-  const nodeId = getDragNodeId(evt);
-  if (!nodeId) return;
-  dragging = true;
-  draggingNodeId = nodeId;
-  scheduleUpdate(nodeId);
-}
-
-function onDragMove(evt) {
-  const nodeId = getDragNodeId(evt) || draggingNodeId;
-  if (!nodeId) return;
-  scheduleUpdate(nodeId);
-}
-
-function onDragEnd(evt) {
-  const nodeId = getDragNodeId(evt) || draggingNodeId;
-  dragging = false;
-  draggingNodeId = null;
-  if (!nodeId) return;
-  updateEdgePorts(nodeId);
-}
 
 function escapeHtml(raw) {
   return String(raw ?? '')
@@ -731,96 +97,36 @@ function highlightPythonLine(sourceLine) {
   return html;
 }
 
-function cloneGraphData(data) {
-  return JSON.parse(JSON.stringify(data || { nodes: [], edges: [] }));
+function renderRows(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return '<div class="stack-empty">(empty)</div>';
+  }
+  return rows.map((row) => {
+    const cls = row?.is_param ? 'stack-row param' : 'stack-row';
+    const name = escapeHtml(row?.name || '');
+    const value = escapeHtml(row?.text || '');
+    return `<div class="${cls}"><span class="name">${name}</span><span class="value">${value}</span></div>`;
+  }).join('');
 }
 
-function edgeSignature(edge) {
-  return `${edge.source}->${edge.target}#${edge?.data?.refIndex ?? 'na'}`;
-}
+function renderStackView(step) {
+  const pane = document.getElementById('stackPane');
+  const stack = step?.stack_view || { globals: [], frames: [] };
+  let html = '';
 
-function computeStepDiffs() {
-  STEP_DIFFS.length = 0;
-  let prevGraph = null;
-  for (let stepIdx = 0; stepIdx < STEPS.length; stepIdx++) {
-    const currentGraph = STEPS[stepIdx]?.graph || { nodes: [], edges: [] };
-    const diff = {
-      nodeTypes: new Map(),
-      nodeRowTypes: new Map(),
-      addedEdgeSigs: new Set(),
-    };
-    if (prevGraph) {
-      const prevNodeMap = new Map((prevGraph.nodes || []).map((n) => [n.id, n]));
-      for (const node of currentGraph.nodes || []) {
-        const prevNode = prevNodeMap.get(node.id);
-        const rows = Array.isArray(node?.style?.rows) ? node.style.rows : [];
-        if (!prevNode) {
-          diff.nodeTypes.set(node.id, 'added');
-          diff.nodeRowTypes.set(node.id, rows.map(() => 'added'));
-          continue;
-        }
-        const prevRows = Array.isArray(prevNode?.style?.rows) ? prevNode.style.rows : [];
-        const rowTypes = [];
-        let hasChange = false;
-        const maxLen = Math.max(rows.length, prevRows.length);
-        for (let i = 0; i < maxLen; i++) {
-          if (i >= prevRows.length) {
-            rowTypes[i] = 'added';
-            hasChange = true;
-          } else if (rows[i] !== prevRows[i]) {
-            rowTypes[i] = 'changed';
-            hasChange = true;
-          } else {
-            rowTypes[i] = '';
-          }
-        }
-        if ((node?.style?.name || '') !== (prevNode?.style?.name || '')) {
-          hasChange = true;
-        }
-        if (hasChange) {
-          diff.nodeTypes.set(node.id, 'changed');
-          diff.nodeRowTypes.set(node.id, rowTypes);
-        }
-      }
+  html += '<div class="stack-card">';
+  html += '<div class="stack-title">globals</div>';
+  html += `<div class="stack-rows">${renderRows(stack.globals)}</div>`;
+  html += '</div>';
 
-      const prevEdges = new Set((prevGraph.edges || []).map(edgeSignature));
-      for (const edge of currentGraph.edges || []) {
-        const sig = edgeSignature(edge);
-        if (!prevEdges.has(sig)) diff.addedEdgeSigs.add(sig);
-      }
-    }
-    STEP_DIFFS.push(diff);
-    prevGraph = currentGraph;
+  const frames = Array.isArray(stack.frames) ? stack.frames : [];
+  for (const frame of frames) {
+    html += '<div class="stack-card">';
+    html += `<div class="stack-title">${escapeHtml(frame?.title || 'locals')}</div>`;
+    html += `<div class="stack-rows">${renderRows(frame?.rows)}</div>`;
+    html += '</div>';
   }
-}
-
-function applyStepHighlights(graphData, stepIndex) {
-  const diff = STEP_DIFFS[stepIndex];
-  if (!diff) return graphData;
-  for (const node of graphData.nodes || []) {
-    const nodeType = diff.nodeTypes.get(node.id) || '';
-    const color = nodeType === 'added'
-      ? DELTA_COLORS.added
-      : nodeType === 'changed'
-        ? DELTA_COLORS.changed
-        : DELTA_COLORS.unchanged;
-    node.style = node.style || {};
-    node.style.fill = color.fill;
-    node.style.stroke = color.stroke;
-    node.style.lineWidth = nodeType ? 2 : 1;
-    node.style.rowDeltaTypes = diff.nodeRowTypes.get(node.id) || [];
-  }
-  for (const edge of graphData.edges || []) {
-    const added = diff.addedEdgeSigs.has(edgeSignature(edge));
-    edge.style = edge.style || {};
-    edge.style.stroke = added ? DELTA_COLORS.added.stroke : '#888';
-    edge.style.lineWidth = added ? 2 : 1;
-    edge.style.endArrow = {
-      ...(typeof edge.style.endArrow === 'object' ? edge.style.endArrow : {}),
-      fill: added ? DELTA_COLORS.added.stroke : '#888',
-    };
-  }
-  return graphData;
+  pane.innerHTML = html;
 }
 
 function renderAllCode() {
@@ -850,26 +156,7 @@ function renderStep(i) {
   if (!STEPS.length) return;
   current = Math.max(0, Math.min(i, STEPS.length - 1));
   const s = STEPS[current];
-  const graphData = applyStepHighlights(cloneGraphData(s.graph), current);
-
-  if (!graph) {
-    initGraph(graphData);
-  } else {
-    const prepared = prepareGraphForLayout(graphData, getGraphSize());
-    const nextLayout = prepared.layout;
-    if (typeof graph.setOptions === 'function') {
-      graph.setOptions({ layout: nextLayout });
-    } else if (typeof graph.setLayout === 'function') {
-      graph.setLayout(nextLayout);
-    }
-    graph.setData(prepared.data);
-    if (typeof graph.once === 'function') {
-      graph.once('afterlayout', refreshGraphVisuals);
-      graph.once('afterrender', refreshGraphVisuals);
-    }
-    graph.render();
-  }
-
+  renderStackView(s);
   focusLine(s.lineno || 1);
   document.getElementById('stepInput').value = String(current + 1);
   document.getElementById('stepTotal').textContent = String(STEPS.length);
@@ -890,17 +177,7 @@ stepInput.addEventListener('keydown', (evt) => {
   if (!Number.isFinite(raw)) return;
   renderStep(raw - 1);
 });
-const autoFitToggle = document.getElementById('autoFitToggle');
-if (autoFitToggle) {
-  autoFitToggle.addEventListener('change', () => {
-    if (autoFitToggle.checked) {
-      fitGraph();
-    }
-  });
-}
-
 renderAllCode();
-computeStepDiffs();
 renderStep(0);
 </script>
 </body>

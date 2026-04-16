@@ -660,6 +660,110 @@ def _build_g6_data(nodes, edges):
     return g6_data
 
 
+def _build_stack_view(step):
+    scope = step.get("scope") or {}
+    raw_globals = scope.get("globals") or {}
+    raw_frames = scope.get("frames") or []
+    internal_names = {"trigger", "dsvis", "filepath", "code", "compiled", "f", "global_env", "new_tree", "previous_flag", "transformer", "tree"}
+
+    def _safe_short(value):
+        return _short(value, max_len=120)
+
+    def _describe_value(value):
+        if _is_primitive(value):
+            return _safe_short(value)
+
+        if isinstance(value, dict):
+            pairs = []
+            for idx, (k, v) in enumerate(value.items()):
+                if idx >= 4:
+                    pairs.append("...")
+                    break
+                pairs.append(f"{_safe_short(k)}: {_safe_short(v)}")
+            return "{" + ", ".join(pairs) + "}"
+
+        if isinstance(value, (list, tuple, deque, set, frozenset)):
+            try:
+                seq = list(value)
+            except Exception:
+                return _safe_short(value)
+            parts = []
+            for idx, item in enumerate(seq):
+                if idx >= 4:
+                    parts.append("...")
+                    break
+                parts.append(_safe_short(item))
+            left, right = ("[", "]")
+            if isinstance(value, tuple):
+                left, right = ("(", ")")
+            elif isinstance(value, (set, frozenset)):
+                left, right = ("{", "}")
+            return f"{left}{', '.join(parts)}{right}"
+
+        if _is_class_object(value):
+            fields = []
+            try:
+                for idx, (k, v) in enumerate(_iter_object_items(value, include_private=False)):
+                    if idx >= 4:
+                        fields.append("...")
+                        break
+                    fields.append(f"{k}={_safe_short(v)}")
+            except Exception:
+                return _safe_short(value)
+            type_name = type(value).__name__
+            return f"{type_name}{{{', '.join(fields)}}}"
+
+        return _safe_short(value)
+
+    globals_items = []
+    for name in sorted(raw_globals.keys()):
+        if str(name).startswith("_") or str(name) in internal_names:
+            continue
+        globals_items.append({
+            "name": str(name),
+            "text": _describe_value(raw_globals[name]),
+            "is_param": False,
+        })
+
+    frame_name_count = {}
+    locals_frames = []
+    for frame in raw_frames:
+        func_name = str(frame.get("function") or "<module>")
+        frame_name_count[func_name] = frame_name_count.get(func_name, 0) + 1
+        frame_title = f"{func_name}#{frame_name_count[func_name]}"
+
+        params = list(frame.get("params") or [])
+        param_set = set(str(p) for p in params)
+        local_dict = frame.get("locals") or {}
+        ordered_names = []
+        for p in params:
+            if p in local_dict and not str(p).startswith("_") and str(p) not in internal_names:
+                ordered_names.append(str(p))
+        for k in sorted(local_dict.keys()):
+            ks = str(k)
+            if ks.startswith("_") or ks in param_set or ks in internal_names:
+                continue
+            ordered_names.append(ks)
+
+        rows = []
+        for n in ordered_names:
+            rows.append({
+                "name": n,
+                "text": _describe_value(local_dict.get(n)),
+                "is_param": n in param_set,
+            })
+        locals_frames.append({
+            "title": frame_title,
+            "function": func_name,
+            "rows": rows,
+        })
+
+    return {
+        "globals": globals_items,
+        "frames": locals_frames,
+    }
+
+
 def _render_debugger(steps, source_lines, title="DSVis Debugger", layout=None):
     import tempfile
     import webbrowser
@@ -672,6 +776,7 @@ def _render_debugger(steps, source_lines, title="DSVis Debugger", layout=None):
             "step": idx,
             "lineno": step.get("lineno"),
             "graph": _build_g6_data(step.get("nodes", []), step.get("edges", [])),
+            "stack_view": _build_stack_view(step),
         })
 
     template_path = Path(__file__).parent / "template.html"

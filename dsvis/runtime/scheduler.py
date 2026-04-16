@@ -1,6 +1,7 @@
 import json
 import atexit
 from pathlib import Path
+import inspect
 from .config import get_mode, get_pointer_watchers, get_watch_vars
 
 
@@ -60,6 +61,33 @@ class Scheduler:
         self.source_file = str(p)
         self.source_lines = p.read_text(encoding="utf-8").splitlines()
 
+    def _is_user_frame(self, frame):
+        if frame is None:
+            return False
+        if not self.source_file:
+            return True
+        try:
+            return str(Path(frame.f_code.co_filename).resolve()) == str(Path(self.source_file).resolve())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_internal_binding(name, value):
+        key = str(name)
+        if key in {"trigger", "dsvis"}:
+            return True
+        if key.startswith("__"):
+            return True
+        if inspect.ismodule(value):
+            mod_name = getattr(value, "__name__", "")
+            if mod_name == "dsvis" or mod_name.startswith("dsvis."):
+                return True
+        if inspect.isfunction(value) or inspect.ismethod(value):
+            mod_name = getattr(value, "__module__", "")
+            if mod_name == "dsvis" or mod_name.startswith("dsvis."):
+                return True
+        return False
+
     def request_update(self, caller_frame=None, lineno=None, observed_vars=None, pointer_watchers=None, max_nodes=None, include_private=None):
         if caller_frame is None:
             return
@@ -71,6 +99,40 @@ class Scheduler:
         root_scope = {
             "__locals__": dict(caller_frame.f_locals),
             "__globals__": dict(caller_frame.f_globals),
+        }
+        stack_frames = []
+        walk = caller_frame
+        depth = 0
+        while walk and depth < 64:
+            if not self._is_user_frame(walk):
+                walk = walk.f_back
+                depth += 1
+                continue
+            local_snapshot = dict(walk.f_locals)
+            code = walk.f_code
+            arg_count = int(getattr(code, "co_argcount", 0) or 0)
+            kw_only_count = int(getattr(code, "co_kwonlyargcount", 0) or 0)
+            pos_only_count = int(getattr(code, "co_posonlyargcount", 0) or 0)
+            arg_names = list(code.co_varnames[: arg_count + kw_only_count + pos_only_count])
+            clean_locals = {
+                k: v for k, v in local_snapshot.items()
+                if not self._is_internal_binding(k, v)
+            }
+            stack_frames.append(
+                {
+                    "function": code.co_name,
+                    "lineno": walk.f_lineno,
+                    "locals": clean_locals,
+                    "params": arg_names,
+                }
+            )
+            walk = walk.f_back
+            depth += 1
+        stack_frames.reverse()
+
+        globals_snapshot = {
+            k: v for k, v in dict(caller_frame.f_globals).items()
+            if not self._is_internal_binding(k, v)
         }
         mode = get_mode()
         merged_focus = set(get_watch_vars()) | set(observed_vars or [])
@@ -98,6 +160,10 @@ class Scheduler:
                 "lineno": lineno or caller_frame.f_lineno,
                 "nodes": nodes,
                 "edges": edges,
+                "scope": {
+                    "globals": globals_snapshot,
+                    "frames": stack_frames,
+                },
             }
         )
 
