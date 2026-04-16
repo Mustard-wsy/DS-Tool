@@ -125,7 +125,7 @@ function renderValueTree(tree, name = '', depth = 0) {
   const label = name ? `<span class="node-name">${escapeHtml(name)}</span>` : '';
   const children = tree.children.map((child) => renderTreeNode(child.name, child.tree, depth + 1)).join('');
   const more = tree.truncated ? '<div class="node-more">...</div>' : '';
-  const openAttr = depth === 0 ? ' open' : '';
+  const openAttr = ' open';
   return `<div class="stack-tree"><details${openAttr}><summary><span class="node-head">${label}<span class="node-text">${text}</span></span></summary><div class="node-children">${children}${more}</div></details></div>`;
 }
 
@@ -137,7 +137,7 @@ function renderTreeNode(name, tree, depth) {
   }
   const children = tree.children.map((child) => renderTreeNode(child.name, child.tree, depth + 1)).join('');
   const more = tree.truncated ? '<div class="node-more">...</div>' : '';
-  const openAttr = depth <= 1 ? ' open' : '';
+  const openAttr = ' open';
   return `<details${openAttr}><summary><span class="node-head">${nodeName}<span class="node-text">${text}</span></span></summary><div class="node-children">${children}${more}</div></details>`;
 }
 
