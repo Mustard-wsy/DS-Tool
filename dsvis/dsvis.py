@@ -715,6 +715,102 @@ def _build_stack_view(step):
 
         return _safe_short(value)
 
+    def _build_value_tree(value, depth=0, max_depth=4, max_items=20):
+        if depth >= max_depth:
+            return {
+                "text": _safe_short(value),
+                "children": [],
+                "truncated": True,
+            }
+
+        if _is_primitive(value):
+            return {
+                "text": _safe_short(value),
+                "children": [],
+                "truncated": False,
+            }
+
+        children = []
+        truncated = False
+
+        if isinstance(value, dict):
+            for idx, (k, v) in enumerate(value.items()):
+                if idx >= max_items:
+                    truncated = True
+                    break
+                children.append({
+                    "name": _safe_short(k),
+                    "tree": _build_value_tree(v, depth=depth + 1, max_depth=max_depth, max_items=max_items),
+                })
+            return {
+                "text": f"dict ({len(value)})",
+                "children": children,
+                "truncated": truncated,
+            }
+
+        if isinstance(value, (list, tuple, deque)):
+            seq = list(value)
+            for idx, item in enumerate(seq):
+                if idx >= max_items:
+                    truncated = True
+                    break
+                children.append({
+                    "name": f"[{idx}]",
+                    "tree": _build_value_tree(item, depth=depth + 1, max_depth=max_depth, max_items=max_items),
+                })
+            kind = type(value).__name__
+            return {
+                "text": f"{kind} ({len(seq)})",
+                "children": children,
+                "truncated": truncated,
+            }
+
+        if isinstance(value, (set, frozenset)):
+            seq = sorted(list(value), key=lambda x: _safe_short(x))
+            for idx, item in enumerate(seq):
+                if idx >= max_items:
+                    truncated = True
+                    break
+                children.append({
+                    "name": f"[{idx}]",
+                    "tree": _build_value_tree(item, depth=depth + 1, max_depth=max_depth, max_items=max_items),
+                })
+            kind = type(value).__name__
+            return {
+                "text": f"{kind} ({len(seq)})",
+                "children": children,
+                "truncated": truncated,
+            }
+
+        if _is_class_object(value):
+            try:
+                items = list(_iter_object_items(value, include_private=False))
+            except Exception:
+                return {
+                    "text": _safe_short(value),
+                    "children": [],
+                    "truncated": False,
+                }
+            for idx, (k, v) in enumerate(items):
+                if idx >= max_items:
+                    truncated = True
+                    break
+                children.append({
+                    "name": str(k),
+                    "tree": _build_value_tree(v, depth=depth + 1, max_depth=max_depth, max_items=max_items),
+                })
+            return {
+                "text": f"{type(value).__name__}",
+                "children": children,
+                "truncated": truncated,
+            }
+
+        return {
+            "text": _safe_short(value),
+            "children": [],
+            "truncated": False,
+        }
+
     globals_items = []
     for name in sorted(raw_globals.keys()):
         if str(name).startswith("_") or str(name) in internal_names:
@@ -722,6 +818,7 @@ def _build_stack_view(step):
         globals_items.append({
             "name": str(name),
             "text": _describe_value(raw_globals[name]),
+            "tree": _build_value_tree(raw_globals[name]),
             "is_param": False,
         })
 
@@ -747,9 +844,11 @@ def _build_stack_view(step):
 
         rows = []
         for n in ordered_names:
+            v = local_dict.get(n)
             rows.append({
                 "name": n,
-                "text": _describe_value(local_dict.get(n)),
+                "text": _describe_value(v),
+                "tree": _build_value_tree(v),
                 "is_param": n in param_set,
             })
         locals_frames.append({
@@ -775,7 +874,6 @@ def _render_debugger(steps, source_lines, title="DSVis Debugger", layout=None):
         step_payload.append({
             "step": idx,
             "lineno": step.get("lineno"),
-            "graph": _build_g6_data(step.get("nodes", []), step.get("edges", [])),
             "stack_view": _build_stack_view(step),
         })
 
@@ -912,5 +1010,4 @@ def auto(fn=None):
     
     # 返回装饰器
     return make_decorator()
-
 
