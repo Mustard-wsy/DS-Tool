@@ -16,6 +16,15 @@
   .stack-row .name { color:#6a737d; width:140px; flex:0 0 140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .stack-row .value { color:#222; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .stack-row.param { background:#fff1cf; }
+  .stack-tree { margin-left:148px; padding:0 10px 4px 10px; font-size:12px; }
+  .stack-tree details { margin:2px 0; }
+  .stack-tree summary { cursor:pointer; list-style:none; }
+  .stack-tree summary::-webkit-details-marker { display:none; }
+  .stack-tree .node-head { display:inline-flex; gap:6px; align-items:baseline; }
+  .stack-tree .node-name { color:#6a737d; }
+  .stack-tree .node-text { color:#222; }
+  .stack-tree .node-children { margin-left:14px; border-left:1px dashed #d0d7e2; padding-left:8px; }
+  .stack-tree .node-more { color:#8a8a8a; font-style:italic; }
   .stack-empty { color:#8a8a8a; font-style:italic; padding:4px 10px; font-size:12px; }
   #right { width:35%; height:100%; display:flex; flex-direction:column; background:#fafafa; }
   #codeHeader { padding:10px 12px; border-bottom:1px solid #ddd; font-weight:600; background:#fff; }
@@ -105,8 +114,31 @@ function renderRows(rows) {
     const cls = row?.is_param ? 'stack-row param' : 'stack-row';
     const name = escapeHtml(row?.name || '');
     const value = escapeHtml(row?.text || '');
-    return `<div class="${cls}"><span class="name">${name}</span><span class="value">${value}</span></div>`;
+    const tree = renderValueTree(row?.tree);
+    return `<div class="${cls}"><span class="name">${name}</span><span class="value">${value}</span></div>${tree}`;
   }).join('');
+}
+
+function renderValueTree(tree, name = '', depth = 0) {
+  if (!tree || !Array.isArray(tree.children) || tree.children.length === 0) return '';
+  const text = escapeHtml(tree.text || '');
+  const label = name ? `<span class="node-name">${escapeHtml(name)}</span>` : '';
+  const children = tree.children.map((child) => renderTreeNode(child.name, child.tree, depth + 1)).join('');
+  const more = tree.truncated ? '<div class="node-more">...</div>' : '';
+  const openAttr = depth === 0 ? ' open' : '';
+  return `<div class="stack-tree"><details${openAttr}><summary><span class="node-head">${label}<span class="node-text">${text}</span></span></summary><div class="node-children">${children}${more}</div></details></div>`;
+}
+
+function renderTreeNode(name, tree, depth) {
+  const text = escapeHtml(tree?.text || '');
+  const nodeName = `<span class="node-name">${escapeHtml(name || '')}</span>`;
+  if (!tree || !Array.isArray(tree.children) || tree.children.length === 0) {
+    return `<div class="node-head">${nodeName}<span class="node-text">${text}</span></div>`;
+  }
+  const children = tree.children.map((child) => renderTreeNode(child.name, child.tree, depth + 1)).join('');
+  const more = tree.truncated ? '<div class="node-more">...</div>' : '';
+  const openAttr = depth <= 1 ? ' open' : '';
+  return `<details${openAttr}><summary><span class="node-head">${nodeName}<span class="node-text">${text}</span></span></summary><div class="node-children">${children}${more}</div></details>`;
 }
 
 function renderStackView(step) {
@@ -149,7 +181,7 @@ function focusLine(lineno) {
   const row = codeRows[line - 1];
   if (!row) return;
   row.classList.add('active');
-  row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  row.scrollIntoView({ block: 'center', behavior: 'auto' });
 }
 
 function renderStep(i) {
