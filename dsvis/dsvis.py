@@ -674,46 +674,126 @@ def _build_stack_view(step):
             return _safe_short(value)
 
         if isinstance(value, dict):
-            pairs = []
-            for idx, (k, v) in enumerate(value.items()):
-                if idx >= 4:
-                    pairs.append("...")
-                    break
-                pairs.append(f"{_safe_short(k)}: {_safe_short(v)}")
-            return "{" + ", ".join(pairs) + "}"
+            return f"dict ({len(value)})"
 
         if isinstance(value, (list, tuple, deque, set, frozenset)):
             try:
-                seq = list(value)
+                return f"{type(value).__name__} ({len(value)})"
             except Exception:
                 return _safe_short(value)
-            parts = []
-            for idx, item in enumerate(seq):
-                if idx >= 4:
-                    parts.append("...")
-                    break
-                parts.append(_safe_short(item))
-            left, right = ("[", "]")
-            if isinstance(value, tuple):
-                left, right = ("(", ")")
-            elif isinstance(value, (set, frozenset)):
-                left, right = ("{", "}")
-            return f"{left}{', '.join(parts)}{right}"
 
         if _is_class_object(value):
-            fields = []
             try:
-                for idx, (k, v) in enumerate(_iter_object_items(value, include_private=False)):
-                    if idx >= 4:
-                        fields.append("...")
-                        break
-                    fields.append(f"{k}={_safe_short(v)}")
+                field_count = sum(1 for _ in _iter_object_items(value, include_private=False))
             except Exception:
                 return _safe_short(value)
             type_name = type(value).__name__
-            return f"{type_name}{{{', '.join(fields)}}}"
+            return f"{type_name} ({field_count} fields)"
 
         return _safe_short(value)
+
+    def _build_value_tree(value, depth=0, max_depth=10, seen=None):
+        if seen is None:
+            seen = set()
+
+        value_id = id(value)
+        if value_id in seen:
+            return {
+                "text": "(recursive reference)",
+                "children": [],
+                "truncated": False,
+            }
+
+        if depth >= max_depth:
+            return {
+                "text": "(max depth reached)",
+                "children": [],
+                "truncated": False,
+            }
+
+        if _is_primitive(value):
+            return {
+                "text": _safe_short(value),
+                "children": [],
+                "truncated": False,
+            }
+
+        children = []
+        truncated = False
+
+        if isinstance(value, dict):
+            seen.add(value_id)
+            for idx, (k, v) in enumerate(value.items()):
+                children.append({
+                    "name": _safe_short(k),
+                    "tree": _build_value_tree(v, depth=depth + 1, max_depth=max_depth, seen=seen),
+                })
+            seen.remove(value_id)
+            return {
+                "text": f"dict ({len(value)})",
+                "children": children,
+                "truncated": truncated,
+            }
+
+        if isinstance(value, (list, tuple, deque)):
+            seq = list(value)
+            seen.add(value_id)
+            for idx, item in enumerate(seq):
+                children.append({
+                    "name": f"[{idx}]",
+                    "tree": _build_value_tree(item, depth=depth + 1, max_depth=max_depth, seen=seen),
+                })
+            seen.remove(value_id)
+            kind = type(value).__name__
+            return {
+                "text": f"{kind} ({len(seq)})",
+                "children": children,
+                "truncated": truncated,
+            }
+
+        if isinstance(value, (set, frozenset)):
+            seq = sorted(list(value), key=lambda x: _safe_short(x))
+            seen.add(value_id)
+            for idx, item in enumerate(seq):
+                children.append({
+                    "name": f"[{idx}]",
+                    "tree": _build_value_tree(item, depth=depth + 1, max_depth=max_depth, seen=seen),
+                })
+            seen.remove(value_id)
+            kind = type(value).__name__
+            return {
+                "text": f"{kind} ({len(seq)})",
+                "children": children,
+                "truncated": truncated,
+            }
+
+        if _is_class_object(value):
+            try:
+                items = list(_iter_object_items(value, include_private=False))
+            except Exception:
+                return {
+                    "text": _safe_short(value),
+                    "children": [],
+                    "truncated": False,
+                }
+            seen.add(value_id)
+            for idx, (k, v) in enumerate(items):
+                children.append({
+                    "name": str(k),
+                    "tree": _build_value_tree(v, depth=depth + 1, max_depth=max_depth, seen=seen),
+                })
+            seen.remove(value_id)
+            return {
+                "text": f"{type(value).__name__}",
+                "children": children,
+                "truncated": truncated,
+            }
+
+        return {
+            "text": _safe_short(value),
+            "children": [],
+            "truncated": False,
+        }
 
     globals_items = []
     for name in sorted(raw_globals.keys()):
@@ -722,6 +802,7 @@ def _build_stack_view(step):
         globals_items.append({
             "name": str(name),
             "text": _describe_value(raw_globals[name]),
+            "tree": _build_value_tree(raw_globals[name]),
             "is_param": False,
         })
 
@@ -747,9 +828,11 @@ def _build_stack_view(step):
 
         rows = []
         for n in ordered_names:
+            v = local_dict.get(n)
             rows.append({
                 "name": n,
-                "text": _describe_value(local_dict.get(n)),
+                "text": _describe_value(v),
+                "tree": _build_value_tree(v),
                 "is_param": n in param_set,
             })
         locals_frames.append({
@@ -775,7 +858,6 @@ def _render_debugger(steps, source_lines, title="DSVis Debugger", layout=None):
         step_payload.append({
             "step": idx,
             "lineno": step.get("lineno"),
-            "graph": _build_g6_data(step.get("nodes", []), step.get("edges", [])),
             "stack_view": _build_stack_view(step),
         })
 
@@ -912,5 +994,3 @@ def auto(fn=None):
     
     # 返回装饰器
     return make_decorator()
-
-
