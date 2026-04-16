@@ -23,6 +23,9 @@
   .stack-tree .node-head { display:inline-flex; gap:6px; align-items:baseline; }
   .stack-tree .node-name { color:#6a737d; }
   .stack-tree .node-text { color:#222; }
+  .stack-tree .node-type, .value-type { color:#6b7280; }
+  .stack-tree .node-preview, .value-preview { color:#1f2937; }
+  .special-title { color:#0f2c63; font-weight:700; padding:6px 10px 2px 10px; }
   .stack-tree .node-children { margin-left:14px; border-left:1px dashed #d0d7e2; padding-left:8px; }
   .stack-tree .node-more { color:#8a8a8a; font-style:italic; }
   .stack-empty { color:#8a8a8a; font-style:italic; padding:4px 10px; font-size:12px; }
@@ -113,15 +116,24 @@ function renderRows(rows) {
   return rows.map((row) => {
     const cls = row?.is_param ? 'stack-row param' : 'stack-row';
     const name = escapeHtml(row?.name || '');
-    const value = escapeHtml(row?.text || '');
+    const value = formatValueText(row?.text || '');
     const tree = renderValueTree(row?.tree);
     return `<div class="${cls}"><span class="name">${name}</span><span class="value">${value}</span></div>${tree}`;
   }).join('');
 }
 
+function formatValueText(raw) {
+  const text = String(raw || '');
+  const m = text.match(/^\{([^}]*)\}\s*(.*)$/);
+  if (!m) return escapeHtml(text);
+  const typeName = escapeHtml(m[1] || '');
+  const preview = escapeHtml(m[2] || '');
+  return `<span class="value-type">{${typeName}}</span> <span class="value-preview">${preview}</span>`;
+}
+
 function renderValueTree(tree, name = '', depth = 0) {
   if (!tree || !Array.isArray(tree.children) || tree.children.length === 0) return '';
-  const text = escapeHtml(tree.text || '');
+  const text = formatTreeText(tree.text || '');
   const label = name ? `<span class="node-name">${escapeHtml(name)}</span>` : '';
   const children = tree.children.map((child) => renderTreeNode(child.name, child.tree, depth + 1)).join('');
   const more = tree.truncated ? '<div class="node-more">...</div>' : '';
@@ -130,7 +142,7 @@ function renderValueTree(tree, name = '', depth = 0) {
 }
 
 function renderTreeNode(name, tree, depth) {
-  const text = escapeHtml(tree?.text || '');
+  const text = formatTreeText(tree?.text || '');
   const nodeName = `<span class="node-name">${escapeHtml(name || '')}</span>`;
   if (!tree || !Array.isArray(tree.children) || tree.children.length === 0) {
     return `<div class="node-head">${nodeName}<span class="node-text">${text}</span></div>`;
@@ -141,6 +153,13 @@ function renderTreeNode(name, tree, depth) {
   return `<details${openAttr}><summary><span class="node-head">${nodeName}<span class="node-text">${text}</span></span></summary><div class="node-children">${children}${more}</div></details>`;
 }
 
+function formatTreeText(raw) {
+  const text = String(raw || '');
+  const m = text.match(/^\{([^}]*)\}\s*(.*)$/);
+  if (!m) return `<span class="node-text">${escapeHtml(text)}</span>`;
+  return `<span class="node-type">{${escapeHtml(m[1] || '')}}</span> <span class="node-preview">${escapeHtml(m[2] || '')}</span>`;
+}
+
 function renderStackView(step) {
   const pane = document.getElementById('stackPane');
   const stack = step?.stack_view || { globals: [], frames: [] };
@@ -149,6 +168,10 @@ function renderStackView(step) {
   html += '<div class="stack-card">';
   html += '<div class="stack-title">globals</div>';
   html += `<div class="stack-rows">${renderRows(stack.globals)}</div>`;
+  if (Array.isArray(stack.special_globals) && stack.special_globals.length) {
+    html += '<div class="special-title">特殊变量</div>';
+    html += `<div class="stack-rows">${renderRows(stack.special_globals)}</div>`;
+  }
   html += '</div>';
 
   const frames = Array.isArray(stack.frames) ? stack.frames : [];
