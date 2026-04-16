@@ -803,6 +803,109 @@ def _build_stack_view(step):
             "truncated": False,
         }
 
+    def _build_value_tree(value, depth=0, max_depth=10, seen=None):
+        if seen is None:
+            seen = set()
+
+        value_id = id(value)
+        if value_id in seen:
+            return {
+                "text": "(recursive reference)",
+                "children": [],
+                "truncated": False,
+            }
+
+        if depth >= max_depth:
+            return {
+                "text": "(max depth reached)",
+                "children": [],
+                "truncated": False,
+            }
+
+        if _is_primitive(value):
+            return {
+                "text": _safe_short(value),
+                "children": [],
+                "truncated": False,
+            }
+
+        children = []
+        truncated = False
+
+        if isinstance(value, dict):
+            seen.add(value_id)
+            for idx, (k, v) in enumerate(value.items()):
+                children.append({
+                    "name": _safe_short(k),
+                    "tree": _build_value_tree(v, depth=depth + 1, max_depth=max_depth, seen=seen),
+                })
+            seen.remove(value_id)
+            return {
+                "text": f"dict ({len(value)})",
+                "children": children,
+                "truncated": truncated,
+            }
+
+        if isinstance(value, (list, tuple, deque)):
+            seq = list(value)
+            seen.add(value_id)
+            for idx, item in enumerate(seq):
+                children.append({
+                    "name": f"[{idx}]",
+                    "tree": _build_value_tree(item, depth=depth + 1, max_depth=max_depth, seen=seen),
+                })
+            seen.remove(value_id)
+            kind = type(value).__name__
+            return {
+                "text": f"{kind} ({len(seq)})",
+                "children": children,
+                "truncated": truncated,
+            }
+
+        if isinstance(value, (set, frozenset)):
+            seq = sorted(list(value), key=lambda x: _safe_short(x))
+            seen.add(value_id)
+            for idx, item in enumerate(seq):
+                children.append({
+                    "name": f"[{idx}]",
+                    "tree": _build_value_tree(item, depth=depth + 1, max_depth=max_depth, seen=seen),
+                })
+            seen.remove(value_id)
+            kind = type(value).__name__
+            return {
+                "text": f"{kind} ({len(seq)})",
+                "children": children,
+                "truncated": truncated,
+            }
+
+        if _is_class_object(value):
+            try:
+                items = list(_iter_object_items(value, include_private=False))
+            except Exception:
+                return {
+                    "text": _safe_short(value),
+                    "children": [],
+                    "truncated": False,
+                }
+            seen.add(value_id)
+            for idx, (k, v) in enumerate(items):
+                children.append({
+                    "name": str(k),
+                    "tree": _build_value_tree(v, depth=depth + 1, max_depth=max_depth, seen=seen),
+                })
+            seen.remove(value_id)
+            return {
+                "text": f"{type(value).__name__}",
+                "children": children,
+                "truncated": truncated,
+            }
+
+        return {
+            "text": _safe_short(value),
+            "children": [],
+            "truncated": False,
+        }
+
     globals_items = []
     special_globals = []
     for name in sorted(raw_globals.keys()):
