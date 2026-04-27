@@ -6,8 +6,14 @@
 <script src="https://unpkg.com/@antv/g6@5.0.51/dist/g6.min.js"></script>
 <style>
   html, body { width:100%; height:100%; margin:0; font-family:Consolas, monospace; }
-  #root { display:flex; width:100%; height:100%; }
-  #stack, #right { transition: width 120ms linear, min-width 120ms linear; }
+  #root {
+    --stack-width: 340px;
+    --right-width: 600px;
+    display:flex;
+    width:100%;
+    height:100%;
+  }
+  #stack, #right { transition: width 120ms linear, min-width 120ms linear, flex-basis 120ms linear; }
   .pane-header { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 12px; border-bottom:1px solid #d4dcef; background:#e8f0fe; }
   .pane-title { font-weight:700; color:#0f2c63; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .pane-toggle {
@@ -21,17 +27,48 @@
     cursor:pointer;
     flex:0 0 auto;
   }
-  #stack { width:340px; min-width:340px; height:100%; border-right:1px solid #ddd; display:flex; flex-direction:column; background:#f5f7fb; }
-  #stack.pane-collapsed { width:56px; min-width:56px; }
+  #stack { flex: 0 0 var(--stack-width); height:100%; border-right:1px solid #ddd; display:flex; flex-direction:column; background:#f5f7fb; }
+  /* #stack { width:340px; min-width:340px; height:100%; border-right:1px solid #ddd; display:flex; flex-direction:column; background:#f5f7fb; } */
+  /* #stack.pane-collapsed { width:56px; min-width:56px; } */
+  #stack.pane-collapsed { flex: 0 0 56px; }
   #stack.pane-collapsed #stackView { display:none; }
   #stack.pane-collapsed .pane-title { display:none; }
   #stack.pane-collapsed .pane-header { padding:10px 6px; justify-content:center; }
   #stack.pane-collapsed .pane-toggle { width:100%; padding:6px 0; }
   #stackView { flex:1; overflow:auto; display:flex; flex-direction:column; padding:10px; }
-  #middle { flex:1; min-width:0; height:100%; border-right:1px solid #ddd; position:relative; }
+  #middle { flex:1; min-width:260px; height:100%; border-right:1px solid #ddd; position:relative; }
   #graph { width:100%; height:100%; }
-  #right { width:35%; height:100%; display:flex; flex-direction:column; background:#fafafa; }
-  #right.pane-collapsed { width:56px; min-width:56px; }
+  #right {
+    flex: 0 0 var(--right-width);
+    min-width: 0;
+    height:100%;
+    display:flex;
+    flex-direction:column;
+    background:#fafafa;
+  }
+  /* #right { width:35%; height:100%; display:flex; flex-direction:column; background:#fafafa; } */
+  /* #right.pane-collapsed { width:56px; min-width:56px; } */
+  #right.pane-collapsed { flex: 0 0 56px; min-width:56px; max-width:56px; }
+  .pane-resizer {
+    flex: 0 0 6px;
+    width: 6px;
+    height: 100%;
+    background: #e5eaf4;
+    border-left: 1px solid #d8deeb;
+    border-right: 1px solid #d8deeb;
+    cursor: col-resize;
+    user-select: none;
+  }
+  .pane-resizer:hover { background:#dbe4f5; }
+  .pane-resizer.disabled {
+    cursor: default;
+    opacity: 0.35;
+  }
+  body.resizing,
+  body.resizing * {
+    cursor: col-resize !important;
+    user-select: none !important;
+  }
   #right.pane-collapsed #codeView,
   #right.pane-collapsed #controls { display:none; }
   #right.pane-collapsed .pane-title { display:none; }
@@ -112,7 +149,7 @@
   .stack-empty { padding:4px 10px; color:#8a8a8a; font-style:italic; font-size:12px; }
   #codeHeader { padding:10px 12px; border-bottom:1px solid #ddd; font-weight:600; background:#fff; }
   #codeView { flex:1; overflow:auto; padding:8px 0; }
-  .line { display:flex; padding:2px 12px; white-space:pre; }
+  .line { display:flex; padding:2px 12px; white-space:pre; min-width:max-content; }
   .ln { width:56px; color:#999; user-select:none; }
   .txt { flex:1; }
   .active { background:#fff3cd; }
@@ -139,9 +176,11 @@
     </div>
     <div id="stackView"></div>
   </div>
+  <div id="stackResizeHandle" class="pane-resizer" role="separator" aria-label="resize stack"></div>
   <div id="middle">
     <div id="graph"></div>
   </div>
+  <div id="rightResizeHandle" class="pane-resizer" role="separator" aria-label="resize right"></div>
   <div id="right">
     <div class="pane-header">
       <span class="pane-title">Original Source (full file, auto-scroll to current line)</span>
@@ -207,6 +246,11 @@ const ANIMATION_CONFIG = {
 const PANEL_STATE = {
   stackVisible: true,
   codeVisible: true,
+};
+const RESIZE_CONFIG = {
+  stack: { min: 220, max: 560, collapsed: 56 },
+  right: { min: 220, collapsed: 56 },
+  middleMin: 260,
 };
 const DELTA_COLORS = {
   unchanged: { fill: '#e8f0fe', stroke: '#5b8ff9', line: '#333' },
@@ -788,13 +832,105 @@ function refreshVisibleGraph() {
   refreshGraphVisuals();
 }
 
+function getRootElement() {
+  return document.getElementById('root');
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function updateResizeHandleState() {
+  const stackHandle = document.getElementById('stackResizeHandle');
+  const rightHandle = document.getElementById('rightResizeHandle');
+  if (stackHandle) {
+    stackHandle.classList.toggle('disabled', !PANEL_STATE.stackVisible);
+    stackHandle.style.pointerEvents = PANEL_STATE.stackVisible ? 'auto' : 'none';
+  }
+  if (rightHandle) {
+    rightHandle.classList.toggle('disabled', !PANEL_STATE.codeVisible);
+    rightHandle.style.pointerEvents = PANEL_STATE.codeVisible ? 'auto' : 'none';
+  }
+}
+
+function setStackWidthPx(nextWidth) {
+  const root = getRootElement();
+  if (!root) return;
+  const rootWidth = root.clientWidth;
+  const rightWidth = PANEL_STATE.codeVisible
+    ? parseFloat(getComputedStyle(root).getPropertyValue('--right-width')) || 320
+    : RESIZE_CONFIG.right.collapsed;
+  const maxByViewport = Math.max(
+    RESIZE_CONFIG.stack.min,
+    rootWidth - rightWidth - RESIZE_CONFIG.middleMin - 16
+  );
+  const width = clamp(nextWidth, RESIZE_CONFIG.stack.min, Math.min(RESIZE_CONFIG.stack.max, maxByViewport));
+  root.style.setProperty('--stack-width', `${Math.round(width)}px`);
+}
+
+function setRightWidthPx(nextWidth) {
+  const root = getRootElement();
+  if (!root) return;
+  const rootWidth = root.clientWidth;
+  const stackWidth = PANEL_STATE.stackVisible
+    ? parseFloat(getComputedStyle(root).getPropertyValue('--stack-width')) || 340
+    : RESIZE_CONFIG.stack.collapsed;
+  const maxByViewport = Math.max(
+    RESIZE_CONFIG.right.min,
+    rootWidth - stackWidth - RESIZE_CONFIG.middleMin - 16
+  );
+  const width = clamp(nextWidth, RESIZE_CONFIG.right.min, maxByViewport);
+  root.style.setProperty('--right-width', `${Math.round(width)}px`);
+}
+
+function bindHorizontalResizer(handleId, onMove) {
+  const handle = document.getElementById(handleId);
+  if (!handle) return;
+  let active = false;
+  let rafPending = false;
+  let pendingX = 0;
+  const move = (clientX) => {
+    pendingX = clientX;
+    if (rafPending) return;
+    rafPending = true;
+    requestAnimationFrame(() => {
+      rafPending = false;
+      onMove(pendingX);
+      refreshVisibleGraph();
+    });
+  };
+  handle.addEventListener('pointerdown', (evt) => {
+    if (handle.classList.contains('disabled')) return;
+    active = true;
+    document.body.classList.add('resizing');
+    handle.setPointerCapture?.(evt.pointerId);
+  });
+  handle.addEventListener('pointermove', (evt) => {
+    if (!active) return;
+    move(evt.clientX);
+  });
+  const end = (evt) => {
+    if (!active) return;
+    active = false;
+    document.body.classList.remove('resizing');
+    if (evt && Number.isFinite(evt.clientX)) {
+      move(evt.clientX);
+    } else {
+      refreshVisibleGraph();
+    }
+  };
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+}
+
 function setPaneVisible(paneId, visible, toggleLabelVisible, toggleLabelHidden) {
   const pane = document.getElementById(paneId);
-  const toggleBtn = document.getElementById(`${paneId}ToggleBtn`);
+  const toggleBtn = document.getElementById(`${paneId}ToggleBtn`) || pane?.querySelector('.pane-toggle');
   if (!pane || !toggleBtn) return;
   pane.classList.toggle('pane-collapsed', !visible);
   toggleBtn.textContent = visible ? toggleLabelVisible : toggleLabelHidden;
   toggleBtn.setAttribute('aria-pressed', String(!visible));
+  updateResizeHandleState();
   requestAnimationFrame(() => {
     refreshVisibleGraph();
   });
@@ -1294,6 +1430,24 @@ if (codeToggleBtn) {
     setPaneVisible('right', PANEL_STATE.codeVisible, '隐藏', '恢复');
   });
 }
+
+bindHorizontalResizer('stackResizeHandle', (clientX) => {
+  if (!PANEL_STATE.stackVisible) return;
+  const root = getRootElement();
+  if (!root) return;
+  const rect = root.getBoundingClientRect();
+  setStackWidthPx(clientX - rect.left);
+});
+
+bindHorizontalResizer('rightResizeHandle', (clientX) => {
+  if (!PANEL_STATE.codeVisible) return;
+  const root = getRootElement();
+  if (!root) return;
+  const rect = root.getBoundingClientRect();
+  setRightWidthPx(rect.right - clientX);
+});
+
+updateResizeHandleState();
 
 renderAllCode();
 computeStepDiffs();

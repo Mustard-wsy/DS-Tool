@@ -147,19 +147,19 @@ DSVis/
 ## 🚀 集成步骤
 
 ```bash
-# 1. 将 dsvis/ 目录复制到你的项目
-cp -r dsvis/ my_project/
+1. 将 dsvis/ 目录复制到你的项目
+    cp -r dsvis/ my_project/
 
-# 2. 在代码中导入
-import dsvis
+2. 在代码中导入推荐方式：
+    from dsvis import auto, capture, bind_fields, set_mode
 
-# 3. 使用接口
-dsvis.auto()
-def algorithm():
-    pass
+3. 使用接口
+    auto()
+    def algorithm():
+         pass
 
-# 4. 运行
-python my_script.py
+4. 运行
+    python my_script.py
 ```
 
 ---
@@ -168,11 +168,65 @@ python my_script.py
 
 | 文档 | 内容 |
 |------|------|
-| [docs/API_REFERENCE.md](docs/API_REFERENCE.md) | 完整 API 文档 |
-| [docs/INTERFACES_QUICK_REFERENCE.md](docs/INTERFACES_QUICK_REFERENCE.md) | 快速速查表 |
-| [docs/UNIFIED_MODE_DOCUMENTATION.md](docs/UNIFIED_MODE_DOCUMENTATION.md) | 深入理解 |
+
+| 文档 | 内容 |
+|------|------|
+| 本 README | 快速入门与接口说明 |
 | [examples/](examples/) | 代码示例 |
 
 ---
 
-**版本**: 0.0.1 | **最后更新**: 2026-04-11
+**版本**: 1.0.0 | **最后更新**: 2026-04-27
+---
+
+## 🧩 常用接口说明
+
+### auto()
+自动追踪模式，自动插桩，捕获所有变量和数据结构的变化，生成可视化执行轨迹。
+```python
+from dsvis import auto
+auto()
+def my_algorithm():
+    arr = [1, 2, 3]
+    arr[0] = 42
+if __name__ == "__main__":
+    my_algorithm()
+```
+
+### capture(...)
+手动捕获当前执行状态，插入一个快照到可视化流程。
+```python
+from dsvis import capture
+def algorithm():
+    a = [1, 2, 3]
+    capture()
+    a[0] = 99
+    capture(focus_vars=["a"])
+```
+
+### bind_fields(obj, **field_specs)
+批量绑定对象的字段到可视化分组，适合自定义数据结构（如树、链表等）。
+```python
+from dsvis import bind_fields
+class Node:
+    def __init__(self):
+        self.left = None
+        self.right = None
+        self.val = 0
+node = Node()
+bind_fields(node, left=("L", 1), right=("R", 1), val=("V", 1))
+```
+
+### set_mode(mode)
+切换捕获模式。"coarse"：只捕获关键结构变化（默认），"fine"：捕获所有赋值、循环、函数调用。
+```python
+from dsvis import set_mode
+set_mode("fine")
+```
+
+---
+
+## ⚠️ 说明
+
+- 支持 Python 3.8+，无第三方依赖。
+- demo_*.py 文件为更多用法示例。
