@@ -7,20 +7,85 @@
 <style>
   html, body { width:100%; height:100%; margin:0; font-family:Consolas, monospace; }
   #root { display:flex; width:100%; height:100%; }
-  #stack { width:260px; min-width:260px; height:100%; border-right:1px solid #ddd; display:flex; flex-direction:column; background:#fff; }
-  #stackHeader { padding:10px 12px; border-bottom:1px solid #ddd; font-weight:600; background:#fff; }
-  #stackView { flex:1; overflow:auto; display:flex; flex-direction:column; }
+  #stack { width:340px; min-width:340px; height:100%; border-right:1px solid #ddd; display:flex; flex-direction:column; background:#f5f7fb; }
+  #stackHeader { padding:10px 12px; border-bottom:1px solid #d4dcef; font-weight:700; color:#0f2c63; background:#e8f0fe; }
+  #stackView { flex:1; overflow:auto; display:flex; flex-direction:column; padding:10px; }
   #middle { flex:1; min-width:0; height:100%; border-right:1px solid #ddd; position:relative; }
   #graph { width:100%; height:100%; }
   #right { width:35%; height:100%; display:flex; flex-direction:column; background:#fafafa; }
-  .stack-card { border-bottom:1px solid #ddd; }
-  .stack-title { padding:8px 12px; font-weight:600; background:#f8f9fb; }
-  .stack-subtitle { padding:0 12px 8px; color:#666; font-size:12px; }
-  .stack-row { display:flex; gap:8px; padding:2px 12px; white-space:pre; }
-  .stack-row .stack-name { flex:0 0 auto; color:#222; }
-  .stack-row .stack-value { min-width:0; overflow:hidden; text-overflow:ellipsis; color:#444; }
-  .stack-row-param .stack-name { color:#c05a00; font-weight:600; }
-  .stack-empty { padding:8px 12px; color:#999; font-style:italic; }
+  .stack-card { width:100%; max-width:100%; border:1px solid #96addc; border-radius:0; background:#fff; margin:0; }
+  .stack-card + .stack-card { margin-top:0; border-top:0; }
+  .stack-title { padding:6px 10px; font-weight:700; color:#0f2c63; background:#e8f0fe; border-bottom:1px solid #c8d6f5; }
+  .stack-subtitle { padding:0 10px 6px; color:#6b7280; font-size:12px; background:#f2f7ff; border-bottom:1px solid #e3ebfb; }
+  .stack-rows { padding:4px 0; }
+  .stack-row-block { display:block; }
+  .stack-row { display:flex; gap:8px; padding:2px 10px; font-size:12px; line-height:18px; align-items:flex-start; }
+  .stack-row .stack-name {
+    color:#6a737d;
+    width:140px;
+    flex:0 0 140px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .stack-row .stack-value {
+    color:#222;
+    flex:1;
+    min-width:0;
+    white-space:normal;
+    overflow-wrap:anywhere;
+    word-break:break-word;
+  }
+  .stack-value-toggle {
+    color:#4f6fa8;
+    cursor:pointer;
+    font-weight:700;
+    margin-right:6px;
+    text-decoration:underline;
+    text-underline-offset:1px;
+  }
+  .stack-value-main { color:#222; }
+  .stack-name-toggle {
+    color:#4f6fa8;
+    cursor:pointer;
+    font-weight:700;
+    text-decoration:underline;
+    text-underline-offset:1px;
+  }
+  .stack-name-suffix { color:#6a737d; }
+  .stack-row-param { background:#fff1cf; }
+  .stack-row-param .stack-name { color:#8a4d00; font-weight:700; }
+  .stack-tree {
+    margin:0 10px 6px 148px;
+    border-left:1px dashed #d0d7e2;
+    padding-left:8px;
+    font-size:12px;
+    color:#1f2937;
+  }
+  .stack-tree-head { color:#6b7280; margin-bottom:2px; }
+  .stack-tree-item {
+    display:flex;
+    gap:8px;
+    align-items:flex-start;
+    line-height:18px;
+    padding:1px 0;
+    white-space:normal;
+    overflow-wrap:anywhere;
+    word-break:break-word;
+  }
+  .stack-tree-item-name { color:#6a737d; flex:0 0 auto; }
+  .stack-tree-item-value { color:#1f2937; min-width:0; }
+  .stack-tree-more {
+    border:none;
+    background:transparent;
+    color:#4f6fa8;
+    cursor:pointer;
+    padding:2px 0;
+    font-size:12px;
+    text-decoration:underline;
+    text-underline-offset:1px;
+  }
+  .stack-empty { padding:4px 10px; color:#8a8a8a; font-style:italic; font-size:12px; }
   #codeHeader { padding:10px 12px; border-bottom:1px solid #ddd; font-weight:600; background:#fff; }
   #codeView { flex:1; overflow:auto; padding:8px 0; }
   .line { display:flex; padding:2px 12px; white-space:pre; }
@@ -75,6 +140,11 @@ const STEPS = __STEPS__;
 const SOURCE_LINES = __SOURCE_LINES__;
 const baseLayout = __LAYOUT__;
 const STEP_DIFFS = [];
+const STACK_UI_STATE = {
+  nameExpanded: new Map(),
+  valueExpanded: new Map(),
+  treeExpanded: new Map(),
+};
 let current = 0;
 let graph = null;
 let codeRows = [];
@@ -98,6 +168,11 @@ const AUTO_FIT_CONFIG = {
   maxScale: 1.25,
   innerRingRatio: 0.08,
   minInnerRingPx: 18,
+};
+const ANIMATION_CONFIG = {
+  // Lower this further (e.g. 80) for faster fade in/out.
+  durationMs: 120,
+  easing: 'linear',
 };
 const DELTA_COLORS = {
   unchanged: { fill: '#e8f0fe', stroke: '#5b8ff9', line: '#333' },
@@ -379,7 +454,8 @@ function initGraph(data) {
         x: -w/2, y: -h/2, width:w, height:h, radius:4,
         fill: attributes.fill || DELTA_COLORS.unchanged.fill,
         stroke: attributes.stroke || DELTA_COLORS.unchanged.stroke,
-        lineWidth: attributes.lineWidth || 1
+        lineWidth: attributes.lineWidth || 1,
+        zIndex: -1
       }, container);
       const prevHeaderLineCount = this.__prevHeaderLineCount || 0;
       headerLines.forEach((line, i) => {
@@ -439,14 +515,14 @@ function initGraph(data) {
         this.upsert(`bind-block-${i}`, 'rect', {
           x: -w/2 + 4, y: -h/2 + headerH + paddingY + run.start * rowH + 1,
           width: w - 8, height: Math.max((run.end - run.start + 1) * rowH - 2, 2), radius: 4,
-          fill: colorForGroup(run.group), stroke: 'transparent'
+          fill: colorForGroup(run.group), stroke: 'transparent', fillOpacity: 0.55, zIndex: 0
         }, container);
       });
       const prevRunCount = this.__prevBindRunCount || 0;
       for (let i = runs.length; i < prevRunCount; i++) {
         this.upsert(`bind-block-${i}`, 'rect', {
           x: -w/2 + 4, y: -h/2, width: 0, height: 0, radius: 0,
-          fill: 'transparent', stroke: 'transparent'
+          fill: 'transparent', stroke: 'transparent', zIndex: 0
         }, container);
       }
       this.__prevBindRunCount = runs.length;
@@ -456,13 +532,13 @@ function initGraph(data) {
           this.upsert(`bind-bg-${i}`, 'rect', {
             x: -w/2 + 4, y: -h/2 + headerH + paddingY + i * rowH + 1,
             width: w - 8, height: rowH - 2, radius: 3,
-            fill: '#d9ecff', stroke: 'transparent'
+            fill: '#d9ecff', stroke: 'transparent', fillOpacity: 0.35, zIndex: 0
           }, container);
         } else {
           this.upsert(`bind-bg-${i}`, 'rect', {
             x: -w/2 + 4, y: -h/2 + headerH + paddingY + i * rowH + 1,
             width: w - 8, height: rowH - 2, radius: 3,
-            fill: 'transparent', stroke: 'transparent'
+            fill: 'transparent', stroke: 'transparent', zIndex: 0
           }, container);
         }
         const rowDeltaType = Array.isArray(attributes.rowDeltaTypes) ? attributes.rowDeltaTypes[i] : null;
@@ -473,7 +549,7 @@ function initGraph(data) {
             : '#333';
         this.upsert(`r-${i}`, 'text', {
           x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: row,
-          fontSize:11, fill: rowColor, fontWeight: rowDeltaType ? 600 : 400, textBaseline:'top'
+          fontSize:11, fill: rowColor, fontWeight: rowDeltaType ? 600 : 400, textBaseline:'top', zIndex: 2
         }, container);
       });
       const prevRowCount = this.__prevRowCount || 0;
@@ -481,11 +557,11 @@ function initGraph(data) {
         this.upsert(`bind-bg-${i}`, 'rect', {
           x: -w/2 + 4, y: -h/2 + headerH + paddingY + i * rowH + 1,
           width: w - 8, height: rowH - 2, radius: 3,
-          fill: 'transparent', stroke: 'transparent'
+          fill: 'transparent', stroke: 'transparent', zIndex: 0
         }, container);
         this.upsert(`r-${i}`, 'text', {
           x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: '',
-          fontSize:11, fill:'#333', textBaseline:'top'
+          fontSize:11, fill:'#333', textBaseline:'top', zIndex: 2
         }, container);
       }
       this.__prevRowCount = rows.length;
@@ -501,6 +577,10 @@ function initGraph(data) {
     width:size.width,
     height:size.height,
     autoResize:true,
+    animation: {
+      duration: ANIMATION_CONFIG.durationMs,
+      easing: ANIMATION_CONFIG.easing,
+    },
     data: prepared.data,
     layout: prepared.layout,
     node:{
@@ -867,21 +947,172 @@ function renderStackPanel(stackData) {
   const globals = Array.isArray(stackData?.globals) ? stackData.globals : [];
   const frames = Array.isArray(stackData?.frames) ? stackData.frames : [];
 
-  const createRow = (row) => {
+  const normalizeValueText = (row) => {
+    if (row?.tree && typeof row.tree.text === 'string' && row.tree.text.length) {
+      return row.tree.text;
+    }
+    if (typeof row?.full_text === 'string' && row.full_text.length) {
+      return row.full_text;
+    }
+    if (typeof row?.compact_text === 'string' && row.compact_text.length) {
+      const name = String(row?.name ?? '');
+      const compactPrefix = `${name} = `;
+      if (name && row.compact_text.startsWith(compactPrefix)) {
+        return row.compact_text.slice(compactPrefix.length);
+      }
+      return row.compact_text;
+    }
+    const name = String(row?.name ?? '');
+    const text = String(row?.text ?? '');
+    const prefix = `${name} = `;
+    if (name && text.startsWith(prefix)) {
+      return text.slice(prefix.length);
+    }
+    return text;
+  };
+
+  const createRow = (row, rowStateKey) => {
+    const rowBlock = document.createElement('div');
+    rowBlock.className = 'stack-row-block';
+
     const rowEl = document.createElement('div');
     rowEl.className = `stack-row${row?.kind === 'param' ? ' stack-row-param' : ''}`;
     const nameEl = document.createElement('span');
     nameEl.className = 'stack-name';
-    nameEl.textContent = row?.name ?? '';
+    const rawName = String(row?.name ?? '');
+    const nameParts = rawName.split('.').filter((p) => p !== '');
+    const hasCollapsiblePrefix = nameParts.length >= 2;
+    if (!hasCollapsiblePrefix) {
+      nameEl.textContent = rawName;
+    } else {
+      const suffix = nameParts[nameParts.length - 1];
+      const prefix = nameParts.slice(0, -1).join('.');
+      const toggleEl = document.createElement('span');
+      toggleEl.className = 'stack-name-toggle';
+      toggleEl.title = '点击展开/收起完整名称';
+      const suffixEl = document.createElement('span');
+      suffixEl.className = 'stack-name-suffix';
+      let expanded = Boolean(STACK_UI_STATE.nameExpanded.get(rowStateKey));
+
+      const renderName = () => {
+        if (expanded) {
+          toggleEl.textContent = prefix;
+          suffixEl.textContent = `.${suffix}`;
+          nameEl.style.whiteSpace = 'normal';
+          nameEl.style.overflow = 'visible';
+          nameEl.style.textOverflow = 'clip';
+          nameEl.style.overflowWrap = 'anywhere';
+        } else {
+          toggleEl.textContent = '...';
+          suffixEl.textContent = `.${suffix}`;
+          nameEl.style.whiteSpace = 'nowrap';
+          nameEl.style.overflow = 'hidden';
+          nameEl.style.textOverflow = 'ellipsis';
+          nameEl.style.overflowWrap = 'normal';
+        }
+      };
+
+      toggleEl.addEventListener('click', () => {
+        expanded = !expanded;
+        STACK_UI_STATE.nameExpanded.set(rowStateKey, expanded);
+        renderName();
+      });
+
+      renderName();
+      nameEl.appendChild(toggleEl);
+      nameEl.appendChild(suffixEl);
+    }
     const valueEl = document.createElement('span');
     valueEl.className = 'stack-value';
-    valueEl.textContent = row?.text ?? '';
+    const valueMain = document.createElement('span');
+    valueMain.className = 'stack-value-main';
+    let valueExpanded = Boolean(STACK_UI_STATE.valueExpanded.get(rowStateKey));
+    const hasHiddenReason = Boolean(row?.hidden_reason);
+
+    const renderValue = () => {
+      if (hasHiddenReason) {
+        if (valueExpanded) {
+          valueMain.textContent = String(normalizeValueText({ ...row, compact_text: '', full_text: '' }) || '');
+        } else {
+          valueMain.textContent = normalizeValueText(row);
+        }
+      } else {
+        valueMain.textContent = normalizeValueText(row);
+      }
+    };
+
+    if (hasHiddenReason) {
+      const valueToggle = document.createElement('span');
+      valueToggle.className = 'stack-value-toggle';
+      valueToggle.textContent = '...';
+      valueToggle.title = '点击展开/收起隐藏内容';
+      valueToggle.addEventListener('click', () => {
+        valueExpanded = !valueExpanded;
+        STACK_UI_STATE.valueExpanded.set(rowStateKey, valueExpanded);
+        valueToggle.textContent = valueExpanded ? 'hide' : '...';
+        renderValue();
+      });
+      valueToggle.textContent = valueExpanded ? 'hide' : '...';
+      valueEl.appendChild(valueToggle);
+    }
+    renderValue();
+    valueEl.appendChild(valueMain);
+
     rowEl.appendChild(nameEl);
     rowEl.appendChild(valueEl);
-    return rowEl;
+    rowBlock.appendChild(rowEl);
+
+    const tree = row?.tree;
+    if (tree && Array.isArray(tree.children) && tree.children.length) {
+      const treeWrap = document.createElement('div');
+      treeWrap.className = 'stack-tree';
+
+      const listWrap = document.createElement('div');
+      const defaultLimit = Number(row?.tree_default_limit) > 0 ? Number(row.tree_default_limit) : 5;
+      let treeExpanded = Boolean(STACK_UI_STATE.treeExpanded.get(rowStateKey));
+      const children = tree.children;
+
+      const renderChildren = () => {
+        listWrap.innerHTML = '';
+        const visible = treeExpanded ? children : children.slice(0, defaultLimit);
+        visible.forEach((child) => {
+          const item = document.createElement('div');
+          item.className = 'stack-tree-item';
+          const childName = document.createElement('span');
+          childName.className = 'stack-tree-item-name';
+          childName.textContent = child?.name || '';
+          const childValue = document.createElement('span');
+          childValue.className = 'stack-tree-item-value';
+          childValue.textContent = child?.text || '';
+          item.appendChild(childName);
+          item.appendChild(childValue);
+          listWrap.appendChild(item);
+        });
+
+        if (children.length > defaultLimit) {
+          const btn = document.createElement('button');
+          btn.className = 'stack-tree-more';
+          btn.textContent = treeExpanded ? '收起列表' : `显示剩余 ${children.length - defaultLimit} 项`;
+          btn.addEventListener('click', () => {
+            treeExpanded = !treeExpanded;
+            STACK_UI_STATE.treeExpanded.set(rowStateKey, treeExpanded);
+            renderChildren();
+          });
+          listWrap.appendChild(btn);
+        }
+      };
+
+      renderChildren();
+      treeWrap.appendChild(listWrap);
+      rowBlock.appendChild(treeWrap);
+    }
+
+    return rowBlock;
   };
 
   const addCard = (title, subtitle, rows) => {
+    const cardIndex = stackView.childElementCount;
+    const cardStateKey = `${title}|${cardIndex}`;
     const card = document.createElement('div');
     card.className = 'stack-card';
     const titleEl = document.createElement('div');
@@ -894,14 +1125,20 @@ function renderStackPanel(stackData) {
       subtitleEl.textContent = subtitle;
       card.appendChild(subtitleEl);
     }
+    const rowsWrap = document.createElement('div');
+    rowsWrap.className = 'stack-rows';
     if (!rows.length) {
       const emptyEl = document.createElement('div');
       emptyEl.className = 'stack-empty';
       emptyEl.textContent = 'empty';
-      card.appendChild(emptyEl);
+      rowsWrap.appendChild(emptyEl);
     } else {
-      rows.forEach((row) => card.appendChild(createRow(row)));
+      rows.forEach((row, rowIdx) => {
+        const rowStateKey = `${cardStateKey}|${row?.name || ''}|${rowIdx}`;
+        rowsWrap.appendChild(createRow(row, rowStateKey));
+      });
     }
+    card.appendChild(rowsWrap);
     stackView.appendChild(card);
   };
 
@@ -965,6 +1202,18 @@ stepInput.addEventListener('keydown', (evt) => {
   const raw = Number(stepInput.value);
   if (!Number.isFinite(raw)) return;
   renderStep(raw - 1);
+});
+window.addEventListener('keydown', (evt) => {
+  if (evt.key !== 'ArrowLeft' && evt.key !== 'ArrowRight') return;
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
+  if (evt.key === 'ArrowLeft') {
+    evt.preventDefault();
+    renderStep(current - 1);
+    return;
+  }
+  evt.preventDefault();
+  renderStep(current + 1);
 });
 const autoFitToggle = document.getElementById('autoFitToggle');
 if (autoFitToggle) {

@@ -1,5 +1,6 @@
 ﻿import functools
 import inspect
+import re
 import tempfile
 import webbrowser
 import json
@@ -111,6 +112,72 @@ def _frame_parameter_names(frame):
 
 
 def _serialize_scope_rows(scope_dict, include_private=False, preferred_order=None):
+    def _strip_name_prefix(name, text):
+        prefix = f"{name} = "
+        if text.startswith(prefix):
+            return text[len(prefix):]
+        return text
+
+    def _serialize_stack_tree(value, depth=0, max_depth=2, max_items=120):
+        if depth >= max_depth:
+            return None
+
+        if isinstance(value, dict):
+            items = list(value.items())
+            children = []
+            for i, (k, v) in enumerate(items):
+                if i >= max_items:
+                    break
+                text = f"{{{_typename(v)}}} {_short(v, 120)}"
+                children.append({
+                    "name": f"[{_short(k, 40)}]",
+                    "text": text,
+                    "tree": _serialize_stack_tree(v, depth + 1, max_depth=max_depth, max_items=max_items),
+                })
+            return {
+                "text": f"{{dict}} len={len(items)}",
+                "children": children,
+                "truncated": len(items) > max_items,
+            }
+
+        if isinstance(value, (list, tuple, deque)):
+            items = list(value)
+            children = []
+            for i, item in enumerate(items):
+                if i >= max_items:
+                    break
+                text = f"{{{_typename(item)}}} {_short(item, 120)}"
+                children.append({
+                    "name": f"[{i}]",
+                    "text": text,
+                    "tree": _serialize_stack_tree(item, depth + 1, max_depth=max_depth, max_items=max_items),
+                })
+            return {
+                "text": f"{{{type(value).__name__}}} len={len(items)}",
+                "children": children,
+                "truncated": len(items) > max_items,
+            }
+
+        if isinstance(value, (set, frozenset)):
+            items = list(sorted(value, key=lambda x: _short(x, 60)))
+            children = []
+            for i, item in enumerate(items):
+                if i >= max_items:
+                    break
+                text = f"{{{_typename(item)}}} {_short(item, 120)}"
+                children.append({
+                    "name": f"[{i}]",
+                    "text": text,
+                    "tree": _serialize_stack_tree(item, depth + 1, max_depth=max_depth, max_items=max_items),
+                })
+            return {
+                "text": f"{{{type(value).__name__}}} len={len(items)}",
+                "children": children,
+                "truncated": len(items) > max_items,
+            }
+
+        return None
+
     rows = []
     seen = set()
     preferred_set = set(str(name) for name in (preferred_order or []))
@@ -126,11 +193,29 @@ def _serialize_scope_rows(scope_dict, include_private=False, preferred_order=Non
         if not include_private and name.startswith("_"):
             continue
         value = scope_dict.get(name)
-        rows.append({
+        value_short = _short(value)
+        full_text = f"{name} = {value_short}"
+        row = {
             "name": name,
             "kind": "param" if name in preferred_set else "field",
-            "text": f"{name} = {_short(value)}",
-        })
+            "text": full_text,
+        }
+
+        if inspect.ismodule(value):
+            row["hidden_reason"] = "module"
+            row["compact_text"] = f"{name} = <module hidden>"
+
+        if re.match(r"^<.*\sobject\sat\s0x[0-9A-Fa-f]+>$", value_short):
+            row["hidden_reason"] = "address"
+            row["compact_text"] = f"{name} = <{type(value).__name__} instance>"
+
+        tree = _serialize_stack_tree(value)
+        if tree and tree.get("children"):
+            row["tree"] = tree
+            row["tree_default_limit"] = 5
+            row["full_text"] = _strip_name_prefix(name, full_text)
+
+        rows.append(row)
     return rows
 
 
@@ -655,7 +740,28 @@ def _build_g6_data(nodes, edges):
     row_h = 18
     default_header_h = 22
     section_gap = 6
-    card_w = 100
+    min_card_w = 100
+    max_card_w = 280
+    char_px = 6.0
+
+    def _wrap_line(text, max_chars):
+        if max_chars <= 0:
+            return [text]
+        if len(text) <= max_chars:
+            return [text]
+        out = []
+        cursor = 0
+        while cursor < len(text):
+            out.append(text[cursor:cursor + max_chars])
+            cursor += max_chars
+        return out
+
+    def _wrap_multiline(text, max_chars):
+        lines = str(text).splitlines() or [str(text)]
+        wrapped = []
+        for line in lines:
+            wrapped.extend(_wrap_line(line, max_chars))
+        return wrapped or [""]
 
     for n in nodes:
         cls = n.get("class_name") or "Obj"
@@ -664,12 +770,38 @@ def _build_g6_data(nodes, edges):
         id_to_name[n["id"]] = name
 
         rows = n.get("rows", [])
-        display_rows = [r.get("text", "") for r in rows]
-        bind_groups = [r.get("bind_group") for r in rows]
-        bind_blocks = [r.get("bind_block") for r in rows]
-        bind_groups = [r.get("bind_group") for r in rows]
-        bind_blocks = [r.get("bind_block") for r in rows]
-        header_line_count = max(1, len(str(name).splitlines()))
+        raw_header_lines = str(name).splitlines() or [str(name)]
+        candidate_lengths = [len(line) for line in raw_header_lines]
+        candidate_lengths.extend([len(str(r.get("text", ""))) for r in rows])
+        max_len = max(candidate_lengths) if candidate_lengths else 0
+
+        target_w = int(padding_x * 2 + max_len * char_px + 12)
+        card_w = max(min_card_w, min(max_card_w, target_w))
+        max_chars = max(10, int((card_w - padding_x * 2 - 6) / char_px))
+
+        header_lines = _wrap_multiline(name, max_chars)
+        display_name = "\n".join(header_lines)
+
+        display_rows = []
+        bind_groups = []
+        bind_blocks = []
+        ref_row_indices = []
+        ref_label_map = {}
+
+        for row in rows:
+            text = str(row.get("text", ""))
+            wrapped_lines = _wrap_multiline(text, max_chars)
+            visual_start = len(display_rows)
+            for line in wrapped_lines:
+                display_rows.append(line)
+                bind_groups.append(row.get("bind_group"))
+                bind_blocks.append(row.get("bind_block"))
+            if row.get("kind") == "ref":
+                ref_row_indices.append(visual_start)
+                if text not in ref_label_map:
+                    ref_label_map[text] = visual_start
+
+        header_line_count = max(1, len(header_lines))
         header_h = max(default_header_h, header_line_count * 16)
 
         height = (
@@ -685,11 +817,7 @@ def _build_g6_data(nodes, edges):
             {"key": "inR", "placement": [1, header_center_y], "r": 0, "fill": "transparent", "stroke": "transparent"},
         ]
 
-        ref_row_indices = []
-        for row_idx, row in enumerate(rows):
-            if row.get("kind") != "ref":
-                continue
-            ref_row_indices.append(row_idx)
+        for row_idx in ref_row_indices:
             y = (
                 padding_y
                 + header_h
@@ -704,12 +832,13 @@ def _build_g6_data(nodes, edges):
             "type": "card",
             "style": {
                 "size": [card_w, height],
-                "name": name,
+                "name": display_name,
                 "headerHeight": header_h,
                 "rows": display_rows,
                 "rowBindGroups": bind_groups,
                 "rowBindBlocks": bind_blocks,
                 "refRowIndices": ref_row_indices,
+                "refLabelMap": ref_label_map,
                 "sectionGap": section_gap,
                 "ports": ports
             }
@@ -717,12 +846,15 @@ def _build_g6_data(nodes, edges):
 
     ref_index = {}
     for n in g6_data["nodes"]:
-        ref_rows = (n.get("style") or {}).get("refRowIndices", [])
-        rows = (n.get("style") or {}).get("rows", [])
-        mapping = {}
-        for row_idx in ref_rows:
-            if 0 <= row_idx < len(rows):
-                mapping[rows[row_idx]] = row_idx
+        style = n.get("style") or {}
+        ref_rows = style.get("refRowIndices", [])
+        rows = style.get("rows", [])
+        mapping = style.get("refLabelMap") if isinstance(style.get("refLabelMap"), dict) else {}
+        if not mapping:
+            mapping = {}
+            for row_idx in ref_rows:
+                if 0 <= row_idx < len(rows):
+                    mapping[rows[row_idx]] = row_idx
         ref_index[n["id"]] = mapping
 
     edge_counter = 0
