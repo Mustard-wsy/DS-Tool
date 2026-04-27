@@ -7,9 +7,20 @@
 <style>
   html, body { width:100%; height:100%; margin:0; font-family:Consolas, monospace; }
   #root { display:flex; width:100%; height:100%; }
-  #left { width:65%; height:100%; border-right:1px solid #ddd; position:relative; }
+  #stack { width:260px; min-width:260px; height:100%; border-right:1px solid #ddd; display:flex; flex-direction:column; background:#fff; }
+  #stackHeader { padding:10px 12px; border-bottom:1px solid #ddd; font-weight:600; background:#fff; }
+  #stackView { flex:1; overflow:auto; display:flex; flex-direction:column; }
+  #middle { flex:1; min-width:0; height:100%; border-right:1px solid #ddd; position:relative; }
   #graph { width:100%; height:100%; }
   #right { width:35%; height:100%; display:flex; flex-direction:column; background:#fafafa; }
+  .stack-card { border-bottom:1px solid #ddd; }
+  .stack-title { padding:8px 12px; font-weight:600; background:#f8f9fb; }
+  .stack-subtitle { padding:0 12px 8px; color:#666; font-size:12px; }
+  .stack-row { display:flex; gap:8px; padding:2px 12px; white-space:pre; }
+  .stack-row .stack-name { flex:0 0 auto; color:#222; }
+  .stack-row .stack-value { min-width:0; overflow:hidden; text-overflow:ellipsis; color:#444; }
+  .stack-row-param .stack-name { color:#c05a00; font-weight:600; }
+  .stack-empty { padding:8px 12px; color:#999; font-style:italic; }
   #codeHeader { padding:10px 12px; border-bottom:1px solid #ddd; font-weight:600; background:#fff; }
   #codeView { flex:1; overflow:auto; padding:8px 0; }
   .line { display:flex; padding:2px 12px; white-space:pre; }
@@ -32,7 +43,11 @@
 </head>
 <body>
 <div id="root">
-  <div id="left">
+  <div id="stack">
+    <div id="stackHeader">Runtime Stack</div>
+    <div id="stackView"></div>
+  </div>
+  <div id="middle">
     <div id="graph"></div>
   </div>
   <div id="right">
@@ -846,11 +861,72 @@ function focusLine(lineno) {
   row.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
+function renderStackPanel(stackData) {
+  const stackView = document.getElementById('stackView');
+  stackView.innerHTML = '';
+  const globals = Array.isArray(stackData?.globals) ? stackData.globals : [];
+  const frames = Array.isArray(stackData?.frames) ? stackData.frames : [];
+
+  const createRow = (row) => {
+    const rowEl = document.createElement('div');
+    rowEl.className = `stack-row${row?.kind === 'param' ? ' stack-row-param' : ''}`;
+    const nameEl = document.createElement('span');
+    nameEl.className = 'stack-name';
+    nameEl.textContent = row?.name ?? '';
+    const valueEl = document.createElement('span');
+    valueEl.className = 'stack-value';
+    valueEl.textContent = row?.text ?? '';
+    rowEl.appendChild(nameEl);
+    rowEl.appendChild(valueEl);
+    return rowEl;
+  };
+
+  const addCard = (title, subtitle, rows) => {
+    const card = document.createElement('div');
+    card.className = 'stack-card';
+    const titleEl = document.createElement('div');
+    titleEl.className = 'stack-title';
+    titleEl.textContent = title;
+    card.appendChild(titleEl);
+    if (subtitle) {
+      const subtitleEl = document.createElement('div');
+      subtitleEl.className = 'stack-subtitle';
+      subtitleEl.textContent = subtitle;
+      card.appendChild(subtitleEl);
+    }
+    if (!rows.length) {
+      const emptyEl = document.createElement('div');
+      emptyEl.className = 'stack-empty';
+      emptyEl.textContent = 'empty';
+      card.appendChild(emptyEl);
+    } else {
+      rows.forEach((row) => card.appendChild(createRow(row)));
+    }
+    stackView.appendChild(card);
+  };
+
+  addCard('globals', 'module scope', globals);
+  frames.forEach((frame) => {
+    addCard(
+      `${frame?.name || 'function'}()`,
+      `${frame?.filename || ''}:${frame?.lineno ?? '-'}`,
+      Array.isArray(frame?.locals) ? frame.locals : []
+    );
+  });
+  if (!globals.length && !frames.length) {
+    const emptyEl = document.createElement('div');
+    emptyEl.className = 'stack-empty';
+    emptyEl.textContent = 'no runtime stack data';
+    stackView.appendChild(emptyEl);
+  }
+}
+
 function renderStep(i) {
   if (!STEPS.length) return;
   current = Math.max(0, Math.min(i, STEPS.length - 1));
   const s = STEPS[current];
   const graphData = applyStepHighlights(cloneGraphData(s.graph), current);
+  renderStackPanel(s.stack);
 
   if (!graph) {
     initGraph(graphData);

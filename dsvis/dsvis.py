@@ -31,6 +31,7 @@ _DEFAULT_LAYOUT = {
 }
 
 _OBJECT_FIELD_BINDINGS = weakref.WeakKeyDictionary()
+_PACKAGE_ROOT = Path(__file__).resolve().parent
 
 # ---------- helpers ----------
 
@@ -78,6 +79,92 @@ def _is_container(obj):
 
 def _is_renderable(obj, include_containers=False):
     return _is_class_object(obj) or _is_primitive(obj) or (include_containers and _is_container(obj))
+
+
+def _is_graph_root_value(obj, include_containers=False):
+    return _is_class_object(obj) or (include_containers and _is_container(obj))
+
+
+def _is_internal_frame(frame):
+    try:
+        file_path = Path(frame.f_code.co_filename).resolve()
+        file_path.relative_to(_PACKAGE_ROOT)
+        return True
+    except Exception:
+        return False
+
+
+def _frame_parameter_names(frame):
+    code = frame.f_code
+    names = []
+    index = 0
+    index_end = code.co_argcount + code.co_posonlyargcount + code.co_kwonlyargcount
+    while index < index_end and index < len(code.co_varnames):
+        names.append(code.co_varnames[index])
+        index += 1
+    if code.co_flags & inspect.CO_VARARGS and index < len(code.co_varnames):
+        names.append(code.co_varnames[index])
+        index += 1
+    if code.co_flags & inspect.CO_VARKEYWORDS and index < len(code.co_varnames):
+        names.append(code.co_varnames[index])
+    return names
+
+
+def _serialize_scope_rows(scope_dict, include_private=False, preferred_order=None):
+    rows = []
+    seen = set()
+    preferred_set = set(str(name) for name in (preferred_order or []))
+    ordered_keys = []
+    if preferred_order:
+        ordered_keys.extend([str(name) for name in preferred_order])
+    ordered_keys.extend([str(name) for name in scope_dict.keys()])
+
+    for name in ordered_keys:
+        if name in seen or name not in scope_dict:
+            continue
+        seen.add(name)
+        if not include_private and name.startswith("_"):
+            continue
+        value = scope_dict.get(name)
+        rows.append({
+            "name": name,
+            "kind": "param" if name in preferred_set else "field",
+            "text": f"{name} = {_short(value)}",
+        })
+    return rows
+
+
+def _serialize_runtime_stack(caller_frame, include_private=False):
+    frames = []
+    current = caller_frame
+    while current:
+        if not _is_internal_frame(current):
+            frames.append(current)
+        current = current.f_back
+
+    if not frames:
+        return {"globals": [], "frames": []}
+
+    globals_source = frames[-1].f_globals
+    stack_frames = []
+    for frame in reversed(frames):
+        if frame.f_code.co_name == "<module>":
+            continue
+        stack_frames.append({
+            "name": frame.f_code.co_name,
+            "lineno": frame.f_lineno,
+            "filename": Path(frame.f_code.co_filename).name,
+            "locals": _serialize_scope_rows(
+                frame.f_locals,
+                include_private=include_private,
+                preferred_order=_frame_parameter_names(frame),
+            ),
+        })
+
+    return {
+        "globals": _serialize_scope_rows(globals_source, include_private=include_private),
+        "frames": stack_frames,
+    }
 
 def _format_typed_label(name, value):
     return f"{name}\n({_typename(value)})"
@@ -671,6 +758,7 @@ def _render_debugger(steps, source_lines, title="DSVis Debugger", layout=None):
         step_payload.append({
             "step": idx,
             "lineno": step.get("lineno"),
+            "stack": step.get("stack", {"globals": [], "frames": []}),
             "graph": _build_g6_data(step.get("nodes", []), step.get("edges", [])),
         })
 
@@ -724,6 +812,7 @@ def capture(
             pointer_watchers=merged_pointers,
             max_nodes=max_nodes,
             include_private=include_private,
+            include_containers=container_flag,
         )
 
     finally:

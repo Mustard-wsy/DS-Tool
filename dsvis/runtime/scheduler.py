@@ -60,7 +60,7 @@ class Scheduler:
         self.source_file = str(p)
         self.source_lines = p.read_text(encoding="utf-8").splitlines()
 
-    def request_update(self, caller_frame=None, lineno=None, observed_vars=None, pointer_watchers=None, max_nodes=None, include_private=None):
+    def request_update(self, caller_frame=None, lineno=None, observed_vars=None, pointer_watchers=None, max_nodes=None, include_private=None, include_containers=None):
         if caller_frame is None:
             return
 
@@ -68,10 +68,6 @@ class Scheduler:
         from .. import dsvis
 
         self._ensure_source_loaded(caller_frame)
-        root_scope = {
-            "__locals__": dict(caller_frame.f_locals),
-            "__globals__": dict(caller_frame.f_globals),
-        }
         mode = get_mode()
         merged_focus = set(get_watch_vars()) | set(observed_vars or [])
         merged_pointers = list(get_pointer_watchers()) + list(pointer_watchers or [])
@@ -79,12 +75,26 @@ class Scheduler:
         # 使用提供的参数，或者使用 scheduler 的默认值
         effective_max_nodes = max_nodes if max_nodes is not None else self.max_nodes
         effective_include_private = include_private if include_private is not None else self.include_private
+        effective_include_containers = include_containers if include_containers is not None else (mode == "fine")
+
+        stack_data = dsvis._serialize_runtime_stack(
+            caller_frame,
+            include_private=effective_include_private,
+        )
+
+        def _keep_graph_root(value):
+            return dsvis._is_graph_root_value(value, include_containers=effective_include_containers)
+
+        root_scope = {
+            "__locals__": {k: v for k, v in caller_frame.f_locals.items() if _keep_graph_root(v)},
+            "__globals__": {k: v for k, v in caller_frame.f_globals.items() if _keep_graph_root(v)},
+        }
         
         nodes, edges = dsvis._walk(
             root_scope,
             max_nodes=effective_max_nodes,
             include_private=effective_include_private,
-            include_containers=(mode == "fine"),
+            include_containers=effective_include_containers,
             focus_vars=merged_focus,
             pointer_watchers=merged_pointers,
         )
@@ -98,6 +108,7 @@ class Scheduler:
                 "lineno": lineno or caller_frame.f_lineno,
                 "nodes": nodes,
                 "edges": edges,
+                "stack": stack_data,
             }
         )
 
