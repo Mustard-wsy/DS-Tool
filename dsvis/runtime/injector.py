@@ -16,13 +16,58 @@ class InjectTrigger(ast.NodeTransformer):
     def __init__(self):
         super().__init__()
         self._func_stack = []
+        self._watch_vars_stack = []
+
+    @staticmethod
+    def _parse_watch_vars_from_decorators(decorators):
+        watched = set()
+        for deco in decorators or []:
+            if not isinstance(deco, ast.Call):
+                continue
+
+            fn = deco.func
+            is_watch_vars = False
+            if isinstance(fn, ast.Name) and fn.id == "watch_vars":
+                is_watch_vars = True
+            elif isinstance(fn, ast.Attribute) and fn.attr == "watch_vars":
+                is_watch_vars = True
+
+            if not is_watch_vars:
+                continue
+
+            for arg in deco.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    text = arg.value.strip()
+                    if text:
+                        watched.add(text)
+                    continue
+                if isinstance(arg, (ast.List, ast.Tuple, ast.Set)):
+                    for elt in arg.elts:
+                        if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                            text = elt.value.strip()
+                            if text:
+                                watched.add(text)
+        return watched
 
     def _make_trigger(self, node):
+        watched_vars = self._watch_vars_stack[-1] if self._watch_vars_stack else set()
+        keywords = []
+        if watched_vars:
+            keywords.append(
+                ast.keyword(
+                    arg="observed_vars",
+                    value=ast.List(
+                        elts=[ast.Constant(value=name) for name in sorted(watched_vars)],
+                        ctx=ast.Load(),
+                    ),
+                )
+            )
+
         trigger_node = ast.Expr(
             value=ast.Call(
                 func=ast.Name(id="trigger", ctx=ast.Load()),
                 args=[ast.Constant(value=getattr(node, "lineno", None))],
-                keywords=[],
+                keywords=keywords,
             )
         )
         setattr(trigger_node, "_injected", True)
@@ -31,6 +76,18 @@ class InjectTrigger(ast.NodeTransformer):
     @staticmethod
     def _is_struct_target(target):
         return isinstance(target, (ast.Attribute, ast.Subscript))
+
+    @staticmethod
+    def _target_contains_name(target, names):
+        if not names:
+            return False
+        if isinstance(target, ast.Name):
+            return target.id in names
+        if isinstance(target, ast.Starred):
+            return InjectTrigger._target_contains_name(target.value, names)
+        if isinstance(target, (ast.Tuple, ast.List)):
+            return any(InjectTrigger._target_contains_name(elt, names) for elt in target.elts)
+        return False
 
     def _target_contains_struct(self, target):
         if self._is_struct_target(target):
@@ -53,6 +110,11 @@ class InjectTrigger(ast.NodeTransformer):
         return False
 
     def _should_trigger_assign(self, node):
+        watched_vars = self._watch_vars_stack[-1] if self._watch_vars_stack else set()
+
+        if any(self._target_contains_name(t, watched_vars) for t in node.targets):
+            return True
+
         if get_mode() == "fine":
             return bool(node.targets)
         if any(self._target_contains_struct(t) for t in node.targets):
@@ -64,17 +126,23 @@ class InjectTrigger(ast.NodeTransformer):
         return bool(self._func_stack and self._func_stack[-1] == "__init__")
 
     def visit_FunctionDef(self, node):
+        watched_vars = self._parse_watch_vars_from_decorators(node.decorator_list)
         self._func_stack.append(node.name)
+        self._watch_vars_stack.append(watched_vars)
         try:
             return self.generic_visit(node)
         finally:
+            self._watch_vars_stack.pop()
             self._func_stack.pop()
 
     def visit_AsyncFunctionDef(self, node):
+        watched_vars = self._parse_watch_vars_from_decorators(node.decorator_list)
         self._func_stack.append(node.name)
+        self._watch_vars_stack.append(watched_vars)
         try:
             return self.generic_visit(node)
         finally:
+            self._watch_vars_stack.pop()
             self._func_stack.pop()
 
     def visit_Assign(self, node):
@@ -89,6 +157,9 @@ class InjectTrigger(ast.NodeTransformer):
         self.generic_visit(node)
         if self._in_init():
             return node
+        watched_vars = self._watch_vars_stack[-1] if self._watch_vars_stack else set()
+        if node.target and self._target_contains_name(node.target, watched_vars):
+            return [node, self._make_trigger(node)]
         if node.target and self._target_contains_struct(node.target):
             return [node, self._make_trigger(node)]
         return node
@@ -97,6 +168,9 @@ class InjectTrigger(ast.NodeTransformer):
         self.generic_visit(node)
         if self._in_init():
             return node
+        watched_vars = self._watch_vars_stack[-1] if self._watch_vars_stack else set()
+        if self._target_contains_name(node.target, watched_vars):
+            return [node, self._make_trigger(node)]
         if self._target_contains_struct(node.target):
             return [node, self._make_trigger(node)]
         return node
@@ -105,6 +179,9 @@ class InjectTrigger(ast.NodeTransformer):
         self.generic_visit(node)
         if self._in_init():
             return node
+        watched_vars = self._watch_vars_stack[-1] if self._watch_vars_stack else set()
+        if any(self._target_contains_name(t, watched_vars) for t in node.targets):
+            return [node, self._make_trigger(node)]
         if any(self._target_contains_struct(t) for t in node.targets):
             return [node, self._make_trigger(node)]
         return node

@@ -8,11 +8,14 @@ import os
 import weakref
 from collections import deque
 from pathlib import Path
+from typing import Any, Callable, TypeVar, overload
 
 from .runtime.config import (
     get_mode,
     get_pointer_watchers,
     get_watch_vars,
+    add_global_watch_vars,
+    remove_global_watch_vars,
     set_mode,
 )
 from .runtime.scheduler import scheduler
@@ -20,6 +23,7 @@ from .runtime.scheduler import scheduler
 __all__ = [
     "capture",
     "auto",
+    "watch_vars",
     "bind_fields",
     "set_mode",
 ]
@@ -33,6 +37,56 @@ _DEFAULT_LAYOUT = {
 
 _OBJECT_FIELD_BINDINGS = weakref.WeakKeyDictionary()
 _PACKAGE_ROOT = Path(__file__).resolve().parent
+_DecoratorFunc = TypeVar("_DecoratorFunc", bound=Callable[..., Any])
+
+
+def _normalize_watch_names(var_names):
+    if len(var_names) == 1 and isinstance(var_names[0], (list, tuple, set, frozenset)):
+        candidates = var_names[0]
+    else:
+        candidates = var_names
+
+    normalized = []
+    for name in candidates:
+        text = str(name).strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+class _WatchVarsToken:
+    def __init__(self, names):
+        self._names = set(names)
+
+    def __call__(self, fn):
+        # If used as a decorator, rollback the temporary global registration
+        # and convert to function-local watch list.
+        remove_global_watch_vars(self._names)
+        setattr(fn, "__dsvis_watch_vars__", set(self._names))
+        return fn
+
+
+@overload
+def watch_vars(*var_names: str) -> _WatchVarsToken:
+    ...
+
+
+def watch_vars(*var_names):
+    """
+    控制变量观察范围：
+
+    1) 直接调用：全局名字匹配
+        watch_vars("arr", "head")
+
+    2) 装饰器：仅当前函数内变量
+        @watch_vars("arr", "i")
+        def run(...):
+            ...
+    """
+    names = _normalize_watch_names(var_names)
+
+    add_global_watch_vars(names)
+    return _WatchVarsToken(names)
 
 # ---------- helpers ----------
 
@@ -58,6 +112,42 @@ def _short(obj, max_len=80):
     if len(s) > max_len:
         s = s[:max_len-1] + "…"
     return s
+
+
+def _stack_display_text(value):
+    if inspect.ismodule(value):
+        return "<module hidden>", "module"
+
+    if inspect.isroutine(value):
+        kind = type(value).__name__ or "callable"
+        name = getattr(value, "__qualname__", getattr(value, "__name__", ""))
+        if name:
+            return f"<{kind} {name}>", "callable"
+        return f"<{kind}>", "callable"
+
+    if inspect.isclass(value):
+        name = getattr(value, "__qualname__", getattr(value, "__name__", _typename(value)))
+        return f"<class {name}>", "class"
+
+    value_short = _short(value)
+    if re.match(r"^<.*\sobject\sat\s0x[0-9A-Fa-f]+>$", value_short):
+        return f"<{type(value).__name__} instance>", "address"
+
+    return value_short, None
+
+
+def _stack_tree_item_text(value):
+    if _is_primitive(value):
+        return f"{{{_typename(value)}}} {_short(value, 120)}"
+
+    if isinstance(value, dict):
+        return f"{{dict}} len={len(value)}"
+
+    if isinstance(value, (list, tuple, deque, set, frozenset)):
+        return f"{{{type(value).__name__}}} len={len(value)}"
+
+    text, _ = _stack_display_text(value)
+    return f"{{{_typename(value)}}} {text}"
 
 def _is_primitive(obj):
     return isinstance(obj, (int, float, str, bool, bytes, complex, type(None)))
@@ -128,7 +218,7 @@ def _serialize_scope_rows(scope_dict, include_private=False, preferred_order=Non
             for i, (k, v) in enumerate(items):
                 if i >= max_items:
                     break
-                text = f"{{{_typename(v)}}} {_short(v, 120)}"
+                text = _stack_tree_item_text(v)
                 children.append({
                     "name": f"[{_short(k, 40)}]",
                     "text": text,
@@ -146,7 +236,7 @@ def _serialize_scope_rows(scope_dict, include_private=False, preferred_order=Non
             for i, item in enumerate(items):
                 if i >= max_items:
                     break
-                text = f"{{{_typename(item)}}} {_short(item, 120)}"
+                text = _stack_tree_item_text(item)
                 children.append({
                     "name": f"[{i}]",
                     "text": text,
@@ -164,7 +254,7 @@ def _serialize_scope_rows(scope_dict, include_private=False, preferred_order=Non
             for i, item in enumerate(items):
                 if i >= max_items:
                     break
-                text = f"{{{_typename(item)}}} {_short(item, 120)}"
+                text = _stack_tree_item_text(item)
                 children.append({
                     "name": f"[{i}]",
                     "text": text,
@@ -193,21 +283,21 @@ def _serialize_scope_rows(scope_dict, include_private=False, preferred_order=Non
         if not include_private and name.startswith("_"):
             continue
         value = scope_dict.get(name)
-        value_short = _short(value)
+        value_short, hidden_reason = _stack_display_text(value)
         full_text = f"{name} = {value_short}"
+        raw_text = f"{name} = {_short(value)}"
         row = {
             "name": name,
             "kind": "param" if name in preferred_set else "field",
             "text": full_text,
         }
 
-        if inspect.ismodule(value):
-            row["hidden_reason"] = "module"
-            row["compact_text"] = f"{name} = <module hidden>"
-
-        if re.match(r"^<.*\sobject\sat\s0x[0-9A-Fa-f]+>$", value_short):
-            row["hidden_reason"] = "address"
-            row["compact_text"] = f"{name} = <{type(value).__name__} instance>"
+        if hidden_reason:
+            row["hidden_reason"] = hidden_reason
+            row["compact_text"] = full_text
+            row["full_text"] = raw_text
+        elif _is_primitive(value):
+            row["full_text"] = raw_text
 
         tree = _serialize_stack_tree(value)
         if tree and tree.get("children"):
@@ -493,8 +583,8 @@ def _walk(
             })
         nodes.append(n)
 
-    def add_obj(obj, label, value_text=None):
-        if not _is_renderable(obj, include_containers=include_containers):
+    def add_obj(obj, label, value_text=None, force_render=False):
+        if not force_render and not _is_renderable(obj, include_containers=include_containers):
             return None
         obj_id = id(obj)
         if obj_id in visited:
@@ -556,10 +646,10 @@ def _walk(
             value_text = f"value = {_short(v)}" if _is_primitive(v) else None
             should_force = k in focus_vars
             if should_force and _is_container(v):
-                add_obj(v, label, value_text=f"value = {_short(v)}")
+                add_obj(v, label, value_text=f"value = {_short(v)}", force_render=True)
                 continue
             if should_force and not _is_renderable(v, include_containers=include_containers):
-                add_obj(_short(v), label, value_text=f"value = {_short(v)}")
+                add_obj(_short(v), label, value_text=f"value = {_short(v)}", force_render=True)
                 continue
             add_obj(v, label, value_text=value_text)
 

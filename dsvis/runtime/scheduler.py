@@ -82,12 +82,22 @@ class Scheduler:
             include_private=effective_include_private,
         )
 
-        def _keep_graph_root(value):
+        pointer_related_names = set()
+        for pointer_name, container_name in merged_pointers:
+            if pointer_name:
+                pointer_related_names.add(pointer_name)
+            if container_name:
+                pointer_related_names.add(container_name)
+
+        def _keep_graph_root(name, value):
+            # Focus/pointer vars should stay visible even in coarse mode.
+            if name in merged_focus or name in pointer_related_names:
+                return True
             return dsvis._is_graph_root_value(value, include_containers=effective_include_containers)
 
         root_scope = {
-            "__locals__": {k: v for k, v in caller_frame.f_locals.items() if _keep_graph_root(v)},
-            "__globals__": {k: v for k, v in caller_frame.f_globals.items() if _keep_graph_root(v)},
+            "__locals__": {k: v for k, v in caller_frame.f_locals.items() if _keep_graph_root(k, v)},
+            "__globals__": {k: v for k, v in caller_frame.f_globals.items() if _keep_graph_root(k, v)},
         }
         
         nodes, edges = dsvis._walk(

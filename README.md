@@ -151,7 +151,7 @@ DSVis/
     cp -r dsvis/ my_project/
 
 2. 在代码中导入推荐方式：
-    from dsvis import auto, capture, bind_fields, set_mode
+    from dsvis import auto, capture, watch_vars, bind_fields, set_mode
 
 3. 使用接口
     auto()
@@ -161,23 +161,6 @@ DSVis/
 4. 运行
     python my_script.py
 ```
-
----
-
-## 📚 完整文档导航
-
-| 文档 | 内容 |
-|------|------|
-
-| 文档 | 内容 |
-|------|------|
-| 本 README | 快速入门与接口说明 |
-| [examples/](examples/) | 代码示例 |
-
----
-
-**版本**: 1.0.0 | **最后更新**: 2026-04-27
----
 
 ## 🧩 常用接口说明
 
@@ -222,6 +205,26 @@ bind_fields(node, left=("L", 1), right=("R", 1), val=("V", 1))
 ```python
 from dsvis import set_mode
 set_mode("fine")
+```
+
+### watch_vars(...)
+强制把指定变量当作图节点显示。直接调用时按全局名字匹配，装饰器时只作用于当前函数内部变量。
+
+直接调用（全局名字匹配）：
+```python
+import dsvis
+
+dsvis.watch_vars("arr")
+dsvis.watch_vars("tmp", "buf")
+```
+
+装饰器（仅当前函数内部变量）：
+```python
+import dsvis
+
+@dsvis.watch_vars("arr")
+def run(arr):
+    arr.sort()
 ```
 
 ---

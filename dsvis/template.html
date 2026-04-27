@@ -1223,9 +1223,14 @@ function renderStackPanel(stackData) {
     const renderValue = () => {
       if (hasHiddenReason) {
         if (valueExpanded) {
-          valueMain.textContent = String(normalizeValueText({ ...row, compact_text: '', full_text: '' }) || '');
+          valueMain.textContent = String(row?.full_text || row?.text || normalizeValueText(row) || '');
         } else {
-          valueMain.textContent = normalizeValueText(row);
+          const compactText = String(row?.compact_text || row?.text || '');
+          const name = String(row?.name ?? '');
+          const compactPrefix = `${name} = `;
+          valueMain.textContent = name && compactText.startsWith(compactPrefix)
+            ? compactText.slice(compactPrefix.length)
+            : compactText;
         }
       } else {
         valueMain.textContent = normalizeValueText(row);

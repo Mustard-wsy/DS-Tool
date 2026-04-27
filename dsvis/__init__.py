@@ -7,6 +7,7 @@ DSVis - 数据结构可视化工具
 from .dsvis import (
     capture,
     auto,
+    watch_vars,
     bind_fields,
     set_mode,
 )
@@ -15,6 +16,7 @@ __version__ = "1.0.0"
 __all__ = [
     "capture",
     "auto",
+    "watch_vars",
     "bind_fields",
     "set_mode",
 ]
