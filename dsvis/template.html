@@ -7,12 +7,36 @@
 <style>
   html, body { width:100%; height:100%; margin:0; font-family:Consolas, monospace; }
   #root { display:flex; width:100%; height:100%; }
+  #stack, #right { transition: width 120ms linear, min-width 120ms linear; }
+  .pane-header { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 12px; border-bottom:1px solid #d4dcef; background:#e8f0fe; }
+  .pane-title { font-weight:700; color:#0f2c63; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pane-toggle {
+    border:1px solid #b8c7e6;
+    background:#fff;
+    color:#25457a;
+    font-size:12px;
+    line-height:1;
+    padding:4px 8px;
+    border-radius:4px;
+    cursor:pointer;
+    flex:0 0 auto;
+  }
   #stack { width:340px; min-width:340px; height:100%; border-right:1px solid #ddd; display:flex; flex-direction:column; background:#f5f7fb; }
-  #stackHeader { padding:10px 12px; border-bottom:1px solid #d4dcef; font-weight:700; color:#0f2c63; background:#e8f0fe; }
+  #stack.pane-collapsed { width:56px; min-width:56px; }
+  #stack.pane-collapsed #stackView { display:none; }
+  #stack.pane-collapsed .pane-title { display:none; }
+  #stack.pane-collapsed .pane-header { padding:10px 6px; justify-content:center; }
+  #stack.pane-collapsed .pane-toggle { width:100%; padding:6px 0; }
   #stackView { flex:1; overflow:auto; display:flex; flex-direction:column; padding:10px; }
   #middle { flex:1; min-width:0; height:100%; border-right:1px solid #ddd; position:relative; }
   #graph { width:100%; height:100%; }
   #right { width:35%; height:100%; display:flex; flex-direction:column; background:#fafafa; }
+  #right.pane-collapsed { width:56px; min-width:56px; }
+  #right.pane-collapsed #codeView,
+  #right.pane-collapsed #controls { display:none; }
+  #right.pane-collapsed .pane-title { display:none; }
+  #right.pane-collapsed .pane-header { padding:10px 6px; justify-content:center; }
+  #right.pane-collapsed .pane-toggle { width:100%; padding:6px 0; }
   .stack-card { width:100%; max-width:100%; border:1px solid #96addc; border-radius:0; background:#fff; margin:0; }
   .stack-card + .stack-card { margin-top:0; border-top:0; }
   .stack-title { padding:6px 10px; font-weight:700; color:#0f2c63; background:#e8f0fe; border-bottom:1px solid #c8d6f5; }
@@ -109,14 +133,20 @@
 <body>
 <div id="root">
   <div id="stack">
-    <div id="stackHeader">Runtime Stack</div>
+    <div class="pane-header">
+      <span class="pane-title">Runtime Stack</span>
+      <button id="stackToggleBtn" class="pane-toggle" type="button">隐藏</button>
+    </div>
     <div id="stackView"></div>
   </div>
   <div id="middle">
     <div id="graph"></div>
   </div>
   <div id="right">
-    <div id="codeHeader">Original Source (full file, auto-scroll to current line)</div>
+    <div class="pane-header">
+      <span class="pane-title">Original Source (full file, auto-scroll to current line)</span>
+      <button id="codeToggleBtn" class="pane-toggle" type="button">隐藏</button>
+    </div>
     <div id="codeView"></div>
     <div id="controls">
       <button id="prevBtn">Prev</button>
@@ -173,6 +203,10 @@ const ANIMATION_CONFIG = {
   // Lower this further (e.g. 80) for faster fade in/out.
   durationMs: 120,
   easing: 'linear',
+};
+const PANEL_STATE = {
+  stackVisible: true,
+  codeVisible: true,
 };
 const DELTA_COLORS = {
   unchanged: { fill: '#e8f0fe', stroke: '#5b8ff9', line: '#333' },
@@ -745,6 +779,27 @@ function fitGraph() {
   });
 }
 
+function refreshVisibleGraph() {
+  if (!graph) return;
+  if (typeof graph.setSize === 'function') {
+    const size = getGraphSize();
+    graph.setSize(size.width, size.height);
+  }
+  refreshGraphVisuals();
+}
+
+function setPaneVisible(paneId, visible, toggleLabelVisible, toggleLabelHidden) {
+  const pane = document.getElementById(paneId);
+  const toggleBtn = document.getElementById(`${paneId}ToggleBtn`);
+  if (!pane || !toggleBtn) return;
+  pane.classList.toggle('pane-collapsed', !visible);
+  toggleBtn.textContent = visible ? toggleLabelVisible : toggleLabelHidden;
+  toggleBtn.setAttribute('aria-pressed', String(!visible));
+  requestAnimationFrame(() => {
+    refreshVisibleGraph();
+  });
+}
+
 function refreshGraphVisuals() {
   updateEdgePorts();
   fitGraph();
@@ -1221,6 +1276,22 @@ if (autoFitToggle) {
     if (autoFitToggle.checked) {
       fitGraph();
     }
+  });
+}
+
+const stackToggleBtn = document.getElementById('stackToggleBtn');
+if (stackToggleBtn) {
+  stackToggleBtn.addEventListener('click', () => {
+    PANEL_STATE.stackVisible = !PANEL_STATE.stackVisible;
+    setPaneVisible('stack', PANEL_STATE.stackVisible, '隐藏', '恢复');
+  });
+}
+
+const codeToggleBtn = document.getElementById('codeToggleBtn');
+if (codeToggleBtn) {
+  codeToggleBtn.addEventListener('click', () => {
+    PANEL_STATE.codeVisible = !PANEL_STATE.codeVisible;
+    setPaneVisible('right', PANEL_STATE.codeVisible, '隐藏', '恢复');
   });
 }
 
