@@ -296,19 +296,6 @@ function frameKey(frame, frameIndex) {
 }
 
 function getCurrentLine(stepIndex = current) {
-  const frames = getStepFrames(stepIndex);
-  if (frames.length) {
-    const selectedKey = getCurrentFrameKey(stepIndex);
-    if (selectedKey) {
-      for (let i = 0; i < frames.length; i++) {
-        if (frameKey(frames[i], i) === selectedKey) {
-          const selectedLine = Number(frames[i]?.lineno);
-          if (Number.isFinite(selectedLine) && selectedLine > 0) return selectedLine;
-          break;
-        }
-      }
-    }
-  }
   const rawLine = Number(STEPS[stepIndex]?.lineno);
   if (Number.isFinite(rawLine) && rawLine > 0) return rawLine;
   const frame = getDeepestFrame(stepIndex);
@@ -1673,7 +1660,8 @@ function renderStackPanel(stackData, stepIndex) {
     });
     card.addEventListener('click', () => {
       selectedFrameKey = key;
-      jumpToStep(stepIndex);
+      const targetStep = findFrameStepIndex(key, stepIndex);
+      jumpToStep(targetStep);
       setHoveredLine(frame?.lineno, key);
     });
     card.addEventListener('contextmenu', (evt) => {
