@@ -76,6 +76,9 @@
   #right.pane-collapsed .pane-toggle { width:100%; padding:6px 0; }
   .stack-card { width:100%; max-width:100%; border:1px solid #96addc; border-radius:0; background:#fff; margin:0; }
   .stack-card + .stack-card { margin-top:0; border-top:0; }
+  .stack-card.interactive { cursor:pointer; }
+  .stack-card.current-frame { outline:2px solid #34a853; outline-offset:-2px; }
+  .stack-card.hover-frame { outline:2px solid #5b8ff9; outline-offset:-2px; }
   .stack-title { padding:6px 10px; font-weight:700; color:#0f2c63; background:#e8f0fe; border-bottom:1px solid #c8d6f5; }
   .stack-subtitle { padding:0 10px 6px; color:#6b7280; font-size:12px; background:#f2f7ff; border-bottom:1px solid #e3ebfb; }
   .stack-rows { padding:4px 0; }
@@ -149,8 +152,13 @@
   .stack-empty { padding:4px 10px; color:#8a8a8a; font-style:italic; font-size:12px; }
   #codeHeader { padding:10px 12px; border-bottom:1px solid #ddd; font-weight:600; background:#fff; }
   #codeView { flex:1; overflow:auto; padding:8px 0; }
-  .line { display:flex; padding:2px 12px; white-space:pre; min-width:max-content; }
-  .ln { width:56px; color:#999; user-select:none; }
+  .line { display:flex; padding:2px 12px; white-space:pre; min-width:max-content; align-items:flex-start; }
+  .line.current { background:#eaf6ea; }
+  .line.hover { background:#eef4ff; }
+  .line.breakpoint { background:linear-gradient(90deg, rgba(255, 204, 0, 0.18), transparent 60%); }
+  .ln { width:64px; color:#999; user-select:none; display:flex; align-items:center; gap:4px; flex:0 0 64px; }
+  .ln-arrow { width:12px; color:#1e8e3e; font-weight:700; display:inline-block; }
+  .ln-number { cursor:pointer; }
   .txt { flex:1; }
   .active { background:#fff3cd; }
   .tok-comment { color:#6a737d; font-style:italic; }
@@ -161,10 +169,12 @@
   .tok-class { color:#1f6feb; font-weight:600; }
   .tok-operator { color:#d73a49; }
 
-  #controls { min-height:64px; display:flex; align-items:center; gap:12px; padding:8px 12px; border-top:1px solid #ddd; background:#fff; }
+  #controls { min-height:64px; display:flex; align-items:center; gap:10px; padding:8px 12px; border-top:1px solid #ddd; background:#fff; flex-wrap:wrap; }
   button { padding:6px 12px; font-size:14px; }
   #stepInput { width:72px; padding:4px 6px; font-size:14px; font-family:Consolas, monospace; }
+  #runLineInput { width:72px; padding:4px 6px; font-size:14px; font-family:Consolas, monospace; }
   #autoFitWrap { margin-left:auto; font-size:13px; user-select:none; display:flex; align-items:center; gap:6px; }
+  #breakpointInfo { color:#6b7280; font-size:12px; }
 </style>
 </head>
 <body>
@@ -190,12 +200,20 @@
     <div id="controls">
       <button id="prevBtn">Prev</button>
       <button id="nextBtn">Next</button>
+      <button id="stepOverBtn">Step Over</button>
+      <button id="stepOutBtn">Step Out</button>
       <span>
         Step
         <input id="stepInput" type="number" min="1" step="1" />
         / <span id="stepTotal">0</span>
         &nbsp;|&nbsp; line <span id="lineInfo">-</span>
       </span>
+      <span>
+        Run to line
+        <input id="runLineInput" type="number" min="1" step="1" />
+        <button id="runToLineBtn">Go</button>
+      </span>
+      <span id="breakpointInfo">breakpoints: click line numbers</span>
       <label id="autoFitWrap">
         <input id="autoFitToggle" type="checkbox" checked />
         自动缩放
@@ -218,6 +236,10 @@ let current = 0;
 let graph = null;
 let codeRows = [];
 let graphResizeObserver = null;
+let hoveredLine = null;
+let hoveredFrameKey = null;
+let selectedFrameKey = null;
+const BREAKPOINTS = new Set();
 const LAYOUT_PRESET = {
   minNodeWidth: 120,
   minNodeHeight: 60,
@@ -257,6 +279,168 @@ const DELTA_COLORS = {
   changed: { fill: '#fff5e6', stroke: '#ff9800', line: '#c97200' },
   added: { fill: '#eafaf0', stroke: '#34a853', line: '#1e8e3e' },
 };
+
+function getStepFrames(stepIndex) {
+  const frames = STEPS[stepIndex]?.stack?.frames;
+  return Array.isArray(frames) ? frames : [];
+}
+
+function getDeepestFrame(stepIndex) {
+  const frames = getStepFrames(stepIndex);
+  return frames.length ? frames[frames.length - 1] : null;
+}
+
+function frameKey(frame, frameIndex) {
+  return [frame?.filename || '', frame?.name || '', String(frameIndex ?? '')].join('|');
+}
+
+function getCurrentLine(stepIndex = current) {
+  const rawLine = Number(STEPS[stepIndex]?.lineno);
+  if (Number.isFinite(rawLine) && rawLine > 0) return rawLine;
+  const frame = getDeepestFrame(stepIndex);
+  const frameLine = Number(frame?.lineno);
+  return Number.isFinite(frameLine) && frameLine > 0 ? frameLine : 1;
+}
+
+function getCurrentFrameKey(stepIndex = current) {
+  const frames = getStepFrames(stepIndex);
+  const deepestIndex = frames.length - 1;
+  const fallbackKey = deepestIndex >= 0 ? frameKey(frames[deepestIndex], deepestIndex) : null;
+  if (!selectedFrameKey) {
+    return fallbackKey;
+  }
+  for (let i = 0; i < frames.length; i++) {
+    if (frameKey(frames[i], i) === selectedFrameKey) {
+      return selectedFrameKey;
+    }
+  }
+  return fallbackKey;
+}
+
+function setHoveredLine(lineno, frameKeyValue = null) {
+  hoveredLine = Number.isFinite(Number(lineno)) ? Number(lineno) : null;
+  hoveredFrameKey = frameKeyValue;
+  syncCodeHighlights(false);
+  syncStackHighlights();
+}
+
+function clearHoveredLine() {
+  hoveredLine = null;
+  hoveredFrameKey = null;
+  syncCodeHighlights(false);
+  syncStackHighlights();
+}
+
+function toggleBreakpoint(lineno) {
+  const line = Number(lineno);
+  if (!Number.isFinite(line) || line <= 0) return;
+  if (BREAKPOINTS.has(line)) {
+    BREAKPOINTS.delete(line);
+  } else {
+    BREAKPOINTS.add(line);
+  }
+  syncCodeHighlights(false);
+}
+
+function syncCodeHighlights(scrollToCurrent = false) {
+  const currentLine = getCurrentLine();
+  codeRows.forEach((row, idx) => {
+    const lineNo = idx + 1;
+    row.classList.toggle('current', lineNo === currentLine);
+    row.classList.toggle('hover', hoveredLine !== null && lineNo === hoveredLine);
+    row.classList.toggle('breakpoint', BREAKPOINTS.has(lineNo));
+    const arrow = row.querySelector('.ln-arrow');
+    if (arrow) {
+      arrow.textContent = lineNo === currentLine ? '➜' : '';
+    }
+  });
+  if (scrollToCurrent && codeRows[currentLine - 1]) {
+    codeRows[currentLine - 1].scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  const stepInput = document.getElementById('stepInput');
+  const stepTotal = document.getElementById('stepTotal');
+  const lineInfo = document.getElementById('lineInfo');
+  if (stepInput) stepInput.value = String(current + 1);
+  if (stepTotal) stepTotal.textContent = String(STEPS.length);
+  if (lineInfo) lineInfo.textContent = String(currentLine);
+}
+
+function syncStackHighlights() {
+  const stackView = document.getElementById('stackView');
+  if (!stackView) return;
+  const cards = stackView.querySelectorAll('.stack-card.interactive');
+  cards.forEach((card) => {
+    const frameKeyValue = card.getAttribute('data-frame-key') || '';
+    card.classList.toggle('current-frame', Boolean(frameKeyValue) && frameKeyValue === getCurrentFrameKey());
+    card.classList.toggle('hover-frame', Boolean(frameKeyValue) && frameKeyValue === hoveredFrameKey);
+  });
+}
+
+function findStepIndex(predicate, startIndex = current + 1) {
+  for (let i = Math.max(0, startIndex); i < STEPS.length; i++) {
+    if (predicate(STEPS[i], i)) return i;
+  }
+  return current;
+}
+
+function findNextLineStep(targetLine, startIndex = current + 1) {
+  const line = Number(targetLine);
+  if (!Number.isFinite(line) || line <= 0) return current;
+  return findStepIndex((step) => {
+    if (Number(step?.lineno) === line) return true;
+    const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
+    return frames.some((frame) => Number(frame?.lineno) === line);
+  }, startIndex);
+}
+
+function findStepOverIndex(startIndex = current + 1) {
+  const currentFrames = getStepFrames(current);
+  const currentDepth = currentFrames.length;
+  const currentFrame = getDeepestFrame(current);
+  const currentFrameKey = currentFrame ? frameKey(currentFrame, currentDepth - 1) : null;
+  const currentLine = Number(currentFrame?.lineno) || getCurrentLine();
+
+  return findStepIndex((step) => {
+    const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
+    if (frames.length > currentDepth) return false;
+    const deepest = frames.length ? frames[frames.length - 1] : null;
+    if (!deepest) return true;
+    const nextKey = frameKey(deepest, frames.length - 1);
+    if (currentFrameKey && nextKey === currentFrameKey && Number(deepest?.lineno) === currentLine) {
+      return false;
+    }
+    return true;
+  }, startIndex);
+}
+
+function findStepOutIndex(startIndex = current + 1) {
+  const currentDepth = getStepFrames(current).length;
+  return findStepIndex((step) => {
+    const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
+    return frames.length < currentDepth;
+  }, startIndex);
+}
+
+function findFrameStepIndex(frameKeyValue, preferredIndex = current) {
+  if (!frameKeyValue) return preferredIndex;
+  for (let i = preferredIndex; i < STEPS.length; i++) {
+    const frames = Array.isArray(STEPS[i]?.stack?.frames) ? STEPS[i].stack.frames : [];
+    if (frames.some((frame, idx) => frameKey(frame, idx) === frameKeyValue)) {
+      return i;
+    }
+  }
+  for (let i = preferredIndex - 1; i >= 0; i--) {
+    const frames = Array.isArray(STEPS[i]?.stack?.frames) ? STEPS[i].stack.frames : [];
+    if (frames.some((frame, idx) => frameKey(frame, idx) === frameKeyValue)) {
+      return i;
+    }
+  }
+  return preferredIndex;
+}
+
+function jumpToStep(stepIndex) {
+  renderStep(stepIndex);
+}
 
 function analyzeLayoutMetrics(graphData, viewport) {
   const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
@@ -304,21 +488,27 @@ function analyzeLayoutMetrics(graphData, viewport) {
 
 function computeAdaptiveLayout(graphData, viewport = null) {
   const metrics = analyzeLayoutMetrics(graphData, viewport);
+  const rankdir = (baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR';
+  
   if (!metrics.nodes.length) {
     return {
       type: 'dagre',
-      rankdir: 'LR',
-      nodesep: 80,
-      ranksep: 110,
+      rankdir: rankdir,
+      nodesep: rankdir === 'TB' ? 110 : 80,
+      ranksep: rankdir === 'TB' ? 110 : 110,
     };
   }
 
   if (metrics.treeLike) {
     return {
       type: 'dagre',
-      rankdir: 'LR',
-      nodesep: Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 44),
-      ranksep: Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 68),
+      rankdir: rankdir,
+      nodesep: rankdir === 'TB' 
+        ? Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 44)
+        : Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 44),
+      ranksep: rankdir === 'TB'
+        ? Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 68)
+        : Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 68),
     };
   }
 
@@ -518,6 +708,9 @@ function initGraph(data) {
 
   class CardNode extends BaseNode {
     drawKeyShape(attributes, container) {
+      const rankdir = (baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR';
+      const isVertical = rankdir === 'TB';
+      
       const name = attributes.name || '';
       const rows = Array.isArray(attributes.rows) ? attributes.rows : [];
       const rowBindGroups = Array.isArray(attributes.rowBindGroups) ? attributes.rowBindGroups : [];
@@ -557,90 +750,167 @@ function initGraph(data) {
         for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) >>> 0;
         return bindPalette[h % bindPalette.length];
       };
-      const runs = [];
-      let runStart = null;
-      let runGroup = null;
-      let runBlock = null;
-      for (let i = 0; i < rowCount; i++) {
-        const g = rowBindGroups[i] || null;
-        const b = rowBindBlocks[i] || null;
-        if (!g || !b) {
-          if (runGroup !== null) {
-            runs.push({ group: runGroup, block: runBlock, start: runStart, end: i - 1 });
-            runStart = null;
-            runGroup = null;
-            runBlock = null;
-          }
-          continue;
-        }
-        if (runGroup === null || runBlock === null) {
-          runGroup = g;
-          runBlock = b;
-          runStart = i;
-          continue;
-        }
-        if (b !== runBlock) {
-          runs.push({ group: runGroup, block: runBlock, start: runStart, end: i - 1 });
-          runGroup = g;
-          runBlock = b;
-          runStart = i;
-        }
-      }
-      if (runGroup !== null) {
-        runs.push({ group: runGroup, block: runBlock, start: runStart, end: rowCount - 1 });
-      }
-      runs.forEach((run, i) => {
-        this.upsert(`bind-block-${i}`, 'rect', {
-          x: -w/2 + 4, y: -h/2 + headerH + paddingY + run.start * rowH + 1,
-          width: w - 8, height: Math.max((run.end - run.start + 1) * rowH - 2, 2), radius: 4,
-          fill: colorForGroup(run.group), stroke: 'transparent', fillOpacity: 0.55, zIndex: 0
-        }, container);
-      });
-      const prevRunCount = this.__prevBindRunCount || 0;
-      for (let i = runs.length; i < prevRunCount; i++) {
-        this.upsert(`bind-block-${i}`, 'rect', {
-          x: -w/2 + 4, y: -h/2, width: 0, height: 0, radius: 0,
-          fill: 'transparent', stroke: 'transparent', zIndex: 0
-        }, container);
-      }
-      this.__prevBindRunCount = runs.length;
-      rows.forEach((row, i) => {
-        const bindGroup = rowBindGroups[i];
-        if (bindGroup) {
+
+      if (isVertical) {
+        const contentTop = -h / 2 + headerH + paddingY;
+        const contentHeight = Math.max(h - headerH - paddingY * 2, 1);
+        const columnCount = Math.max(rowCount, 1);
+        const columnWidth = Math.max(16, (w - paddingX * 2) / columnCount);
+        const contentCenterY = contentTop + contentHeight / 2;
+        const fontSize = 11;
+
+        for (let i = 0; i < rowCount; i++) {
+          const columnX = -w / 2 + paddingX + i * columnWidth;
+          const bindGroup = rowBindGroups[i];
+          const bindFill = bindGroup ? colorForGroup(bindGroup) : 'transparent';
+
           this.upsert(`bind-bg-${i}`, 'rect', {
-            x: -w/2 + 4, y: -h/2 + headerH + paddingY + i * rowH + 1,
-            width: w - 8, height: rowH - 2, radius: 3,
-            fill: '#d9ecff', stroke: 'transparent', fillOpacity: 0.35, zIndex: 0
+            x: columnX + 1,
+            y: contentTop,
+            width: Math.max(columnWidth - 2, 2),
+            height: contentHeight,
+            radius: 3,
+            fill: bindFill,
+            stroke: 'transparent',
+            fillOpacity: bindGroup ? 0.35 : 0,
+            zIndex: 0
           }, container);
-        } else {
+
+          const rowDeltaType = Array.isArray(attributes.rowDeltaTypes) ? attributes.rowDeltaTypes[i] : null;
+          const rowColor = rowDeltaType === 'added'
+            ? DELTA_COLORS.added.line
+            : rowDeltaType === 'changed'
+              ? DELTA_COLORS.changed.line
+              : '#333';
+          const rowText = String(row ?? '');
+          const textWidth = Math.max(fontSize * 1.2, rowText.length * fontSize * 0.62);
+          const textHeight = fontSize + 2;
+          const anchorX = columnX + columnWidth / 2 - textHeight / 2;
+          const anchorY = contentCenterY + textWidth / 2;
+
+          this.upsert(`r-${i}`, 'text', {
+            x: anchorX,
+            y: anchorY,
+            text: rowText,
+            fontSize,
+            fill: rowColor,
+            fontWeight: rowDeltaType ? 600 : 400,
+            transform: 'rotate(-90)',
+            zIndex: 2
+          }, container);
+        }
+
+        const prevRowCount = this.__prevRowCount || 0;
+        for (let i = rowCount; i < prevRowCount; i++) {
+          this.upsert(`bind-bg-${i}`, 'rect', {
+            x: -w / 2 + paddingX,
+            y: contentTop,
+            width: 0,
+            height: 0,
+            radius: 0,
+            fill: 'transparent',
+            stroke: 'transparent',
+            zIndex: 0
+          }, container);
+          this.upsert(`r-${i}`, 'text', {
+            x: -w / 2 + paddingX,
+            y: contentCenterY,
+            text: '',
+            fontSize,
+            fill: '#333',
+            zIndex: 2
+          }, container);
+        }
+        this.__prevBindRunCount = 0;
+      } else {
+        const runs = [];
+        let runStart = null;
+        let runGroup = null;
+        let runBlock = null;
+        for (let i = 0; i < rowCount; i++) {
+          const g = rowBindGroups[i] || null;
+          const b = rowBindBlocks[i] || null;
+          if (!g || !b) {
+            if (runGroup !== null) {
+              runs.push({ group: runGroup, block: runBlock, start: runStart, end: i - 1 });
+              runStart = null;
+              runGroup = null;
+              runBlock = null;
+            }
+            continue;
+          }
+          if (runGroup === null || runBlock === null) {
+            runGroup = g;
+            runBlock = b;
+            runStart = i;
+            continue;
+          }
+          if (b !== runBlock) {
+            runs.push({ group: runGroup, block: runBlock, start: runStart, end: i - 1 });
+            runGroup = g;
+            runBlock = b;
+            runStart = i;
+          }
+        }
+        if (runGroup !== null) {
+          runs.push({ group: runGroup, block: runBlock, start: runStart, end: rowCount - 1 });
+        }
+
+        runs.forEach((run, i) => {
+          this.upsert(`bind-block-${i}`, 'rect', {
+            x: -w/2 + 4, y: -h/2 + headerH + paddingY + run.start * rowH + 1,
+            width: w - 8, height: Math.max((run.end - run.start + 1) * rowH - 2, 2), radius: 4,
+            fill: colorForGroup(run.group), stroke: 'transparent', fillOpacity: 0.55, zIndex: 0
+          }, container);
+        });
+        const prevRunCount = this.__prevBindRunCount || 0;
+        for (let i = runs.length; i < prevRunCount; i++) {
+          this.upsert(`bind-block-${i}`, 'rect', {
+            x: -w/2 + 4, y: -h/2, width: 0, height: 0, radius: 0,
+            fill: 'transparent', stroke: 'transparent', zIndex: 0
+          }, container);
+        }
+        this.__prevBindRunCount = runs.length;
+
+        rows.forEach((row, i) => {
+          const bindGroup = rowBindGroups[i];
+          if (bindGroup) {
+            this.upsert(`bind-bg-${i}`, 'rect', {
+              x: -w/2 + 4, y: -h/2 + headerH + paddingY + i * rowH + 1,
+              width: w - 8, height: rowH - 2, radius: 3,
+              fill: '#d9ecff', stroke: 'transparent', fillOpacity: 0.35, zIndex: 0
+            }, container);
+          } else {
+            this.upsert(`bind-bg-${i}`, 'rect', {
+              x: -w/2 + 4, y: -h/2 + headerH + paddingY + i * rowH + 1,
+              width: w - 8, height: rowH - 2, radius: 3,
+              fill: 'transparent', stroke: 'transparent', zIndex: 0
+            }, container);
+          }
+          const rowDeltaType = Array.isArray(attributes.rowDeltaTypes) ? attributes.rowDeltaTypes[i] : null;
+          const rowColor = rowDeltaType === 'added'
+            ? DELTA_COLORS.added.line
+            : rowDeltaType === 'changed'
+              ? DELTA_COLORS.changed.line
+              : '#333';
+          this.upsert(`r-${i}`, 'text', {
+            x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: row,
+            fontSize:11, fill: rowColor, fontWeight: rowDeltaType ? 600 : 400, textBaseline:'top', zIndex: 2
+          }, container);
+        });
+
+        const prevRowCount = this.__prevRowCount || 0;
+        for (let i = rows.length; i < prevRowCount; i++) {
           this.upsert(`bind-bg-${i}`, 'rect', {
             x: -w/2 + 4, y: -h/2 + headerH + paddingY + i * rowH + 1,
             width: w - 8, height: rowH - 2, radius: 3,
             fill: 'transparent', stroke: 'transparent', zIndex: 0
           }, container);
+          this.upsert(`r-${i}`, 'text', {
+            x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: '',
+            fontSize:11, fill:'#333', textBaseline:'top', zIndex: 2
+          }, container);
         }
-        const rowDeltaType = Array.isArray(attributes.rowDeltaTypes) ? attributes.rowDeltaTypes[i] : null;
-        const rowColor = rowDeltaType === 'added'
-          ? DELTA_COLORS.added.line
-          : rowDeltaType === 'changed'
-            ? DELTA_COLORS.changed.line
-            : '#333';
-        this.upsert(`r-${i}`, 'text', {
-          x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: row,
-          fontSize:11, fill: rowColor, fontWeight: rowDeltaType ? 600 : 400, textBaseline:'top', zIndex: 2
-        }, container);
-      });
-      const prevRowCount = this.__prevRowCount || 0;
-      for (let i = rows.length; i < prevRowCount; i++) {
-        this.upsert(`bind-bg-${i}`, 'rect', {
-          x: -w/2 + 4, y: -h/2 + headerH + paddingY + i * rowH + 1,
-          width: w - 8, height: rowH - 2, radius: 3,
-          fill: 'transparent', stroke: 'transparent', zIndex: 0
-        }, container);
-        this.upsert(`r-${i}`, 'text', {
-          x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: '',
-          fontSize:11, fill:'#333', textBaseline:'top', zIndex: 2
-        }, container);
       }
       this.__prevRowCount = rows.length;
       return key;
@@ -726,13 +996,28 @@ function resolvePortsForEdge(e, nodeMap) {
   if (!src || !tgt) return null;
   const refIndex = e.data ? e.data.refIndex : null;
   if (refIndex === null || refIndex === undefined) return null;
-  const sx = src.style?.x ?? 0;
-  const tx = tgt.style?.x ?? 0;
-  const useLeft = tx < sx;
-  return {
-    sourcePort: useLeft ? `pl${refIndex}` : `pr${refIndex}`,
-    targetPort: useLeft ? 'inR' : 'inL',
-  };
+  
+  const rankdir = (baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR';
+  
+  if (rankdir === 'TB') {
+    // 纵排：根据 y 坐标判断方向
+    const sy = src.style?.y ?? 0;
+    const ty = tgt.style?.y ?? 0;
+    const useTop = ty < sy;
+    return {
+      sourcePort: useTop ? `pt${refIndex}` : `pb${refIndex}`,
+      targetPort: useTop ? 'inB' : 'inT',
+    };
+  } else {
+    // 横排：根据 x 坐标判断方向
+    const sx = src.style?.x ?? 0;
+    const tx = tgt.style?.x ?? 0;
+    const useLeft = tx < sx;
+    return {
+      sourcePort: useLeft ? `pl${refIndex}` : `pr${refIndex}`,
+      targetPort: useLeft ? 'inR' : 'inL',
+    };
+  }
 }
 
 function updateEdgePorts(focusNodeId = null) {
@@ -1116,23 +1401,19 @@ function renderAllCode() {
   for (let i = 1; i <= SOURCE_LINES.length; i++) {
     const row = document.createElement('div');
     row.className = 'line';
-    row.innerHTML = `<span class="ln">${i}</span><span class="txt"></span>`;
+    row.innerHTML = `<span class="ln"><span class="ln-arrow"></span><span class="ln-number">${i}</span></span><span class="txt"></span>`;
     row.querySelector('.txt').innerHTML = highlightPythonLine(SOURCE_LINES[i - 1] ?? '');
+    row.querySelector('.ln-number').addEventListener('click', (evt) => {
+      evt.stopPropagation();
+      toggleBreakpoint(i);
+    });
     codeView.appendChild(row);
     codeRows.push(row);
   }
+  syncCodeHighlights(false);
 }
 
-function focusLine(lineno) {
-  codeRows.forEach((r) => r.classList.remove('active'));
-  const line = Math.max(1, Math.min(lineno || 1, codeRows.length));
-  const row = codeRows[line - 1];
-  if (!row) return;
-  row.classList.add('active');
-  row.scrollIntoView({ block: 'center', behavior: 'smooth' });
-}
-
-function renderStackPanel(stackData) {
+function renderStackPanel(stackData, stepIndex) {
   const stackView = document.getElementById('stackView');
   stackView.innerHTML = '';
   const globals = Array.isArray(stackData?.globals) ? stackData.globals : [];
@@ -1336,15 +1617,34 @@ function renderStackPanel(stackData) {
     }
     card.appendChild(rowsWrap);
     stackView.appendChild(card);
+    return card;
   };
 
   addCard('globals', 'module scope', globals);
-  frames.forEach((frame) => {
-    addCard(
+  frames.forEach((frame, frameIdx) => {
+    const card = addCard(
       `${frame?.name || 'function'}()`,
       `${frame?.filename || ''}:${frame?.lineno ?? '-'}`,
       Array.isArray(frame?.locals) ? frame.locals : []
     );
+    const key = frameKey(frame, frameIdx);
+    card.classList.add('interactive');
+    card.setAttribute('data-frame-key', key);
+    card.setAttribute('data-step-index', String(stepIndex));
+    card.addEventListener('mouseenter', () => {
+      setHoveredLine(frame?.lineno, key);
+    });
+    card.addEventListener('mouseleave', () => {
+      if (hoveredFrameKey === key) {
+        clearHoveredLine();
+      }
+    });
+    card.addEventListener('click', () => {
+      selectedFrameKey = key;
+      const targetStep = findFrameStepIndex(key, stepIndex);
+      jumpToStep(targetStep);
+      setHoveredLine(frame?.lineno, key);
+    });
   });
   if (!globals.length && !frames.length) {
     const emptyEl = document.createElement('div');
@@ -1352,14 +1652,28 @@ function renderStackPanel(stackData) {
     emptyEl.textContent = 'no runtime stack data';
     stackView.appendChild(emptyEl);
   }
+
+  syncStackHighlights();
 }
 
 function renderStep(i) {
   if (!STEPS.length) return;
   current = Math.max(0, Math.min(i, STEPS.length - 1));
+  hoveredLine = null;
+  hoveredFrameKey = null;
   const s = STEPS[current];
   const graphData = applyStepHighlights(cloneGraphData(s.graph), current);
-  renderStackPanel(s.stack);
+  const frames = getStepFrames(current);
+  if (frames.length) {
+    const fallbackKey = frameKey(frames[frames.length - 1], frames.length - 1);
+    const hasSelection = selectedFrameKey && frames.some((frame, idx) => frameKey(frame, idx) === selectedFrameKey);
+    if (!hasSelection) {
+      selectedFrameKey = fallbackKey;
+    }
+  } else {
+    selectedFrameKey = null;
+  }
+  renderStackPanel(s.stack, current);
 
   if (!graph) {
     initGraph(graphData);
@@ -1379,14 +1693,19 @@ function renderStep(i) {
     graph.render();
   }
 
-  focusLine(s.lineno || 1);
-  document.getElementById('stepInput').value = String(current + 1);
-  document.getElementById('stepTotal').textContent = String(STEPS.length);
-  document.getElementById('lineInfo').textContent = String(s.lineno ?? '-');
+  syncCodeHighlights(true);
+  syncStackHighlights();
 }
 
 document.getElementById('prevBtn').addEventListener('click', () => renderStep(current - 1));
 document.getElementById('nextBtn').addEventListener('click', () => renderStep(current + 1));
+document.getElementById('stepOverBtn').addEventListener('click', () => renderStep(findStepOverIndex()));
+document.getElementById('stepOutBtn').addEventListener('click', () => renderStep(findStepOutIndex()));
+document.getElementById('runToLineBtn').addEventListener('click', () => {
+  const raw = Number(document.getElementById('runLineInput').value);
+  if (!Number.isFinite(raw)) return;
+  renderStep(findNextLineStep(raw));
+});
 const stepInput = document.getElementById('stepInput');
 stepInput.addEventListener('change', () => {
   const raw = Number(stepInput.value);
@@ -1410,6 +1729,10 @@ window.addEventListener('keydown', (evt) => {
   }
   evt.preventDefault();
   renderStep(current + 1);
+});
+window.addEventListener('keydown', (evt) => {
+  if (evt.key !== 'Escape') return;
+  clearHoveredLine();
 });
 const autoFitToggle = document.getElementById('autoFitToggle');
 if (autoFitToggle) {

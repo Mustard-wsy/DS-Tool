@@ -1,5 +1,6 @@
 import random
 import dsvis
+dsvis.visualize(horizon=False)
 dsvis.auto()
 class BTreeNode:
 

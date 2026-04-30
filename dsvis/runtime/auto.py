@@ -4,7 +4,7 @@ import inspect
 import os
 from pathlib import Path
 
-from .ast_hook import run_file
+from ast_hook import run_file
 
 
 def _find_main_script() -> str | None:

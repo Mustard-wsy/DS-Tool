@@ -16,6 +16,7 @@ from .runtime.config import (
     get_watch_vars,
     add_global_watch_vars,
     remove_global_watch_vars,
+    set_layout,
     set_mode,
 )
 from .runtime.scheduler import scheduler
@@ -23,6 +24,7 @@ from .runtime.scheduler import scheduler
 __all__ = [
     "capture",
     "auto",
+    "visualize",
     "watch_vars",
     "bind_fields",
     "set_mode",
@@ -54,6 +56,41 @@ def _normalize_watch_names(var_names):
     return normalized
 
 
+def _normalize_layout(layout):
+    if layout is None:
+        return dict(_DEFAULT_LAYOUT)
+
+    if isinstance(layout, str):
+        normalized = layout.strip().lower()
+        if not normalized or normalized == "default":
+            return dict(_DEFAULT_LAYOUT)
+        if normalized in {"horizontal", "horizon", "lr"}:
+            merged = dict(_DEFAULT_LAYOUT)
+            merged["rankdir"] = "LR"
+            return merged
+        if normalized in {"vertical", "tb"}:
+            merged = dict(_DEFAULT_LAYOUT)
+            merged["rankdir"] = "TB"
+            return merged
+
+    if isinstance(layout, bool):
+        merged = dict(_DEFAULT_LAYOUT)
+        merged["rankdir"] = "LR" if layout else "TB"
+        return merged
+
+    if isinstance(layout, dict):
+        merged = dict(_DEFAULT_LAYOUT)
+        merged.update(layout)
+        if "horizon" in merged:
+            merged["rankdir"] = "LR" if bool(merged.pop("horizon")) else "TB"
+        layout_type = str(merged.get("type", "")).strip().lower()
+        if layout_type in {"snake", "concentric", "snakelayout", "concentriclayout"}:
+            raise ValueError("snake / concentric 布局已移除，仅支持 dagre 类布局参数")
+        return merged
+
+    raise ValueError("layout 参数类型无效，必须是布局字典或 None")
+
+
 class _WatchVarsToken:
     def __init__(self, names):
         self._names = set(names)
@@ -69,7 +106,6 @@ class _WatchVarsToken:
 @overload
 def watch_vars(*var_names: str) -> _WatchVarsToken:
     ...
-
 
 def watch_vars(*var_names):
     """
@@ -532,19 +568,6 @@ def _get_bound_specs(obj):
     return groups
 
 
-def _normalize_layout(layout):
-    if layout is None:
-        return dict(_DEFAULT_LAYOUT)
-
-    if isinstance(layout, dict):
-        merged = dict(_DEFAULT_LAYOUT)
-        merged.update(layout)
-        layout_type = str(merged.get("type", "")).strip().lower()
-        if layout_type in {"snake", "concentric", "snakelayout", "concentriclayout"}:
-            raise ValueError("snake / concentric 布局已移除，仅支持 dagre 类布局参数")
-        return merged
-
-    raise ValueError("layout 参数类型无效，必须是布局字典或 None")
 
 # ---------- 核心遍历 ----------
 
@@ -816,11 +839,18 @@ def _walk(
 
 # ---------- G6 渲染 ----------
 
-def _build_g6_data(nodes, edges):
+def _build_g6_data(nodes, edges, layout=None):
     g6_data = {
         "nodes": [],
         "edges": []
     }
+
+    # 根据 layout 确定方向
+    rankdir = 'LR'
+    if layout and isinstance(layout, dict):
+        rankdir = layout.get('rankdir', 'LR')
+    
+    is_vertical = rankdir == 'TB'
 
     id_to_name = {}
     class_count = {}
@@ -900,28 +930,94 @@ def _build_g6_data(nodes, edges):
             + max(len(display_rows), 1) * row_h
         )
 
-        header_center_y = (padding_y + header_h / 2) / height
+        # 根据方向设置连接点
+        if is_vertical:
+            # 纵排：连接点在上下中点
+            header_center_x = 0.5
+            ports = [
+                {"key": "inT", "placement": [header_center_x, 0], "r": 0, "fill": "transparent", "stroke": "transparent"},
+                {"key": "inB", "placement": [header_center_x, 1], "r": 0, "fill": "transparent", "stroke": "transparent"},
+            ]
+            for row_idx in ref_row_indices:
+                y = (
+                    padding_y
+                    + header_h
+                    + row_idx * row_h
+                    + row_h / 2
+                ) / height
+                ports.append({"key": f"pt{row_idx}", "placement": [header_center_x, 0], "r": 0, "fill": "transparent", "stroke": "transparent"})
+                ports.append({"key": f"pb{row_idx}", "placement": [header_center_x, 1], "r": 0, "fill": "transparent", "stroke": "transparent"})
+        else:
+            # 横排：连接点在左右中点
+            header_center_y = (padding_y + header_h / 2) / height
+            ports = [
+                {"key": "inL", "placement": [0, header_center_y], "r": 0, "fill": "transparent", "stroke": "transparent"},
+                {"key": "inR", "placement": [1, header_center_y], "r": 0, "fill": "transparent", "stroke": "transparent"},
+            ]
 
-        ports = [
-            {"key": "inL", "placement": [0, header_center_y], "r": 0, "fill": "transparent", "stroke": "transparent"},
-            {"key": "inR", "placement": [1, header_center_y], "r": 0, "fill": "transparent", "stroke": "transparent"},
-        ]
+            for row_idx in ref_row_indices:
+                y = (
+                    padding_y
+                    + header_h
+                    + row_idx * row_h
+                    + row_h / 2
+                ) / height
+                ports.append({"key": f"pl{row_idx}", "placement": [0, y], "r": 0, "fill": "transparent", "stroke": "transparent"})
+                ports.append({"key": f"pr{row_idx}", "placement": [1, y], "r": 0, "fill": "transparent", "stroke": "transparent"})
+        # 根据方向设置连接点
+        if is_vertical:
+            # 纵排：连接点分布在上下边缘，根据行索引分布在不同的 x 位置
+            # 先计算有多少个参考行
+            num_ref_rows = len(ref_row_indices)
+            
+            # 入口仍在中心
+            header_center_x = 0.5
+            ports = [
+                {"key": "inT", "placement": [header_center_x, 0], "r": 0, "fill": "transparent", "stroke": "transparent"},
+                {"key": "inB", "placement": [header_center_x, 1], "r": 0, "fill": "transparent", "stroke": "transparent"},
+            ]
+            
+            # 出口分布在顶部和底部，根据行索引进行分布
+            for i, row_idx in enumerate(ref_row_indices):
+                if num_ref_rows > 1:
+                    # 多个行时，均匀分布在 [0.1, 0.9] 范围
+                    x = 0.1 + (0.8 * i / (num_ref_rows - 1))
+                else:
+                    # 单个行时在中心
+                    x = 0.5
+                
+                ports.append({"key": f"pt{row_idx}", "placement": [x, 0], "r": 0, "fill": "transparent", "stroke": "transparent"})
+                ports.append({"key": f"pb{row_idx}", "placement": [x, 1], "r": 0, "fill": "transparent", "stroke": "transparent"})
+        else:
+            # 横排：连接点在左右中点
+            header_center_y = (padding_y + header_h / 2) / height
+            ports = [
+                {"key": "inL", "placement": [0, header_center_y], "r": 0, "fill": "transparent", "stroke": "transparent"},
+                {"key": "inR", "placement": [1, header_center_y], "r": 0, "fill": "transparent", "stroke": "transparent"},
+            ]
 
-        for row_idx in ref_row_indices:
-            y = (
-                padding_y
-                + header_h
-                + row_idx * row_h
-                + row_h / 2
-            ) / height
-            ports.append({"key": f"pl{row_idx}", "placement": [0, y], "r": 0, "fill": "transparent", "stroke": "transparent"})
-            ports.append({"key": f"pr{row_idx}", "placement": [1, y], "r": 0, "fill": "transparent", "stroke": "transparent"})
-
+            for row_idx in ref_row_indices:
+                y = (
+                    padding_y
+                    + header_h
+                    + row_idx * row_h
+                    + row_h / 2
+                ) / height
+                ports.append({"key": f"pl{row_idx}", "placement": [0, y], "r": 0, "fill": "transparent", "stroke": "transparent"})
+                ports.append({"key": f"pr{row_idx}", "placement": [1, y], "r": 0, "fill": "transparent", "stroke": "transparent"})
+        
+        # 根据方向调整节点尺寸
+        final_width = card_w
+        final_height = height
+        if is_vertical:
+            # 纵排时交换宽和高（因为内容被旋转了）
+            final_width, final_height = final_height, final_width
+        
         g6_data["nodes"].append({
             "id": str(n["id"]),
             "type": "card",
             "style": {
-                "size": [card_w, height],
+                "size": [final_width, final_height],
                 "name": display_name,
                 "headerHeight": header_h,
                 "rows": display_rows,
@@ -933,7 +1029,7 @@ def _build_g6_data(nodes, edges):
                 "ports": ports
             }
         })
-
+    
     ref_index = {}
     for n in g6_data["nodes"]:
         style = n.get("style") or {}
@@ -975,13 +1071,14 @@ def _render_debugger(steps, source_lines, title="DSVis Debugger", layout=None):
     import json
     from pathlib import Path
 
+    normalized_layout = _normalize_layout(layout)
     step_payload = []
     for idx, step in enumerate(steps, start=1):
         step_payload.append({
             "step": idx,
             "lineno": step.get("lineno"),
             "stack": step.get("stack", {"globals": [], "frames": []}),
-            "graph": _build_g6_data(step.get("nodes", []), step.get("edges", [])),
+            "graph": _build_g6_data(step.get("nodes", []), step.get("edges", []), normalized_layout),
         })
 
     template_path = Path(__file__).parent / "template.html"
@@ -989,7 +1086,7 @@ def _render_debugger(steps, source_lines, title="DSVis Debugger", layout=None):
     html = html.replace("__TITLE__", title)
     html = html.replace("__STEPS__", json.dumps(step_payload, ensure_ascii=False))
     html = html.replace("__SOURCE_LINES__", json.dumps(source_lines, ensure_ascii=False))
-    html = html.replace("__LAYOUT__", json.dumps(_normalize_layout(layout)))
+    html = html.replace("__LAYOUT__", json.dumps(normalized_layout))
 
     fd, path = tempfile.mkstemp(suffix=".html")
     html_path = Path(path)
@@ -1118,5 +1215,19 @@ def auto(fn=None):
     
     # 返回装饰器
     return make_decorator()
+
+
+def visualize(fn=None, *, horizon=True):
+    """轻量可视化入口：只设置布局参数，执行仍由 auto/capture 负责。"""
+    layout = _normalize_layout({"horizon": horizon})
+    set_layout(layout)
+
+    def decorator(target_fn):
+        return auto(target_fn)
+
+    if callable(fn):
+        return decorator(fn)
+
+    return decorator
 
 

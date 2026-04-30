@@ -1,7 +1,7 @@
 import json
 import atexit
 from pathlib import Path
-from .config import get_mode, get_pointer_watchers, get_watch_vars
+from .config import get_layout, get_mode, get_pointer_watchers, get_watch_vars
 
 
 class Scheduler:
@@ -138,6 +138,7 @@ class Scheduler:
                 self.steps,
                 self.source_lines,
                 title=title,
+                layout=get_layout(),
             )
         except Exception as e:
             print(f"[dsvis] Scheduler flush 出错：{e}")
