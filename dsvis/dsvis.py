@@ -932,40 +932,6 @@ def _build_g6_data(nodes, edges, layout=None):
 
         # 根据方向设置连接点
         if is_vertical:
-            # 纵排：连接点在上下中点
-            header_center_x = 0.5
-            ports = [
-                {"key": "inT", "placement": [header_center_x, 0], "r": 0, "fill": "transparent", "stroke": "transparent"},
-                {"key": "inB", "placement": [header_center_x, 1], "r": 0, "fill": "transparent", "stroke": "transparent"},
-            ]
-            for row_idx in ref_row_indices:
-                y = (
-                    padding_y
-                    + header_h
-                    + row_idx * row_h
-                    + row_h / 2
-                ) / height
-                ports.append({"key": f"pt{row_idx}", "placement": [header_center_x, 0], "r": 0, "fill": "transparent", "stroke": "transparent"})
-                ports.append({"key": f"pb{row_idx}", "placement": [header_center_x, 1], "r": 0, "fill": "transparent", "stroke": "transparent"})
-        else:
-            # 横排：连接点在左右中点
-            header_center_y = (padding_y + header_h / 2) / height
-            ports = [
-                {"key": "inL", "placement": [0, header_center_y], "r": 0, "fill": "transparent", "stroke": "transparent"},
-                {"key": "inR", "placement": [1, header_center_y], "r": 0, "fill": "transparent", "stroke": "transparent"},
-            ]
-
-            for row_idx in ref_row_indices:
-                y = (
-                    padding_y
-                    + header_h
-                    + row_idx * row_h
-                    + row_h / 2
-                ) / height
-                ports.append({"key": f"pl{row_idx}", "placement": [0, y], "r": 0, "fill": "transparent", "stroke": "transparent"})
-                ports.append({"key": f"pr{row_idx}", "placement": [1, y], "r": 0, "fill": "transparent", "stroke": "transparent"})
-        # 根据方向设置连接点
-        if is_vertical:
             # 纵排：连接点分布在上下边缘，根据行索引分布在不同的 x 位置
             # 先计算有多少个参考行
             num_ref_rows = len(ref_row_indices)
@@ -1009,9 +975,6 @@ def _build_g6_data(nodes, edges, layout=None):
         # 根据方向调整节点尺寸
         final_width = card_w
         final_height = height
-        if is_vertical:
-            # 纵排时交换宽和高（因为内容被旋转了）
-            final_width, final_height = final_height, final_width
         
         g6_data["nodes"].append({
             "id": str(n["id"]),
@@ -1229,5 +1192,4 @@ def visualize(fn=None, *, horizon=True):
         return decorator(fn)
 
     return decorator
-
 
