@@ -226,7 +226,7 @@ let codeRows = [];
 let graphResizeObserver = null;
 let selectedFrameKey = null;
 let selectedFramePinned = false;
-let hoveredFrameKey = null;
+const BREAKPOINTS = new Set();
 const LAYOUT_PRESET = {
   minNodeWidth: 120,
   minNodeHeight: 60,
@@ -266,6 +266,186 @@ const DELTA_COLORS = {
   changed: { fill: '#fff5e6', stroke: '#ff9800', line: '#c97200' },
   added: { fill: '#eafaf0', stroke: '#34a853', line: '#1e8e3e' },
 };
+
+function getStepFrames(stepIndex) {
+  const frames = STEPS[stepIndex]?.stack?.frames;
+  return Array.isArray(frames) ? frames : [];
+}
+
+function getDeepestFrame(stepIndex) {
+  const frames = getStepFrames(stepIndex);
+  return frames.length ? frames[frames.length - 1] : null;
+}
+
+function frameKey(frame, frameIndex) {
+  return [frame?.filename || '', frame?.name || '', String(frameIndex ?? '')].join('|');
+}
+
+function getCurrentLine(stepIndex = current) {
+  const rawLine = Number(STEPS[stepIndex]?.lineno);
+  if (Number.isFinite(rawLine) && rawLine > 0) return rawLine;
+  const frame = getDeepestFrame(stepIndex);
+  const frameLine = Number(frame?.lineno);
+  return Number.isFinite(frameLine) && frameLine > 0 ? frameLine : 1;
+}
+
+function getCurrentLine(stepIndex = current) {
+  const frames = getStepFrames(stepIndex);
+  if (frames.length) {
+    const selectedKey = getCurrentFrameKey(stepIndex);
+    if (selectedKey) {
+      for (let i = 0; i < frames.length; i++) {
+        if (frameKey(frames[i], i) === selectedKey) {
+          const selectedLine = Number(frames[i]?.lineno);
+          if (Number.isFinite(selectedLine) && selectedLine > 0) return selectedLine;
+          break;
+        }
+      }
+    }
+  }
+  return getExecutionLine(stepIndex);
+}
+
+function getCurrentFrameKey(stepIndex = current) {
+  const frames = getStepFrames(stepIndex);
+  const deepestIndex = frames.length - 1;
+  const fallbackKey = deepestIndex >= 0 ? frameKey(frames[deepestIndex], deepestIndex) : null;
+  if (!selectedFrameKey) {
+    return fallbackKey;
+  }
+  for (let i = 0; i < frames.length; i++) {
+    if (frameKey(frames[i], i) === selectedFrameKey) {
+      return selectedFrameKey;
+    }
+  }
+  return fallbackKey;
+}
+
+function setHoveredLine(lineno, frameKeyValue = null) {
+  hoveredLine = Number.isFinite(Number(lineno)) ? Number(lineno) : null;
+  hoveredFrameKey = frameKeyValue;
+  syncCodeHighlights(false);
+  syncStackHighlights();
+}
+
+function clearHoveredLine() {
+  hoveredLine = null;
+  hoveredFrameKey = null;
+  syncCodeHighlights(false);
+  syncStackHighlights();
+}
+
+function toggleBreakpoint(lineno) {
+  const line = Number(lineno);
+  if (!Number.isFinite(line) || line <= 0) return;
+  if (BREAKPOINTS.has(line)) {
+    BREAKPOINTS.delete(line);
+  } else {
+    BREAKPOINTS.add(line);
+  }
+  syncCodeHighlights(false);
+}
+
+function syncCodeHighlights(scrollToCurrent = false) {
+  const currentLine = getExecutionLine();
+  const focusLine = hoveredLine !== null ? hoveredLine : (selectedFramePinned ? getCurrentLine() : null);
+  codeRows.forEach((row, idx) => {
+    const lineNo = idx + 1;
+    row.classList.toggle('current', lineNo === currentLine);
+    row.classList.toggle('hover', focusLine !== null && lineNo === focusLine);
+    row.classList.toggle('breakpoint', BREAKPOINTS.has(lineNo));
+    const arrow = row.querySelector('.ln-arrow');
+    if (arrow) {
+      arrow.textContent = lineNo === currentLine ? '➜' : '';
+    }
+  });
+  if (scrollToCurrent && codeRows[currentLine - 1]) {
+    codeRows[currentLine - 1].scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  const stepInput = document.getElementById('stepInput');
+  const stepTotal = document.getElementById('stepTotal');
+  const lineInfo = document.getElementById('lineInfo');
+  if (stepInput) stepInput.value = String(current + 1);
+  if (stepTotal) stepTotal.textContent = String(STEPS.length);
+  if (lineInfo) lineInfo.textContent = String(currentLine);
+}
+
+function syncStackHighlights() {
+  const stackView = document.getElementById('stackView');
+  if (!stackView) return;
+  const cards = stackView.querySelectorAll('.stack-card.interactive');
+  cards.forEach((card) => {
+    const frameKeyValue = card.getAttribute('data-frame-key') || '';
+    card.classList.toggle('current-frame', Boolean(frameKeyValue) && frameKeyValue === getCurrentFrameKey());
+    card.classList.toggle('hover-frame', Boolean(frameKeyValue) && frameKeyValue === hoveredFrameKey);
+  });
+}
+
+function findStepIndex(predicate, startIndex = current + 1) {
+  for (let i = Math.max(0, startIndex); i < STEPS.length; i++) {
+    if (predicate(STEPS[i], i)) return i;
+  }
+  return current;
+}
+
+function findNextLineStep(targetLine, startIndex = current + 1) {
+  const line = Number(targetLine);
+  if (!Number.isFinite(line) || line <= 0) return current;
+  return findStepIndex((step) => {
+    if (Number(step?.lineno) === line) return true;
+    const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
+    return frames.some((frame) => Number(frame?.lineno) === line);
+  }, startIndex);
+}
+
+function findStepOverIndex(startIndex = current + 1) {
+  const currentFrames = getStepFrames(current);
+  const currentDepth = currentFrames.length;
+  const currentFrame = getDeepestFrame(current);
+  const currentFrameKey = currentFrame ? frameKey(currentFrame, currentDepth - 1) : null;
+  const currentLine = Number(currentFrame?.lineno) || getCurrentLine();
+
+  return findStepIndex((step) => {
+    const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
+    if (frames.length > currentDepth) return false;
+    const deepest = frames.length ? frames[frames.length - 1] : null;
+    if (!deepest) return true;
+    const nextKey = frameKey(deepest, frames.length - 1);
+    if (currentFrameKey && nextKey === currentFrameKey && Number(deepest?.lineno) === currentLine) {
+      return false;
+    }
+    return true;
+  }, startIndex);
+}
+
+function findStepOutIndex(startIndex = current + 1) {
+  const currentDepth = getStepFrames(current).length;
+  return findStepIndex((step) => {
+    const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
+    return frames.length < currentDepth;
+  }, startIndex);
+}
+
+function findFrameStepIndex(frameKeyValue, preferredIndex = current) {
+  if (!frameKeyValue) return preferredIndex;
+  for (let i = preferredIndex; i < STEPS.length; i++) {
+    const frames = Array.isArray(STEPS[i]?.stack?.frames) ? STEPS[i].stack.frames : [];
+    if (frames.some((frame, idx) => frameKey(frame, idx) === frameKeyValue)) {
+      return i;
+    }
+  }
+  for (let i = preferredIndex - 1; i >= 0; i--) {
+    const frames = Array.isArray(STEPS[i]?.stack?.frames) ? STEPS[i].stack.frames : [];
+    if (frames.some((frame, idx) => frameKey(frame, idx) === frameKeyValue)) {
+      return i;
+    }
+  }
+  return preferredIndex;
+}
+
+function jumpToStep(stepIndex) {
+  renderStep(stepIndex);
+}
 
 function analyzeLayoutMetrics(graphData, viewport) {
   const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
@@ -1408,6 +1588,13 @@ function renderStackPanel(stackData, stepIndex) {
       hoveredFrameKey = null;
       renderStep(stepIndex);
     });
+    card.addEventListener('contextmenu', (evt) => {
+      evt.preventDefault();
+      selectedFramePinned = false;
+      selectedFrameKey = null;
+      clearHoveredLine();
+      renderStep(stepIndex);
+    });
   });
   if (!globals.length && !frames.length) {
     const emptyEl = document.createElement('div');
@@ -1423,6 +1610,18 @@ function renderStep(i) {
   current = Math.max(0, Math.min(i, STEPS.length - 1));
   const s = STEPS[current];
   const graphData = applyStepHighlights(cloneGraphData(s.graph), current);
+  const frames = getStepFrames(current);
+  if (frames.length) {
+    const fallbackKey = frameKey(frames[frames.length - 1], frames.length - 1);
+    const hasSelection = selectedFrameKey && frames.some((frame, idx) => frameKey(frame, idx) === selectedFrameKey);
+    if (!selectedFramePinned || !hasSelection) {
+      selectedFrameKey = fallbackKey;
+      selectedFramePinned = false;
+    }
+  } else {
+    selectedFrameKey = null;
+    selectedFramePinned = false;
+  }
   renderStackPanel(s.stack, current);
 
   if (!graph) {
