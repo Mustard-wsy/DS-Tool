@@ -239,6 +239,7 @@ let graphResizeObserver = null;
 let hoveredLine = null;
 let hoveredFrameKey = null;
 let selectedFrameKey = null;
+let selectedFramePinned = false;
 const BREAKPOINTS = new Set();
 const LAYOUT_PRESET = {
   minNodeWidth: 120,
@@ -294,12 +295,29 @@ function frameKey(frame, frameIndex) {
   return [frame?.filename || '', frame?.name || '', String(frameIndex ?? '')].join('|');
 }
 
-function getCurrentLine(stepIndex = current) {
+function getExecutionLine(stepIndex = current) {
   const rawLine = Number(STEPS[stepIndex]?.lineno);
   if (Number.isFinite(rawLine) && rawLine > 0) return rawLine;
   const frame = getDeepestFrame(stepIndex);
   const frameLine = Number(frame?.lineno);
   return Number.isFinite(frameLine) && frameLine > 0 ? frameLine : 1;
+}
+
+function getCurrentLine(stepIndex = current) {
+  const frames = getStepFrames(stepIndex);
+  if (frames.length) {
+    const selectedKey = getCurrentFrameKey(stepIndex);
+    if (selectedKey) {
+      for (let i = 0; i < frames.length; i++) {
+        if (frameKey(frames[i], i) === selectedKey) {
+          const selectedLine = Number(frames[i]?.lineno);
+          if (Number.isFinite(selectedLine) && selectedLine > 0) return selectedLine;
+          break;
+        }
+      }
+    }
+  }
+  return getExecutionLine(stepIndex);
 }
 
 function getCurrentFrameKey(stepIndex = current) {
@@ -343,11 +361,12 @@ function toggleBreakpoint(lineno) {
 }
 
 function syncCodeHighlights(scrollToCurrent = false) {
-  const currentLine = getCurrentLine();
+  const currentLine = getExecutionLine();
+  const focusLine = hoveredLine !== null ? hoveredLine : (selectedFramePinned ? getCurrentLine() : null);
   codeRows.forEach((row, idx) => {
     const lineNo = idx + 1;
     row.classList.toggle('current', lineNo === currentLine);
-    row.classList.toggle('hover', hoveredLine !== null && lineNo === hoveredLine);
+    row.classList.toggle('hover', focusLine !== null && lineNo === focusLine);
     row.classList.toggle('breakpoint', BREAKPOINTS.has(lineNo));
     const arrow = row.querySelector('.ln-arrow');
     if (arrow) {
@@ -1641,9 +1660,16 @@ function renderStackPanel(stackData, stepIndex) {
     });
     card.addEventListener('click', () => {
       selectedFrameKey = key;
-      const targetStep = findFrameStepIndex(key, stepIndex);
-      jumpToStep(targetStep);
+      selectedFramePinned = true;
+      jumpToStep(stepIndex);
       setHoveredLine(frame?.lineno, key);
+    });
+    card.addEventListener('contextmenu', (evt) => {
+      evt.preventDefault();
+      selectedFramePinned = false;
+      selectedFrameKey = null;
+      clearHoveredLine();
+      renderStep(stepIndex);
     });
   });
   if (!globals.length && !frames.length) {
@@ -1667,11 +1693,13 @@ function renderStep(i) {
   if (frames.length) {
     const fallbackKey = frameKey(frames[frames.length - 1], frames.length - 1);
     const hasSelection = selectedFrameKey && frames.some((frame, idx) => frameKey(frame, idx) === selectedFrameKey);
-    if (!hasSelection) {
+    if (!selectedFramePinned || !hasSelection) {
       selectedFrameKey = fallbackKey;
+      selectedFramePinned = false;
     }
   } else {
     selectedFrameKey = null;
+    selectedFramePinned = false;
   }
   renderStackPanel(s.stack, current);
 
