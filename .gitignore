@@ -59,8 +59,7 @@ htmlcov/
 
 # Generated HTML files (except template.html which is part of the library)
 debug-logs/
-# *.html
-# !dsvis/template.html
+
 
 # Development documentation (不上传)
 OPTIMIZATION_SUMMARY.md
