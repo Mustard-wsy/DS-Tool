@@ -1,0 +1,1889 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>__TITLE__</title>
+<script src="https://unpkg.com/@antv/g6@5.0.51/dist/g6.min.js"></script>
+<style>
+__STYLES__
+</style>
+</head>
+
+<body>
+<div id="root">
+  <div id="stack">
+    <div class="pane-header">
+      <span class="pane-title">Runtime Stack</span>
+      <button id="stackToggleBtn" class="pane-toggle" type="button">隐藏</button>
+    </div>
+    <div id="stackView"></div>
+  </div>
+  <div id="stackResizeHandle" class="pane-resizer" role="separator" aria-label="resize stack"></div>
+  <div id="middle">
+    <div id="graph"></div>
+  </div>
+  <div id="rightResizeHandle" class="pane-resizer" role="separator" aria-label="resize right"></div>
+  <div id="right">
+    <div class="pane-header">
+      <span class="pane-title">Original Source (full file, auto-scroll to current line)</span>
+      <button id="codeToggleBtn" class="pane-toggle" type="button">隐藏</button>
+    </div>
+    <div id="codeView"></div>
+    <div id="controls">
+      <button id="prevStepBtn">Prev</button>
+      <button id="nextStepBtn">Next</button>
+      <button id="stepBackBtn">Step Back</button>
+      <button id="stepOverBtn">Step Over</button>
+      <button id="stepOutBtn">Step Out</button>
+      <span>
+        Step
+        <input id="stepInput" type="number" min="1" step="1" />
+        / <span id="stepTotal">0</span>
+        &nbsp;|&nbsp; line <span id="lineInfo">-</span>
+      </span>
+      <span>
+        Run to line
+        <input id="runLineInput" type="number" min="1" step="1" />
+        <button id="runToLineBtn">Go</button>
+      </span>
+      <span id="breakpointInfo">breakpoints: click line numbers, forward navigation stops on hits</span>
+      <label id="autoFitWrap">
+        <input id="autoFitToggle" type="checkbox" checked />
+        自动缩放
+      </label>
+    </div>
+  </div>
+  <button id="stackRestoreBtn" class="edge-toggle edge-toggle-left" type="button" title="显示左侧栈面板" aria-label="显示左侧栈面板"></button>
+  <button id="rightRestoreBtn" class="edge-toggle edge-toggle-right" type="button" title="显示右侧代码面板" aria-label="显示右侧代码面板"></button>
+</div>
+
+<script>
+const STEPS = __STEPS__;
+const DISPLAY_INDICES = __DISPLAY_INDICES__;
+const SOURCE_LINES = __SOURCE_LINES__;
+const baseLayout = __LAYOUT__;
+const STEP_DIFFS = [];
+const STACK_UI_STATE = {
+  nameExpanded: new Map(),
+  valueExpanded: new Map(),
+  treeExpanded: new Map(),
+};
+let current = 0;
+let graph = null;
+let codeRows = [];
+let graphResizeObserver = null;
+let hoveredLine = null;
+let hoveredFrameKey = null;
+let selectedFrameKey = null;
+const BREAKPOINTS = new Set();
+const BREAKPOINTS_ENABLED = __BREAKPOINTS_ENABLED__;
+const LAYOUT_PRESET = {
+  minNodeWidth: 120,
+  minNodeHeight: 60,
+  minGapX: 28,
+  minGapY: 22,
+  gapRatioX: 0.24,
+  gapRatioY: 0.22,
+  dagreExtraX: 24,
+  dagreExtraY: 18,
+  gridPadding: 14,
+  treeConnectivityThreshold: 0.55,
+  aspectMin: 0.6,
+  aspectMax: 1.8,
+};
+const FIT_PADDING = { top: 44, right: 30, bottom: 44, left: 30 };
+const AUTO_FIT_CONFIG = {
+  maxScale: 1.25,
+  innerRingRatio: 0.08,
+  minInnerRingPx: 18,
+};
+const ANIMATION_CONFIG = {
+  // Lower this further (e.g. 80) for faster fade in/out.
+  durationMs: 120,
+  easing: 'linear',
+};
+const PANEL_STATE = {
+  stackVisible: true,
+  codeVisible: true,
+};
+const RESIZE_CONFIG = {
+  stack: { min: 220, max: 560, collapsed: 56 },
+  right: { min: 220, collapsed: 56 },
+  middleMin: 260,
+};
+const EDGE_HIDE_CONFIG = {
+  hideThresholdPx: 24,
+  nearEdgeGlowPx: 40,
+};
+const DELTA_COLORS = {
+  unchanged: { fill: '#e8f0fe', stroke: '#5b8ff9', line: '#333' },
+  changed: { fill: '#fff5e6', stroke: '#ff9800', line: '#c97200' },
+  added: { fill: '#eafaf0', stroke: '#34a853', line: '#1e8e3e' },
+};
+
+// Map display index → real step index
+function toReal(di) {
+  const i = Math.max(0, Math.min(di, DISPLAY_INDICES.length - 1));
+  return DISPLAY_INDICES[i];
+}
+
+// Total visible steps
+function totalSteps() { return DISPLAY_INDICES.length; }
+
+function getStepFrames(displayIndex) {
+  const ri = toReal(displayIndex);
+  const frames = STEPS[ri]?.stack?.frames;
+  return Array.isArray(frames) ? frames : [];
+}
+
+function getDeepestFrame(displayIndex) {
+  const frames = getStepFrames(displayIndex);
+  return frames.length ? frames[frames.length - 1] : null;
+}
+
+function frameKey(frame, frameIndex) {
+  return [frame?.filename || '', frame?.name || '', String(frameIndex ?? '')].join('|');
+}
+
+function getCurrentLine(stepIndex = current) {
+  const frame = getDeepestFrame(stepIndex);
+  const frameLine = Number(frame?.lineno);
+  return Number.isFinite(frameLine) && frameLine > 0 ? frameLine : 1;
+}
+
+function getFocusedLine(stepIndex = current) {
+  const frames = getStepFrames(stepIndex);
+  if (selectedFrameKey && frames.length) {
+    for (let i = 0; i < frames.length; i++) {
+      if (frameKey(frames[i], i) === selectedFrameKey) {
+        const selectedLine = Number(frames[i]?.lineno);
+        if (Number.isFinite(selectedLine) && selectedLine > 0) return selectedLine;
+        break;
+      }
+    }
+  }
+  return getCurrentLine(stepIndex);
+}
+
+function getCurrentFrameKey(stepIndex = current) {
+  const frames = getStepFrames(stepIndex);
+  const deepestIndex = frames.length - 1;
+  const fallbackKey = deepestIndex >= 0 ? frameKey(frames[deepestIndex], deepestIndex) : null;
+  if (!selectedFrameKey) {
+    return fallbackKey;
+  }
+  for (let i = 0; i < frames.length; i++) {
+    if (frameKey(frames[i], i) === selectedFrameKey) {
+      return selectedFrameKey;
+    }
+  }
+  return fallbackKey;
+}
+
+function setHoveredLine(lineno, frameKeyValue = null) {
+  hoveredLine = Number.isFinite(Number(lineno)) ? Number(lineno) : null;
+  hoveredFrameKey = frameKeyValue;
+  syncCodeHighlights(false);
+  syncStackHighlights();
+}
+
+function clearHoveredLine() {
+  hoveredLine = null;
+  hoveredFrameKey = null;
+  syncCodeHighlights(false);
+  syncStackHighlights();
+}
+
+function toggleBreakpoint(lineno) {
+  if (!BREAKPOINTS_ENABLED) return;
+  const line = Number(lineno);
+  if (!Number.isFinite(line) || line <= 0) return;
+  if (BREAKPOINTS.has(line)) {
+    BREAKPOINTS.delete(line);
+  } else {
+    BREAKPOINTS.add(line);
+  }
+  syncCodeHighlights(false);
+}
+
+function stepHasBreakpoint(step) {
+  const line = Number(step?.lineno);
+  if (Number.isFinite(line) && BREAKPOINTS.has(line)) return true;
+  const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
+  return frames.some((frame) => {
+    const frameLine = Number(frame?.lineno);
+    return Number.isFinite(frameLine) && BREAKPOINTS.has(frameLine);
+  });
+}
+
+function findNextBreakpointStep(startDisplayIndex = current + 1) {
+  const fromReal = toReal(startDisplayIndex);
+  for (let i = fromReal + 1; i < STEPS.length; i++) {
+    if (stepHasBreakpoint(STEPS[i])) {
+      // Map back to display index (find closest display index <= real index)
+      for (let d = startDisplayIndex; d < DISPLAY_INDICES.length; d++) {
+        if (DISPLAY_INDICES[d] >= i) return d;
+      }
+      return DISPLAY_INDICES.length - 1;
+    }
+  }
+  return -1;
+}
+
+function advanceStep(targetDisplayIndex) {
+  if (!DISPLAY_INDICES.length) return;
+  const target = Math.max(0, Math.min(targetDisplayIndex, DISPLAY_INDICES.length - 1));
+  if (target <= current) {
+    renderStep(target);
+    return;
+  }
+  const bpIdx = findNextBreakpointStep(current + 1);
+  renderStep(bpIdx >= 0 ? bpIdx : target);
+}
+
+function syncCodeHighlights(scrollToCurrent = false) {
+  const currentLine = getCurrentLine();
+  const focusedLine = getFocusedLine();
+  codeRows.forEach((row, idx) => {
+    const lineNo = idx + 1;
+    row.classList.toggle('current', lineNo === currentLine);
+    row.classList.toggle('hover', hoveredLine !== null && lineNo === hoveredLine);
+    row.classList.toggle('breakpoint', BREAKPOINTS.has(lineNo));
+    row.classList.toggle('active', lineNo === focusedLine && lineNo !== currentLine);
+    const bp = row.querySelector('.ln-breakpoint');
+    if (bp) bp.classList.toggle('on', BREAKPOINTS.has(lineNo));
+    const arrow = row.querySelector('.ln-arrow');
+    if (arrow) { arrow.textContent = lineNo === currentLine ? '\u279c' : ''; }
+  });
+  const scrollLine = focusedLine || currentLine;
+  if (scrollToCurrent && codeRows[scrollLine - 1]) {
+    codeRows[scrollLine - 1].scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  const stepInput = document.getElementById('stepInput');
+  const stepTotal = document.getElementById('stepTotal');
+  const lineInfo = document.getElementById('lineInfo');
+  if (stepInput) stepInput.value = String(current + 1);
+  if (stepTotal) stepTotal.textContent = String(totalSteps());
+  if (lineInfo) lineInfo.textContent = String(currentLine);
+}
+
+function syncStackHighlights() {
+  const stackView = document.getElementById('stackView');
+  if (!stackView) return;
+  const cards = stackView.querySelectorAll('.stack-card.interactive');
+  cards.forEach((card) => {
+    const frameKeyValue = card.getAttribute('data-frame-key') || '';
+    card.classList.toggle('current-frame', Boolean(frameKeyValue) && frameKeyValue === getCurrentFrameKey());
+    card.classList.toggle('hover-frame', Boolean(frameKeyValue) && frameKeyValue === hoveredFrameKey);
+  });
+}
+
+// Map a real STEPS index back to the nearest display index
+function toDisplay(realIdx) {
+  for (let d = 0; d < DISPLAY_INDICES.length; d++) {
+    if (DISPLAY_INDICES[d] >= realIdx) return d;
+  }
+  return DISPLAY_INDICES.length - 1;
+}
+
+function findStepIndex(predicate, startDisplayIndex = current + 1) {
+  const startReal = toReal(startDisplayIndex) + 1;
+  for (let i = startReal; i < STEPS.length; i++) {
+    if (predicate(STEPS[i], i)) return toDisplay(i);
+  }
+  return current;
+}
+
+function findStepIndexReverse(predicate, startDisplayIndex = current - 1) {
+  const startReal = toReal(startDisplayIndex);
+  for (let i = startReal; i >= 0; i--) {
+    if (predicate(STEPS[i], i)) return toDisplay(i);
+  }
+  return current;
+}
+
+function findNextLineStep(targetLine, startDisplayIndex = current + 1) {
+  const line = Number(targetLine);
+  if (!Number.isFinite(line) || line <= 0) return current;
+  const startReal = toReal(startDisplayIndex) + 1;
+  for (let i = startReal; i < STEPS.length; i++) {
+    const step = STEPS[i];
+    if (Number(step?.lineno) === line) return toDisplay(i);
+    const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
+    if (frames.some((frame) => Number(frame?.lineno) === line)) return toDisplay(i);
+  }
+  return current;
+}
+
+function findStepOverIndex(startIndex = current + 1) {
+  const currentFrames = getStepFrames(current);
+  const currentDepth = currentFrames.length;
+  const currentFrame = getDeepestFrame(current);
+  const currentFrameKey = currentFrame ? frameKey(currentFrame, currentDepth - 1) : null;
+  const currentLine = Number(currentFrame?.lineno) || getCurrentLine();
+
+  return findStepIndex((step) => {
+    const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
+    if (frames.length > currentDepth) return false;
+    const deepest = frames.length ? frames[frames.length - 1] : null;
+    if (!deepest) return true;
+    const nextKey = frameKey(deepest, frames.length - 1);
+    if (currentFrameKey && nextKey === currentFrameKey && Number(deepest?.lineno) === currentLine) {
+      return false;
+    }
+    return true;
+  }, startIndex);
+}
+
+function findStepOutIndex(startIndex = current + 1) {
+  const currentDepth = getStepFrames(current).length;
+  return findStepIndex((step) => {
+    const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
+    return frames.length < currentDepth;
+  }, startIndex);
+}
+
+function findStepBackIndex(startIndex = current - 1) {
+  const currentFrames = getStepFrames(current);
+  const currentDepth = currentFrames.length;
+  const currentFrame = getDeepestFrame(current);
+  const currentFrameKey = currentFrame ? frameKey(currentFrame, currentDepth - 1) : null;
+  const currentLine = Number(currentFrame?.lineno) || getCurrentLine();
+
+  return findStepIndexReverse((step) => {
+    const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
+    if (frames.length > currentDepth) return false;
+    const deepest = frames.length ? frames[frames.length - 1] : null;
+    if (!deepest) return true;
+    const nextKey = frameKey(deepest, frames.length - 1);
+    if (currentFrameKey && nextKey === currentFrameKey && Number(deepest?.lineno) === currentLine) {
+      return false;
+    }
+    return true;
+  }, startIndex);
+}
+
+// Raw step jump — no breakpoint check, no line semantics
+function jumpToStep(targetDisplayIndex) {
+  if (!DISPLAY_INDICES.length) return;
+  const target = Math.max(0, Math.min(targetDisplayIndex, DISPLAY_INDICES.length - 1));
+  renderStep(target);
+}
+
+function findFrameStepIndex(frameKeyValue, preferredIndex = current) {
+  if (!frameKeyValue) return preferredIndex;
+  for (let i = preferredIndex; i < STEPS.length; i++) {
+    const frames = Array.isArray(STEPS[i]?.stack?.frames) ? STEPS[i].stack.frames : [];
+    if (frames.some((frame, idx) => frameKey(frame, idx) === frameKeyValue)) {
+      return i;
+    }
+  }
+  for (let i = preferredIndex - 1; i >= 0; i--) {
+    const frames = Array.isArray(STEPS[i]?.stack?.frames) ? STEPS[i].stack.frames : [];
+    if (frames.some((frame, idx) => frameKey(frame, idx) === frameKeyValue)) {
+      return i;
+    }
+  }
+  return preferredIndex;
+}
+
+function analyzeLayoutMetrics(graphData, viewport) {
+  const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+  let maxH = 80;
+  let maxW = 160;
+  let sumH = 0;
+  let sumW = 0;
+  for (const n of nodes) {
+    const size = n?.style?.size;
+    if (Array.isArray(size) && size.length >= 2) {
+      const width = Number(size[0]) || 0;
+      const height = Number(size[1]) || 0;
+      maxW = Math.max(maxW, width);
+      maxH = Math.max(maxH, height);
+      sumW += width;
+      sumH += height;
+    }
+  }
+
+  const avgW = Math.max(LAYOUT_PRESET.minNodeWidth, Math.ceil(sumW / Math.max(nodes.length, 1)));
+  const avgH = Math.max(LAYOUT_PRESET.minNodeHeight, Math.ceil(sumH / Math.max(nodes.length, 1)));
+  const boundaryGapX = Math.max(LAYOUT_PRESET.minGapX, Math.ceil(avgW * LAYOUT_PRESET.gapRatioX));
+  const boundaryGapY = Math.max(LAYOUT_PRESET.minGapY, Math.ceil(avgH * LAYOUT_PRESET.gapRatioY));
+  const width = viewport?.width || window.innerWidth || 1200;
+  const height = viewport?.height || window.innerHeight || 800;
+  const aspect = Math.max(
+    LAYOUT_PRESET.aspectMin,
+    Math.min(LAYOUT_PRESET.aspectMax, width / Math.max(height, 1))
+  );
+  const cols = Math.max(1, Math.ceil(Math.sqrt(nodes.length * aspect)));
+  const connectedNodeIds = new Set();
+  for (const e of edges) {
+    if (e?.source !== undefined) connectedNodeIds.add(String(e.source));
+    if (e?.target !== undefined) connectedNodeIds.add(String(e.target));
+  }
+  const connectedRatio = connectedNodeIds.size / Math.max(nodes.length, 1);
+  const treeLike = edges.length > 0 && (
+    connectedRatio >= LAYOUT_PRESET.treeConnectivityThreshold ||
+    edges.length >= nodes.length - 1
+  );
+
+  return { nodes, maxW, maxH, cols, boundaryGapX, boundaryGapY, treeLike };
+}
+
+function computeAdaptiveLayout(graphData, viewport = null) {
+  const metrics = analyzeLayoutMetrics(graphData, viewport);
+  const rankdir = (baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR';
+  
+  if (!metrics.nodes.length) {
+    return {
+      type: 'dagre',
+      rankdir: rankdir,
+      nodesep: rankdir === 'TB' ? 110 : 80,
+      ranksep: rankdir === 'TB' ? 110 : 110,
+    };
+  }
+
+  if (metrics.treeLike) {
+    return {
+      type: 'dagre',
+      rankdir: rankdir,
+      nodesep: rankdir === 'TB' 
+        ? Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 44)
+        : Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 44),
+      ranksep: rankdir === 'TB'
+        ? Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 68)
+        : Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 68),
+    };
+  }
+
+  return {
+    type: 'grid',
+    cols: metrics.cols,
+    preventOverlap: true,
+    nodeSize: [metrics.maxW, metrics.maxH],
+    preventOverlapPadding: Math.max(metrics.boundaryGapX, metrics.boundaryGapY),
+    sortBy: 'id',
+    padding: [LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding, LAYOUT_PRESET.gridPadding],
+  };
+}
+
+
+function applyCompactGridLayout(graphData, viewport = null) {
+  const metrics = analyzeLayoutMetrics(graphData, viewport || getGraphSize());
+  const workingData = JSON.parse(JSON.stringify(graphData || { nodes: [], edges: [] }));
+  const nodes = Array.isArray(workingData.nodes) ? workingData.nodes.slice() : [];
+  const cols = Math.max(1, metrics.cols);
+  const stepX = Math.max(metrics.maxW + metrics.boundaryGapX, 96);
+  const stepY = Math.max(metrics.maxH + metrics.boundaryGapY, 72);
+  const totalRows = Math.max(1, Math.ceil(nodes.length / cols));
+  const totalW = Math.max(0, (cols - 1) * stepX);
+  const totalH = Math.max(0, (totalRows - 1) * stepY);
+  const startX = -Math.floor(totalW / 2);
+  const startY = -Math.floor(totalH / 2);
+
+  nodes.sort((a, b) => String(a?.id ?? '').localeCompare(String(b?.id ?? '')));
+  nodes.forEach((node, idx) => {
+    const row = Math.floor(idx / cols);
+    const col = idx % cols;
+    node.style = node.style || {};
+    node.style.x = startX + col * stepX;
+    node.style.y = startY + row * stepY;
+  });
+
+  return {
+    data: workingData,
+    layout: { type: 'preset' },
+  };
+}
+
+function normalizeLayoutType(layoutTypeRaw) {
+  const t = String(layoutTypeRaw || '').trim().toLowerCase();
+  if (!t || t === 'default' || t === 'dagre') return 'default';
+  if (t === 'concentriclayout' || t === 'concentric') return 'concentric';
+  if (t === 'snakelayout' || t === 'snake') return 'snake';
+  return 'default';
+}
+
+function buildUndirectedAdj(graphData) {
+  const nodeIds = Array.isArray(graphData?.nodes) ? graphData.nodes.map((n) => String(n.id)) : [];
+  const adj = new Map(nodeIds.map((id) => [id, new Set()]));
+  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+  for (const e of edges) {
+    const s = String(e?.source ?? '');
+    const t = String(e?.target ?? '');
+    if (!adj.has(s) || !adj.has(t) || s === t) continue;
+    adj.get(s).add(t);
+    adj.get(t).add(s);
+  }
+  return adj;
+}
+
+function getConnectedComponents(graphData) {
+  const adj = buildUndirectedAdj(graphData);
+  const seen = new Set();
+  const components = [];
+  for (const id of adj.keys()) {
+    if (seen.has(id)) continue;
+    const queue = [id];
+    seen.add(id);
+    const comp = [];
+    while (queue.length) {
+      const cur = queue.shift();
+      comp.push(cur);
+      for (const nxt of adj.get(cur) || []) {
+        if (seen.has(nxt)) continue;
+        seen.add(nxt);
+        queue.push(nxt);
+      }
+    }
+    components.push(comp.sort());
+  }
+  components.sort((a, b) => b.length - a.length);
+  return components;
+}
+
+function arrangeSnake(componentIds, originX, originY, gapX, gapY) {
+  const out = new Map();
+  const cols = Math.max(1, Math.ceil(Math.sqrt(componentIds.length)));
+  for (let i = 0; i < componentIds.length; i++) {
+    const row = Math.floor(i / cols);
+    const col = i % cols;
+    const snakeCol = row % 2 === 0 ? col : (cols - 1 - col);
+    out.set(componentIds[i], { x: originX + snakeCol * gapX, y: originY + row * gapY });
+  }
+  return out;
+}
+
+function arrangeConcentric(componentIds, adj, originX, originY, ringStep) {
+  const out = new Map();
+  if (!componentIds.length) return out;
+  const center = componentIds.slice().sort((a, b) => (adj.get(b)?.size || 0) - (adj.get(a)?.size || 0))[0];
+  const levelByNode = new Map([[center, 0]]);
+  const queue = [center];
+  while (queue.length) {
+    const cur = queue.shift();
+    const level = levelByNode.get(cur);
+    for (const nxt of (adj.get(cur) || [])) {
+      if (levelByNode.has(nxt)) continue;
+      levelByNode.set(nxt, level + 1);
+      queue.push(nxt);
+    }
+  }
+
+  const levels = new Map();
+  for (const id of componentIds) {
+    const lv = levelByNode.get(id);
+    const key = Number.isFinite(lv) ? lv : Number.MAX_SAFE_INTEGER;
+    if (!levels.has(key)) levels.set(key, []);
+    levels.get(key).push(id);
+  }
+
+  for (const [lv, ids] of levels.entries()) {
+    ids.sort();
+    if (lv === 0) {
+      out.set(ids[0], { x: originX, y: originY });
+      continue;
+    }
+    if (!Number.isFinite(lv) || lv >= Number.MAX_SAFE_INTEGER) {
+      const loose = arrangeSnake(ids, originX - ringStep, originY + ringStep, ringStep, Math.max(56, Math.floor(ringStep * 0.6)));
+      for (const [id, pos] of loose.entries()) out.set(id, pos);
+      continue;
+    }
+    const radius = ringStep * lv;
+    for (let i = 0; i < ids.length; i++) {
+      const theta = (Math.PI * 2 * i) / Math.max(1, ids.length);
+      out.set(ids[i], { x: originX + radius * Math.cos(theta), y: originY + radius * Math.sin(theta) });
+    }
+  }
+  return out;
+}
+
+function applyPresetLayout(graphData, presetType, viewport = null) {
+  const metrics = analyzeLayoutMetrics(graphData, viewport || getGraphSize());
+  const workingData = JSON.parse(JSON.stringify(graphData || { nodes: [], edges: [] }));
+  const nodeMap = new Map((workingData.nodes || []).map((n) => [String(n.id), n]));
+  const components = getConnectedComponents(workingData);
+  const compCols = Math.max(1, Math.ceil(Math.sqrt(Math.max(components.length, 1))));
+  const blockW = Math.max(metrics.maxW * 3.4, 360);
+  const blockH = Math.max(metrics.maxH * 3.2, 280);
+  const adj = buildUndirectedAdj(workingData);
+
+  components.forEach((comp, idx) => {
+    const row = Math.floor(idx / compCols);
+    const col = idx % compCols;
+    const originX = col * blockW;
+    const originY = row * blockH;
+    const local = presetType === 'snake'
+      ? arrangeSnake(comp, originX, originY, Math.max(metrics.maxW + metrics.boundaryGapX, 120), Math.max(metrics.maxH + metrics.boundaryGapY, 88))
+      : arrangeConcentric(comp, adj, originX, originY, Math.max(metrics.maxW + metrics.boundaryGapX, 110));
+    for (const [id, pos] of local.entries()) {
+      const node = nodeMap.get(String(id));
+      if (!node) continue;
+      node.style = node.style || {};
+      node.style.x = pos.x;
+      node.style.y = pos.y;
+    }
+  });
+
+  return { data: workingData, layout: { type: 'preset' } };
+}
+
+function prepareGraphForLayout(graphData, viewport = null) {
+  const metrics = analyzeLayoutMetrics(graphData, viewport || getGraphSize());
+  if (!metrics.treeLike) {
+    return applyCompactGridLayout(graphData, viewport || getGraphSize());
+  }
+  return {
+    data: graphData,
+    layout: computeAdaptiveLayout(graphData, viewport),
+  };
+}
+
+function getGraphSize() {
+  const el = document.getElementById('graph');
+  return {
+    width: Math.max(200, el.clientWidth),
+    height: Math.max(200, el.clientHeight),
+  };
+}
+
+function initGraph(data) {
+  const { register, BaseNode } = G6;
+
+  class CardNode extends BaseNode {
+    drawKeyShape(attributes, container) {
+      const rankdir = (baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR';
+      const isVertical = rankdir === 'TB';
+      
+      const name = attributes.name || '';
+      const rows = Array.isArray(attributes.rows) ? attributes.rows : [];
+      const rowBindGroups = Array.isArray(attributes.rowBindGroups) ? attributes.rowBindGroups : [];
+      const rowBindBlocks = Array.isArray(attributes.rowBindBlocks) ? attributes.rowBindBlocks : [];
+      const [w, h] = attributes.size || [160, 80];
+      const paddingX = 10;
+      const paddingY = 8;
+      const rowH = 18;
+      const headerH = attributes.headerHeight || 22;
+      const headerLines = String(name).split('\n');
+      const key = this.upsert('key', 'rect', {
+        x: -w/2, y: -h/2, width:w, height:h, radius:4,
+        fill: attributes.fill || DELTA_COLORS.unchanged.fill,
+        stroke: attributes.stroke || DELTA_COLORS.unchanged.stroke,
+        lineWidth: attributes.lineWidth || 1,
+        zIndex: -1
+      }, container);
+      const prevHeaderLineCount = this.__prevHeaderLineCount || 0;
+      headerLines.forEach((line, i) => {
+        this.upsert(`title-${i}`, 'text', {
+          x: -w/2 + paddingX, y: -h/2 + paddingY + 2 + i * 14, text:line,
+          fontSize:12, fill:'#111', textBaseline:'top'
+        }, container);
+      });
+      for (let i = headerLines.length; i < prevHeaderLineCount; i++) {
+        this.upsert(`title-${i}`, 'text', {
+          x: -w/2 + paddingX, y: -h/2 + paddingY + 2 + i * 14, text:'',
+          fontSize:12, fill:'#111', textBaseline:'top'
+        }, container);
+      }
+      this.__prevHeaderLineCount = headerLines.length;
+      const rowCount = rows.length;
+      const bindPalette = ['#d9ecff', '#d6f5e8', '#fbe6c8', '#e6dcff', '#ffe1ea'];
+      const colorForGroup = (group) => {
+        const s = String(group || '');
+        let h = 0;
+        for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) >>> 0;
+        return bindPalette[h % bindPalette.length];
+      };
+
+      if (isVertical) {
+        const contentTop = -h / 2 + headerH + paddingY;
+        const contentHeight = Math.max(h - headerH - paddingY * 2, 1);
+        const columnCount = Math.max(rowCount, 1);
+        const columnWidth = Math.max(16, (w - paddingX * 2) / columnCount);
+        const contentCenterY = contentTop + contentHeight / 2;
+        const fontSize = 11;
+
+        for (let i = 0; i < rowCount; i++) {
+          const columnX = -w / 2 + paddingX + i * columnWidth;
+          const bindGroup = rowBindGroups[i];
+          const nodeStroke = attributes.stroke || DELTA_COLORS.unchanged.stroke;
+          const bindLineWidth = Math.max(0.5, (attributes.lineWidth || 1) * 0.6);
+
+          this.upsert(`bind-bg-${i}`, 'rect', {
+            x: columnX + 1,
+            y: contentTop,
+            width: Math.max(columnWidth - 2, 2),
+            height: contentHeight,
+            radius: 3,
+            fill: 'transparent',
+            stroke: bindGroup ? nodeStroke : 'transparent',
+            lineWidth: bindGroup ? bindLineWidth : 0,
+            zIndex: 0
+          }, container);
+
+          const rowDeltaType = Array.isArray(attributes.rowDeltaTypes) ? attributes.rowDeltaTypes[i] : null;
+          const rowColor = rowDeltaType === 'added'
+            ? DELTA_COLORS.added.line
+            : rowDeltaType === 'changed'
+              ? DELTA_COLORS.changed.line
+              : '#333';
+          const rowText = String(row ?? '');
+          const textWidth = Math.max(fontSize * 1.2, rowText.length * fontSize * 0.62);
+          const textHeight = fontSize + 2;
+          const anchorX = columnX + columnWidth / 2 - textHeight / 2;
+          const anchorY = contentCenterY + textWidth / 2;
+
+          this.upsert(`r-${i}`, 'text', {
+            x: anchorX,
+            y: anchorY,
+            text: rowText,
+            fontSize,
+            fill: rowColor,
+            fontWeight: rowDeltaType ? 600 : 400,
+            transform: 'rotate(-90)',
+            zIndex: 2
+          }, container);
+        }
+
+        const prevRowCount = this.__prevRowCount || 0;
+        for (let i = rowCount; i < prevRowCount; i++) {
+          this.upsert(`bind-bg-${i}`, 'rect', {
+            x: -w / 2 + paddingX,
+            y: contentTop,
+            width: 0,
+            height: 0,
+            radius: 0,
+            fill: 'transparent',
+            stroke: 'transparent',
+            zIndex: 0
+          }, container);
+          this.upsert(`r-${i}`, 'text', {
+            x: -w / 2 + paddingX,
+            y: contentCenterY,
+            text: '',
+            fontSize,
+            fill: '#333',
+            zIndex: 2
+          }, container);
+        }
+        this.__prevBindRunCount = 0;
+      } else {
+        const runs = [];
+        let runStart = null;
+        let runGroup = null;
+        let runBlock = null;
+        for (let i = 0; i < rowCount; i++) {
+          const g = rowBindGroups[i] || null;
+          const b = rowBindBlocks[i] || null;
+          if (!g || !b) {
+            if (runGroup !== null) {
+              runs.push({ group: runGroup, block: runBlock, start: runStart, end: i - 1 });
+              runStart = null;
+              runGroup = null;
+              runBlock = null;
+            }
+            continue;
+          }
+          if (runGroup === null || runBlock === null) {
+            runGroup = g;
+            runBlock = b;
+            runStart = i;
+            continue;
+          }
+          if (b !== runBlock) {
+            runs.push({ group: runGroup, block: runBlock, start: runStart, end: i - 1 });
+            runGroup = g;
+            runBlock = b;
+            runStart = i;
+          }
+        }
+        if (runGroup !== null) {
+          runs.push({ group: runGroup, block: runBlock, start: runStart, end: rowCount - 1 });
+        }
+
+        const nodeStroke = attributes.stroke || DELTA_COLORS.unchanged.stroke;
+        const bindLineWidth = Math.max(0.5, (attributes.lineWidth || 1) * 0.6);
+
+        const coveredByRun = new Set();
+        runs.forEach((run, i) => {
+          for (let j = run.start; j <= run.end; j++) coveredByRun.add(j);
+          this.upsert(`bind-block-${i}`, 'rect', {
+            x: -w/2 + 4, y: -h/2 + headerH + paddingY + run.start * rowH + 1,
+            width: w - 8, height: Math.max((run.end - run.start + 1) * rowH - 2, 2), radius: 4,
+            fill: 'transparent', stroke: nodeStroke, lineWidth: bindLineWidth, zIndex: 0
+          }, container);
+        });
+        const prevRunCount = this.__prevBindRunCount || 0;
+        for (let i = runs.length; i < prevRunCount; i++) {
+          this.upsert(`bind-block-${i}`, 'rect', {
+            x: -w/2 + 4, y: -h/2, width: 0, height: 0, radius: 0,
+            fill: 'transparent', stroke: 'transparent', zIndex: 0
+          }, container);
+        }
+        this.__prevBindRunCount = runs.length;
+
+        rows.forEach((row, i) => {
+          const bindGroup = rowBindGroups[i];
+          const inRun = coveredByRun.has(i);
+          this.upsert(`bind-bg-${i}`, 'rect', {
+            x: -w/2 + 4, y: -h/2 + headerH + paddingY + i * rowH + 1,
+            width: w - 8, height: rowH - 2, radius: 3,
+            fill: 'transparent',
+            stroke: (bindGroup && !inRun) ? nodeStroke : 'transparent',
+            lineWidth: (bindGroup && !inRun) ? bindLineWidth : 0,
+            zIndex: 0
+          }, container);
+          const rowDeltaType = Array.isArray(attributes.rowDeltaTypes) ? attributes.rowDeltaTypes[i] : null;
+          const rowColor = rowDeltaType === 'added'
+            ? DELTA_COLORS.added.line
+            : rowDeltaType === 'changed'
+              ? DELTA_COLORS.changed.line
+              : '#333';
+          this.upsert(`r-${i}`, 'text', {
+            x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: row,
+            fontSize:11, fill: rowColor, fontWeight: rowDeltaType ? 600 : 400, textBaseline:'top', zIndex: 2
+          }, container);
+        });
+
+        const prevRowCount = this.__prevRowCount || 0;
+        for (let i = rows.length; i < prevRowCount; i++) {
+          this.upsert(`bind-bg-${i}`, 'rect', {
+            x: -w/2 + 4, y: -h/2 + headerH + paddingY + i * rowH + 1,
+            width: w - 8, height: rowH - 2, radius: 3,
+            fill: 'transparent', stroke: 'transparent', zIndex: 0
+          }, container);
+          this.upsert(`r-${i}`, 'text', {
+            x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: '',
+            fontSize:11, fill:'#333', textBaseline:'top', zIndex: 2
+          }, container);
+        }
+      }
+      this.__prevRowCount = rows.length;
+      return key;
+    }
+  }
+
+  register('node', 'card', CardNode);
+  const size = getGraphSize();
+  const prepared = prepareGraphForLayout(data, size);
+  graph = new G6.Graph({
+    container:'graph',
+    width:size.width,
+    height:size.height,
+    autoResize:true,
+    animation: {
+      duration: ANIMATION_CONFIG.durationMs,
+      easing: ANIMATION_CONFIG.easing,
+    },
+    data: prepared.data,
+    layout: prepared.layout,
+    node:{
+      type:'card',
+      style: { port: true }
+    },
+    edge:{
+      style:{
+        endArrow:true,
+        stroke:'#888',
+        router: { type: 'polyline' }
+      }
+    },
+    behaviors:['drag-canvas','zoom-canvas','drag-element']
+  });
+
+  if (typeof graph.setZoomRange === 'function') {
+    graph.setZoomRange([0.05, AUTO_FIT_CONFIG.maxScale]);
+  }
+
+  graph.on('node:dragstart', onDragStart);
+  graph.on('node:drag', onDragMove);
+  graph.on('node:dragging', onDragMove);
+  graph.on('node:dragend', onDragEnd);
+  graph.on('element:dragstart', onDragStart);
+  graph.on('element:drag', onDragMove);
+  graph.on('element:dragend', onDragEnd);
+
+  if (typeof graph.once === 'function') {
+    graph.once('afterlayout', refreshGraphVisuals);
+    graph.once('afterrender', refreshGraphVisuals);
+  }
+  graph.render();
+
+  if (typeof ResizeObserver !== 'undefined') {
+    graphResizeObserver = new ResizeObserver(() => {
+      if (!graph) return;
+      const size = getGraphSize();
+      if (typeof graph.setSize === 'function') {
+        graph.setSize(size.width, size.height);
+      }
+      refreshGraphVisuals();
+    });
+    graphResizeObserver.observe(document.getElementById('graph'));
+  }
+}
+
+function buildPortStyles(node, usedPorts) {
+  const ports = Array.isArray(node?.style?.ports) ? node.style.ports : [];
+  return ports.map((p) => {
+    const key = p.key;
+    const active = usedPorts.has(key);
+    return {
+      ...p,
+      r: active ? 2.5 : 0,
+      fill: active ? '#5b8ff9' : 'transparent',
+      stroke: active ? '#2b6cd4' : 'transparent',
+    };
+  });
+}
+
+function resolvePortsForEdge(e, nodeMap) {
+  const src = nodeMap.get(e.source);
+  const tgt = nodeMap.get(e.target);
+  if (!src || !tgt) return null;
+  const refIndex = e.data ? e.data.refIndex : null;
+  if (refIndex === null || refIndex === undefined) return null;
+  
+  const rankdir = (baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR';
+  
+  if (rankdir === 'TB') {
+    // 纵排：根据 y 坐标判断方向
+    const sy = src.style?.y ?? 0;
+    const ty = tgt.style?.y ?? 0;
+    const useTop = ty < sy;
+    return {
+      sourcePort: useTop ? `pt${refIndex}` : `pb${refIndex}`,
+      targetPort: useTop ? 'inB' : 'inT',
+    };
+  } else {
+    // 横排：根据 x 坐标判断方向
+    const sx = src.style?.x ?? 0;
+    const tx = tgt.style?.x ?? 0;
+    const useLeft = tx < sx;
+    return {
+      sourcePort: useLeft ? `pl${refIndex}` : `pr${refIndex}`,
+      targetPort: useLeft ? 'inR' : 'inL',
+    };
+  }
+}
+
+function updateEdgePorts(focusNodeId = null) {
+  if (!graph) return;
+  const allEdges = graph.getEdgeData();
+  const nodeDataList = graph.getNodeData();
+  const nodeMap = new Map(nodeDataList.map((n) => [n.id, n]));
+  const relatedNodeIds = new Set();
+
+  const edgesToUpdate = focusNodeId
+    ? allEdges.filter((e) => e.source === focusNodeId || e.target === focusNodeId)
+    : allEdges;
+
+  const edgeUpdates = [];
+  for (const e of edgesToUpdate) {
+    const ports = resolvePortsForEdge(e, nodeMap);
+    if (!ports) continue;
+    edgeUpdates.push({ id: e.id, style: ports });
+    relatedNodeIds.add(e.source);
+    relatedNodeIds.add(e.target);
+  }
+  if (edgeUpdates.length > 0) {
+    graph.updateEdgeData(edgeUpdates);
+  }
+
+  const nodeIdsToRefresh = focusNodeId
+    ? Array.from(relatedNodeIds)
+    : nodeDataList.map((n) => n.id);
+
+  const nodeUpdates = [];
+  for (const nodeId of nodeIdsToRefresh) {
+    const node = nodeMap.get(nodeId);
+    if (!node) continue;
+    const usedPorts = new Set();
+    for (const e of allEdges) {
+      if (e.source !== nodeId && e.target !== nodeId) continue;
+      const ports = resolvePortsForEdge(e, nodeMap);
+      if (!ports) continue;
+      if (e.source === nodeId) usedPorts.add(ports.sourcePort);
+      if (e.target === nodeId) usedPorts.add(ports.targetPort);
+    }
+    nodeUpdates.push({
+      id: nodeId,
+      style: { ports: buildPortStyles(node, usedPorts) },
+    });
+  }
+  if (nodeUpdates.length > 0) {
+    graph.updateNodeData(nodeUpdates);
+  }
+  if (edgeUpdates.length > 0 || nodeUpdates.length > 0 || !focusNodeId) {
+    graph.draw();
+  }
+}
+
+function fitGraph() {
+  requestAnimationFrame(() => {
+    if (!graph) return;
+    const autoFitToggle = document.getElementById('autoFitToggle');
+    if (autoFitToggle && !autoFitToggle.checked) return;
+    const size = getGraphSize();
+    const ringInset = Math.max(
+      AUTO_FIT_CONFIG.minInnerRingPx,
+      Math.floor(Math.min(size.width, size.height) * AUTO_FIT_CONFIG.innerRingRatio)
+    );
+    const fitPadding = {
+      top: FIT_PADDING.top + ringInset,
+      right: FIT_PADDING.right + ringInset,
+      bottom: FIT_PADDING.bottom + ringInset,
+      left: FIT_PADDING.left + ringInset,
+    };
+    if (typeof graph.fitView === 'function') {
+      graph.fitView({
+        padding: [fitPadding.top, fitPadding.right, fitPadding.bottom, fitPadding.left],
+        when: 'always',
+        animation: false,
+      });
+      if (typeof graph.getZoom === 'function' && typeof graph.zoomTo === 'function') {
+        const currentScale = Number(graph.getZoom());
+        if (Number.isFinite(currentScale) && currentScale > AUTO_FIT_CONFIG.maxScale) {
+          graph.zoomTo(AUTO_FIT_CONFIG.maxScale, { x: size.width / 2, y: size.height / 2 }, false);
+        }
+      }
+      return;
+    }
+    if (typeof graph.fitCenter === 'function') {
+      graph.fitCenter();
+    }
+  });
+}
+
+function refreshVisibleGraph() {
+  if (!graph) return;
+  if (typeof graph.setSize === 'function') {
+    const size = getGraphSize();
+    graph.setSize(size.width, size.height);
+  }
+  refreshGraphVisuals();
+}
+
+function getRootElement() {
+  return document.getElementById('root');
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function updateResizeHandleState() {
+  const stackHandle = document.getElementById('stackResizeHandle');
+  const rightHandle = document.getElementById('rightResizeHandle');
+  const stackRestoreBtn = document.getElementById('stackRestoreBtn');
+  const rightRestoreBtn = document.getElementById('rightRestoreBtn');
+  if (stackHandle) {
+    stackHandle.classList.toggle('disabled', !PANEL_STATE.stackVisible);
+    stackHandle.style.pointerEvents = PANEL_STATE.stackVisible ? 'auto' : 'none';
+    stackHandle.style.display = PANEL_STATE.stackVisible ? '' : 'none';
+  }
+  if (rightHandle) {
+    rightHandle.classList.toggle('disabled', !PANEL_STATE.codeVisible);
+    rightHandle.style.pointerEvents = PANEL_STATE.codeVisible ? 'auto' : 'none';
+    rightHandle.style.display = PANEL_STATE.codeVisible ? '' : 'none';
+  }
+  if (stackRestoreBtn) {
+    stackRestoreBtn.hidden = PANEL_STATE.stackVisible;
+  }
+  if (rightRestoreBtn) {
+    rightRestoreBtn.hidden = PANEL_STATE.codeVisible;
+  }
+}
+
+function setStackWidthPx(nextWidth) {
+  const root = getRootElement();
+  if (!root) return;
+  const rootWidth = root.clientWidth;
+  const rightWidth = PANEL_STATE.codeVisible
+    ? parseFloat(getComputedStyle(root).getPropertyValue('--right-width')) || 320
+    : RESIZE_CONFIG.right.collapsed;
+  const maxByViewport = Math.max(
+    RESIZE_CONFIG.stack.min,
+    rootWidth - rightWidth - RESIZE_CONFIG.middleMin - 16
+  );
+  const width = clamp(nextWidth, RESIZE_CONFIG.stack.min, Math.min(RESIZE_CONFIG.stack.max, maxByViewport));
+  root.style.setProperty('--stack-width', `${Math.round(width)}px`);
+}
+
+function setRightWidthPx(nextWidth) {
+  const root = getRootElement();
+  if (!root) return;
+  const rootWidth = root.clientWidth;
+  const stackWidth = PANEL_STATE.stackVisible
+    ? parseFloat(getComputedStyle(root).getPropertyValue('--stack-width')) || 340
+    : RESIZE_CONFIG.stack.collapsed;
+  const maxByViewport = Math.max(
+    RESIZE_CONFIG.right.min,
+    rootWidth - stackWidth - RESIZE_CONFIG.middleMin - 16
+  );
+  const width = clamp(nextWidth, RESIZE_CONFIG.right.min, maxByViewport);
+  root.style.setProperty('--right-width', `${Math.round(width)}px`);
+}
+
+function bindHorizontalResizer(handleId, onMove) {
+  const handle = document.getElementById(handleId);
+  if (!handle) return;
+  let active = false;
+  let rafPending = false;
+  let pendingX = 0;
+  const move = (clientX) => {
+    pendingX = clientX;
+    if (rafPending) return;
+    rafPending = true;
+    requestAnimationFrame(() => {
+      rafPending = false;
+      onMove(pendingX);
+      refreshVisibleGraph();
+    });
+  };
+  handle.addEventListener('pointerdown', (evt) => {
+    if (handle.classList.contains('disabled')) return;
+    active = true;
+    document.body.classList.add('resizing');
+    handle.setPointerCapture?.(evt.pointerId);
+  });
+  handle.addEventListener('pointermove', (evt) => {
+    if (!active) return;
+    move(evt.clientX);
+  });
+  const end = (evt) => {
+    if (!active) return;
+    active = false;
+    document.body.classList.remove('resizing');
+    if (evt && Number.isFinite(evt.clientX)) {
+      move(evt.clientX);
+    } else {
+      refreshVisibleGraph();
+    }
+  };
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+}
+
+function setPaneVisible(paneId, visible, toggleLabelVisible, toggleLabelHidden) {
+  const pane = document.getElementById(paneId);
+  const toggleBtn = document.getElementById(`${paneId}ToggleBtn`) || pane?.querySelector('.pane-toggle');
+  if (!pane || !toggleBtn) return;
+  pane.classList.toggle('pane-hidden', !visible);
+  pane.classList.toggle('pane-collapsed', !visible);
+  if (visible) {
+    pane.style.removeProperty('display');
+  } else {
+    pane.style.display = 'flex';
+  }
+  const icon = paneId === 'stack'
+    ? (visible ? 'paneLeft' : 'paneRight')
+    : (visible ? 'paneRight' : 'paneLeft');
+  setIconButton(toggleBtn, icon, visible ? toggleLabelVisible : toggleLabelHidden);
+  toggleBtn.setAttribute('aria-pressed', String(!visible));
+  updateResizeHandleState();
+  requestAnimationFrame(() => {
+    refreshVisibleGraph();
+  });
+}
+
+function refreshGraphVisuals() {
+  updateEdgePorts();
+  fitGraph();
+}
+
+let rafId = null;
+let dragging = false;
+let draggingNodeId = null;
+
+function getDragNodeId(evt) {
+  return evt?.target?.id || evt?.item?.id || evt?.data?.id || evt?.id || null;
+}
+
+function scheduleUpdate(nodeId = null) {
+  if (nodeId) draggingNodeId = nodeId;
+  if (rafId !== null) return;
+  rafId = requestAnimationFrame(() => {
+    updateEdgePorts(draggingNodeId);
+    rafId = null;
+    if (dragging) scheduleUpdate(draggingNodeId);
+  });
+}
+
+function onDragStart(evt) {
+  const nodeId = getDragNodeId(evt);
+  if (!nodeId) return;
+  dragging = true;
+  draggingNodeId = nodeId;
+  scheduleUpdate(nodeId);
+}
+
+function onDragMove(evt) {
+  const nodeId = getDragNodeId(evt) || draggingNodeId;
+  if (!nodeId) return;
+  scheduleUpdate(nodeId);
+}
+
+function onDragEnd(evt) {
+  const nodeId = getDragNodeId(evt) || draggingNodeId;
+  dragging = false;
+  draggingNodeId = null;
+  if (!nodeId) return;
+  updateEdgePorts(nodeId);
+}
+
+function escapeHtml(raw) {
+  return String(raw ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function highlightPythonLine(sourceLine) {
+  const text = String(sourceLine ?? '');
+  if (!text) return '';
+  const regex = /(#[^\n]*|"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b(?:and|as|assert|async|await|break|class|continue|def|del|elif|else|except|False|finally|for|from|global|if|import|in|is|lambda|None|nonlocal|not|or|pass|raise|return|True|try|while|with|yield)\b|\b\d+(?:\.\d+)?\b|\bdef\s+([A-Za-z_]\w*)|\bclass\s+([A-Za-z_]\w*)|[+\-*/%=<>!]+)/g;
+  let last = 0;
+  let html = '';
+  for (const match of text.matchAll(regex)) {
+    const token = match[0];
+    const index = match.index ?? 0;
+    if (index > last) {
+      html += escapeHtml(text.slice(last, index));
+    }
+    let cls = '';
+    if (token.startsWith('#')) cls = 'tok-comment';
+    else if (token.startsWith('"') || token.startsWith("'")) cls = 'tok-string';
+    else if (/^\b\d/.test(token) || /^\d/.test(token)) cls = 'tok-number';
+    else if (/^(def\s+)/.test(token)) cls = 'tok-keyword';
+    else if (/^(class\s+)/.test(token)) cls = 'tok-keyword';
+    else if (/^[+\-*/%=<>!]+$/.test(token)) cls = 'tok-operator';
+    else cls = 'tok-keyword';
+    html += `<span class="${cls}">${escapeHtml(token)}</span>`;
+    last = index + token.length;
+  }
+  if (last < text.length) {
+    html += escapeHtml(text.slice(last));
+  }
+  return html;
+}
+
+function cloneGraphData(data) {
+  return JSON.parse(JSON.stringify(data || { nodes: [], edges: [] }));
+}
+
+function edgeSignature(edge) {
+  return `${edge.source}->${edge.target}#${edge?.data?.refIndex ?? 'na'}`;
+}
+
+function computeStepDiffs() {
+  STEP_DIFFS.length = 0;
+  let prevGraph = null;
+  let prevStack = null;
+  for (let stepIdx = 0; stepIdx < STEPS.length; stepIdx++) {
+    const currentGraph = STEPS[stepIdx]?.graph || { nodes: [], edges: [] };
+    const diff = {
+      nodeTypes: new Map(),
+      nodeRowTypes: new Map(),
+      addedEdgeSigs: new Set(),
+    };
+    if (prevGraph) {
+      const prevNodeMap = new Map((prevGraph.nodes || []).map((n) => [n.id, n]));
+      for (const node of currentGraph.nodes || []) {
+        const prevNode = prevNodeMap.get(node.id);
+        const rows = Array.isArray(node?.style?.rows) ? node.style.rows : [];
+        if (!prevNode) {
+          diff.nodeTypes.set(node.id, 'added');
+          diff.nodeRowTypes.set(node.id, rows.map(() => 'added'));
+          continue;
+        }
+        const prevRows = Array.isArray(prevNode?.style?.rows) ? prevNode.style.rows : [];
+        const rowTypes = [];
+        let hasChange = false;
+        const maxLen = Math.max(rows.length, prevRows.length);
+        for (let i = 0; i < maxLen; i++) {
+          if (i >= prevRows.length) {
+            rowTypes[i] = 'added';
+            hasChange = true;
+          } else if (rows[i] !== prevRows[i]) {
+            rowTypes[i] = 'changed';
+            hasChange = true;
+          } else {
+            rowTypes[i] = '';
+          }
+        }
+        if ((node?.style?.name || '') !== (prevNode?.style?.name || '')) {
+          hasChange = true;
+        }
+        if (hasChange) {
+          diff.nodeTypes.set(node.id, 'changed');
+          diff.nodeRowTypes.set(node.id, rowTypes);
+        }
+      }
+
+      const prevEdges = new Set((prevGraph.edges || []).map(edgeSignature));
+      for (const edge of currentGraph.edges || []) {
+        const sig = edgeSignature(edge);
+        if (!prevEdges.has(sig)) diff.addedEdgeSigs.add(sig);
+      }
+    }
+    // compute stack row diffs between previous step and current
+    diff.stackRowTypes = new Map();
+    const currentStack = STEPS[stepIdx]?.stack || { frames: [] };
+    if (prevStack) {
+      const prevFrames = Array.isArray(prevStack.frames) ? prevStack.frames : [];
+      const currFrames = Array.isArray(currentStack.frames) ? currentStack.frames : [];
+      const maxFrames = Math.max(prevFrames.length, currFrames.length);
+      for (let fi = 0; fi < maxFrames; fi++) {
+        const prevFrame = prevFrames[fi] || null;
+        const currFrame = currFrames[fi] || null;
+        const key = frameKey(currFrame || prevFrame || {}, fi);
+        const currRows = Array.isArray(currFrame?.locals) ? currFrame.locals : [];
+        const prevRows = Array.isArray(prevFrame?.locals) ? prevFrame.locals : [];
+        const maxR = Math.max(prevRows.length, currRows.length);
+        const rowTypes = [];
+        for (let ri = 0; ri < maxR; ri++) {
+          const pText = String(prevRows[ri]?.text ?? prevRows[ri]?.compact_text ?? prevRows[ri]?.full_text ?? '');
+          const cText = String(currRows[ri]?.text ?? currRows[ri]?.compact_text ?? currRows[ri]?.full_text ?? '');
+          if (ri >= prevRows.length) {
+            rowTypes[ri] = 'added';
+          } else if (pText !== cText) {
+            rowTypes[ri] = 'changed';
+          } else {
+            rowTypes[ri] = '';
+          }
+        }
+        if (rowTypes.some(Boolean)) diff.stackRowTypes.set(key, rowTypes);
+      }
+    }
+    STEP_DIFFS.push(diff);
+    prevGraph = currentGraph;
+    prevStack = currentStack;
+  }
+}
+
+function applyStepHighlights(graphData, stepIndex) {
+  const diff = STEP_DIFFS[stepIndex];
+  if (!diff) return graphData;
+  for (const node of graphData.nodes || []) {
+    const nodeType = diff.nodeTypes.get(node.id) || '';
+    const color = nodeType === 'added'
+      ? DELTA_COLORS.added
+      : nodeType === 'changed'
+        ? DELTA_COLORS.changed
+        : DELTA_COLORS.unchanged;
+    node.style = node.style || {};
+    node.style.fill = color.fill;
+    node.style.stroke = color.stroke;
+    node.style.lineWidth = nodeType ? 2 : 1;
+    node.style.rowDeltaTypes = diff.nodeRowTypes.get(node.id) || [];
+  }
+  for (const edge of graphData.edges || []) {
+    const added = diff.addedEdgeSigs.has(edgeSignature(edge));
+    edge.style = edge.style || {};
+    edge.style.stroke = added ? DELTA_COLORS.added.stroke : '#888';
+    edge.style.lineWidth = added ? 2 : 1;
+    edge.style.endArrow = {
+      ...(typeof edge.style.endArrow === 'object' ? edge.style.endArrow : {}),
+      fill: added ? DELTA_COLORS.added.stroke : '#888',
+    };
+  }
+  return graphData;
+}
+
+function renderAllCode() {
+  const codeView = document.getElementById('codeView');
+  codeView.innerHTML = '';
+  codeRows = [];
+  for (let i = 1; i <= SOURCE_LINES.length; i++) {
+    const row = document.createElement('div');
+    row.className = 'line';
+    row.innerHTML = `<span class="ln"><span class="ln-breakpoint"></span><span class="ln-arrow"></span><span class="ln-number">${i}</span></span><span class="txt"></span>`;
+    row.querySelector('.txt').innerHTML = highlightPythonLine(SOURCE_LINES[i - 1] ?? '');
+    row.querySelector('.ln-number').addEventListener('click', (evt) => {
+      evt.stopPropagation();
+      toggleBreakpoint(i);
+    });
+    codeView.appendChild(row);
+    codeRows.push(row);
+  }
+  syncCodeHighlights(false);
+}
+
+function renderStackPanel(stackData, stepIndex) {
+  const stackView = document.getElementById('stackView');
+  stackView.innerHTML = '';
+  const globals = Array.isArray(stackData?.globals) ? stackData.globals : [];
+  const frames = Array.isArray(stackData?.frames) ? stackData.frames : [];
+
+  const normalizeValueText = (row) => {
+    if (row?.tree && typeof row.tree.text === 'string' && row.tree.text.length) {
+      return row.tree.text;
+    }
+    if (typeof row?.full_text === 'string' && row.full_text.length) {
+      return row.full_text;
+    }
+    if (typeof row?.compact_text === 'string' && row.compact_text.length) {
+      const name = String(row?.name ?? '');
+      const compactPrefix = `${name} = `;
+      if (name && row.compact_text.startsWith(compactPrefix)) {
+        return row.compact_text.slice(compactPrefix.length);
+      }
+      return row.compact_text;
+    }
+    const name = String(row?.name ?? '');
+    const text = String(row?.text ?? '');
+    const prefix = `${name} = `;
+    if (name && text.startsWith(prefix)) {
+      return text.slice(prefix.length);
+    }
+    return text;
+  };
+
+  const createRow = (row, rowStateKey, rowIndex = 0, frameKey = null, stepIndex = null) => {
+    const rowBlock = document.createElement('div');
+    rowBlock.className = 'stack-row-block';
+
+    const rowEl = document.createElement('div');
+    rowEl.className = `stack-row${row?.kind === 'param' ? ' stack-row-param' : ''}`;
+    const nameEl = document.createElement('span');
+    nameEl.className = 'stack-name';
+    const rawName = String(row?.name ?? '');
+    const nameParts = rawName.split('.').filter((p) => p !== '');
+    const hasCollapsiblePrefix = nameParts.length >= 2;
+    if (!hasCollapsiblePrefix) {
+      nameEl.textContent = rawName;
+    } else {
+      const suffix = nameParts[nameParts.length - 1];
+      const prefix = nameParts.slice(0, -1).join('.');
+      const toggleEl = document.createElement('span');
+      toggleEl.className = 'stack-name-toggle';
+      toggleEl.title = '点击展开/收起完整名称';
+      const suffixEl = document.createElement('span');
+      suffixEl.className = 'stack-name-suffix';
+      let expanded = Boolean(STACK_UI_STATE.nameExpanded.get(rowStateKey));
+
+      const renderName = () => {
+        if (expanded) {
+          toggleEl.textContent = prefix;
+          suffixEl.textContent = `.${suffix}`;
+          nameEl.style.whiteSpace = 'normal';
+          nameEl.style.overflow = 'visible';
+          nameEl.style.textOverflow = 'clip';
+          nameEl.style.overflowWrap = 'anywhere';
+        } else {
+          toggleEl.textContent = '...';
+          suffixEl.textContent = `.${suffix}`;
+          nameEl.style.whiteSpace = 'nowrap';
+          nameEl.style.overflow = 'hidden';
+          nameEl.style.textOverflow = 'ellipsis';
+          nameEl.style.overflowWrap = 'normal';
+        }
+      };
+
+      toggleEl.addEventListener('click', () => {
+        expanded = !expanded;
+        STACK_UI_STATE.nameExpanded.set(rowStateKey, expanded);
+        renderName();
+      });
+
+      renderName();
+      nameEl.appendChild(toggleEl);
+      nameEl.appendChild(suffixEl);
+    }
+    const valueEl = document.createElement('span');
+    valueEl.className = 'stack-value';
+    const valueMain = document.createElement('span');
+    valueMain.className = 'stack-value-main';
+    let valueExpanded = Boolean(STACK_UI_STATE.valueExpanded.get(rowStateKey));
+    const hasHiddenReason = Boolean(row?.hidden_reason);
+
+    const renderValue = () => {
+      if (hasHiddenReason) {
+        if (valueExpanded) {
+          valueMain.textContent = String(row?.full_text || row?.text || normalizeValueText(row) || '');
+        } else {
+          const compactText = String(row?.compact_text || row?.text || '');
+          const name = String(row?.name ?? '');
+          const compactPrefix = `${name} = `;
+          valueMain.textContent = name && compactText.startsWith(compactPrefix)
+            ? compactText.slice(compactPrefix.length)
+            : compactText;
+        }
+      } else {
+        valueMain.textContent = normalizeValueText(row);
+      }
+    };
+
+    if (hasHiddenReason) {
+      const valueToggle = document.createElement('span');
+      valueToggle.className = 'stack-value-toggle';
+      valueToggle.textContent = '...';
+      valueToggle.title = '点击展开/收起隐藏内容';
+      valueToggle.addEventListener('click', () => {
+        valueExpanded = !valueExpanded;
+        STACK_UI_STATE.valueExpanded.set(rowStateKey, valueExpanded);
+        valueToggle.textContent = valueExpanded ? 'hide' : '...';
+        renderValue();
+      });
+      valueToggle.textContent = valueExpanded ? 'hide' : '...';
+      valueEl.appendChild(valueToggle);
+    }
+    renderValue();
+    valueEl.appendChild(valueMain);
+
+    rowEl.appendChild(nameEl);
+    rowEl.appendChild(valueEl);
+    // mark changed/added rows based on computed diffs
+    try {
+      if (frameKey && Number.isFinite(rowIndex) && stepIndex != null) {
+        const diff = STEP_DIFFS[stepIndex];
+        const types = diff && diff.stackRowTypes ? diff.stackRowTypes.get(frameKey) || [] : [];
+        const t = types[rowIndex] || '';
+        if (t === 'changed' || t === 'added') {
+          rowEl.classList.add('stack-row-changed');
+        }
+      }
+    } catch (e) {}
+
+    rowBlock.appendChild(rowEl);
+
+    const tree = row?.tree;
+    if (tree && Array.isArray(tree.children) && tree.children.length) {
+      const treeWrap = document.createElement('div');
+      treeWrap.className = 'stack-tree';
+
+      const listWrap = document.createElement('div');
+      const defaultLimit = Number(row?.tree_default_limit) > 0 ? Number(row.tree_default_limit) : 5;
+      let treeExpanded = Boolean(STACK_UI_STATE.treeExpanded.get(rowStateKey));
+      const children = tree.children;
+
+      const renderChildren = () => {
+        listWrap.innerHTML = '';
+        const visible = treeExpanded ? children : children.slice(0, defaultLimit);
+        visible.forEach((child) => {
+          const item = document.createElement('div');
+          item.className = 'stack-tree-item';
+          const childName = document.createElement('span');
+          childName.className = 'stack-tree-item-name';
+          childName.textContent = child?.name || '';
+          const childValue = document.createElement('span');
+          childValue.className = 'stack-tree-item-value';
+          childValue.textContent = child?.text || '';
+          item.appendChild(childName);
+          item.appendChild(childValue);
+          listWrap.appendChild(item);
+        });
+
+        if (children.length > defaultLimit) {
+          const btn = document.createElement('button');
+          btn.className = 'stack-tree-more';
+          btn.textContent = treeExpanded ? '收起列表' : `显示剩余 ${children.length - defaultLimit} 项`;
+          btn.addEventListener('click', () => {
+            treeExpanded = !treeExpanded;
+            STACK_UI_STATE.treeExpanded.set(rowStateKey, treeExpanded);
+            renderChildren();
+          });
+          listWrap.appendChild(btn);
+        }
+      };
+
+      renderChildren();
+      treeWrap.appendChild(listWrap);
+      rowBlock.appendChild(treeWrap);
+    }
+
+    return rowBlock;
+  };
+
+  const addCard = (title, subtitle, rows, meta = {}) => {
+    const cardIndex = stackView.childElementCount;
+    const cardStateKey = `${title}|${cardIndex}`;
+    const card = document.createElement('div');
+    card.className = 'stack-card';
+    const titleEl = document.createElement('div');
+    titleEl.className = 'stack-title';
+    titleEl.textContent = title;
+    card.appendChild(titleEl);
+    if (subtitle) {
+      const subtitleEl = document.createElement('div');
+      subtitleEl.className = 'stack-subtitle';
+      subtitleEl.textContent = subtitle;
+      card.appendChild(subtitleEl);
+    }
+    const rowsWrap = document.createElement('div');
+    rowsWrap.className = 'stack-rows';
+    if (!rows.length) {
+      const emptyEl = document.createElement('div');
+      emptyEl.className = 'stack-empty';
+      emptyEl.textContent = 'empty';
+      rowsWrap.appendChild(emptyEl);
+    } else {
+      rows.forEach((row, rowIdx) => {
+        const rowStateKey = `${cardStateKey}|${row?.name || ''}|${rowIdx}`;
+        rowsWrap.appendChild(createRow(row, rowStateKey, rowIdx, meta.frameKey, meta.stepIndex));
+      });
+    }
+    card.appendChild(rowsWrap);
+    stackView.appendChild(card);
+    return card;
+  };
+
+  addCard('globals', 'module scope', globals);
+  frames.forEach((frame, frameIdx) => {
+    const key = frameKey(frame, frameIdx);
+    const card = addCard(
+      `${frame?.name || 'function'}()`,
+      `${frame?.filename || ''}:${frame?.lineno ?? '-'}`,
+      Array.isArray(frame?.locals) ? frame.locals : [],
+      { frameKey: key, stepIndex }
+    );
+    card.classList.add('interactive');
+    card.setAttribute('data-frame-key', key);
+    card.setAttribute('data-step-index', String(stepIndex));
+    card.addEventListener('mouseenter', () => {
+      setHoveredLine(frame?.lineno, key);
+    });
+    card.addEventListener('mouseleave', () => {
+      if (hoveredFrameKey === key) {
+        clearHoveredLine();
+      }
+    });
+    card.addEventListener('click', () => {
+      selectedFrameKey = key;
+      jumpToStep(stepIndex);
+      setHoveredLine(frame?.lineno, key);
+    });
+    card.addEventListener('contextmenu', (evt) => {
+      evt.preventDefault();
+      selectedFrameKey = null;
+      renderStep(current);
+    });
+  });
+  if (!globals.length && !frames.length) {
+    const emptyEl = document.createElement('div');
+    emptyEl.className = 'stack-empty';
+    emptyEl.textContent = 'no runtime stack data';
+    stackView.appendChild(emptyEl);
+  }
+
+  syncStackHighlights();
+}
+
+function renderStep(i) {
+  if (!DISPLAY_INDICES.length) return;
+  current = Math.max(0, Math.min(i, DISPLAY_INDICES.length - 1));
+  hoveredLine = null;
+  hoveredFrameKey = null;
+  const ri = toReal(current);
+  const s = STEPS[ri];
+  const graphData = applyStepHighlights(cloneGraphData(s.graph), ri);
+  const frames = getStepFrames(current);
+  if (frames.length) {
+    const hasSelection = selectedFrameKey && frames.some((frame, idx) => frameKey(frame, idx) === selectedFrameKey);
+    if (!hasSelection) {
+      selectedFrameKey = null;
+    }
+  } else {
+    selectedFrameKey = null;
+  }
+  renderStackPanel(s.stack, current);
+
+  if (!graph) {
+    initGraph(graphData);
+  } else {
+    const prepared = prepareGraphForLayout(graphData, getGraphSize());
+    const nextLayout = prepared.layout;
+    if (typeof graph.setOptions === 'function') {
+      graph.setOptions({ layout: nextLayout });
+    } else if (typeof graph.setLayout === 'function') {
+      graph.setLayout(nextLayout);
+    }
+    graph.setData(prepared.data);
+    if (typeof graph.once === 'function') {
+      graph.once('afterlayout', refreshGraphVisuals);
+      graph.once('afterrender', refreshGraphVisuals);
+    }
+    graph.render();
+  }
+
+  syncCodeHighlights(true);
+  syncStackHighlights();
+}
+
+const ICONS = {
+  prev: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>',
+  next: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>',
+  stepBack: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 10 20 15 15 20"></polyline><path d="M4 4v7a4 4 0 0 0 4 4h16"></path></svg>',
+  stepOver: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 10 4 15 9 20"></polyline><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg>',
+  stepOut: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>',
+  runToLine: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5l14 7-14 7V5z"></path></svg>',
+  paneLeft: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>',
+  paneRight: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>',
+};
+
+function setIconButton(button, icon, label) {
+  if (!button) return;
+  button.classList.add('icon-btn');
+  button.innerHTML = ICONS[icon] || '';
+  button.title = label;
+  button.setAttribute('aria-label', label);
+}
+
+setIconButton(document.getElementById('prevStepBtn'), 'prev', '上一个执行步骤');
+setIconButton(document.getElementById('stepBackBtn'), 'stepBack', '返回上一行（同函数内）');
+setIconButton(document.getElementById('stepOverBtn'), 'stepOver', '执行下一行（同函数内）');
+setIconButton(document.getElementById('nextStepBtn'), 'next', '下一个执行步骤');
+setIconButton(document.getElementById('stepOutBtn'), 'stepOut', '跳出当前函数');
+setIconButton(document.getElementById('runToLineBtn'), 'runToLine', '运行到指定行');
+
+document.getElementById('prevStepBtn').addEventListener('click', () => jumpToStep(current - 1));
+document.getElementById('stepBackBtn').addEventListener('click', () => jumpToStep(findStepBackIndex()));
+document.getElementById('stepOverBtn').addEventListener('click', () => advanceStep(findStepOverIndex()));
+document.getElementById('nextStepBtn').addEventListener('click', () => jumpToStep(current + 1));
+document.getElementById('stepOutBtn').addEventListener('click', () => advanceStep(findStepOutIndex()));
+document.getElementById('runToLineBtn').addEventListener('click', () => {
+  const raw = Number(document.getElementById('runLineInput').value);
+  if (!Number.isFinite(raw)) return;
+  advanceStep(findNextLineStep(raw));
+});
+const stepInput = document.getElementById('stepInput');
+stepInput.addEventListener('change', () => {
+  const raw = Number(stepInput.value);
+  if (!Number.isFinite(raw)) return;
+  advanceStep(raw - 1);
+});
+stepInput.addEventListener('keydown', (evt) => {
+  if (evt.key !== 'Enter') return;
+  const raw = Number(stepInput.value);
+  if (!Number.isFinite(raw)) return;
+  advanceStep(raw - 1);
+});
+window.addEventListener('keydown', (evt) => {
+  if (evt.key !== 'ArrowLeft' && evt.key !== 'ArrowRight') return;
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
+  if (evt.key === 'ArrowLeft') {
+    evt.preventDefault();
+    jumpToStep(current - 1);
+    return;
+  }
+  evt.preventDefault();
+  jumpToStep(current + 1);
+});
+window.addEventListener('keydown', (evt) => {
+  if (evt.key !== 'Escape') return;
+  clearHoveredLine();
+});
+const autoFitToggle = document.getElementById('autoFitToggle');
+if (autoFitToggle) {
+  autoFitToggle.addEventListener('change', () => {
+    if (autoFitToggle.checked) {
+      fitGraph();
+    }
+  });
+}
+
+// Show/hide line-navigation buttons based on breakpoint state
+(function initBreakpointUI() {
+  const bpInfo = document.getElementById('breakpointInfo');
+  const stepBackBtn = document.getElementById('stepBackBtn');
+  const stepOverBtn = document.getElementById('stepOverBtn');
+  const runLineInput = document.getElementById('runLineInput');
+  const runToLineBtn = document.getElementById('runToLineBtn');
+
+  if (!BREAKPOINTS_ENABLED) {
+    if (stepBackBtn) stepBackBtn.style.display = 'none';
+    if (stepOverBtn) stepOverBtn.style.display = 'none';
+    if (runLineInput) runLineInput.style.display = 'none';
+    if (runToLineBtn) runToLineBtn.style.display = 'none';
+    if (bpInfo) bpInfo.textContent = 'breakpoints disabled — line-nav hidden';
+  }
+})();
+
+const stackRestoreBtn = document.getElementById('stackRestoreBtn');
+if (stackRestoreBtn) {
+  setIconButton(stackRestoreBtn, 'paneRight', '显示左侧栈面板');
+  stackRestoreBtn.addEventListener('click', () => {
+    PANEL_STATE.stackVisible = true;
+    setPaneVisible('stack', true, '隐藏', '恢复');
+  });
+}
+
+const rightRestoreBtn = document.getElementById('rightRestoreBtn');
+if (rightRestoreBtn) {
+  setIconButton(rightRestoreBtn, 'paneLeft', '显示右侧代码面板');
+  rightRestoreBtn.addEventListener('click', () => {
+    PANEL_STATE.codeVisible = true;
+    setPaneVisible('right', true, '隐藏', '恢复');
+  });
+}
+
+const rootElement = getRootElement();
+if (rootElement) {
+  rootElement.addEventListener('mousemove', (evt) => {
+    const rect = rootElement.getBoundingClientRect();
+    const leftDist = evt.clientX - rect.left;
+    const rightDist = rect.right - evt.clientX;
+    rootElement.classList.toggle('edge-near-left', !PANEL_STATE.stackVisible && leftDist <= EDGE_HIDE_CONFIG.nearEdgeGlowPx);
+    rootElement.classList.toggle('edge-near-right', !PANEL_STATE.codeVisible && rightDist <= EDGE_HIDE_CONFIG.nearEdgeGlowPx);
+  });
+  rootElement.addEventListener('mouseleave', () => {
+    rootElement.classList.remove('edge-near-left');
+    rootElement.classList.remove('edge-near-right');
+  });
+}
+
+const stackToggleBtn = document.getElementById('stackToggleBtn');
+if (stackToggleBtn) {
+  stackToggleBtn.addEventListener('click', () => {
+    PANEL_STATE.stackVisible = !PANEL_STATE.stackVisible;
+    setPaneVisible('stack', PANEL_STATE.stackVisible, '隐藏', '恢复');
+  });
+}
+
+const codeToggleBtn = document.getElementById('codeToggleBtn');
+if (codeToggleBtn) {
+  codeToggleBtn.addEventListener('click', () => {
+    PANEL_STATE.codeVisible = !PANEL_STATE.codeVisible;
+    setPaneVisible('right', PANEL_STATE.codeVisible, '隐藏', '恢复');
+  });
+}
+
+setPaneVisible('stack', PANEL_STATE.stackVisible, '隐藏', '恢复');
+setPaneVisible('right', PANEL_STATE.codeVisible, '隐藏', '恢复');
+
+bindHorizontalResizer('stackResizeHandle', (clientX) => {
+  if (!PANEL_STATE.stackVisible) return;
+  const root = getRootElement();
+  if (!root) return;
+  const rect = root.getBoundingClientRect();
+  if (clientX - rect.left <= EDGE_HIDE_CONFIG.hideThresholdPx) {
+    PANEL_STATE.stackVisible = false;
+    setPaneVisible('stack', false, '隐藏', '恢复');
+    return;
+  }
+  setStackWidthPx(clientX - rect.left);
+});
+
+bindHorizontalResizer('rightResizeHandle', (clientX) => {
+  if (!PANEL_STATE.codeVisible) return;
+  const root = getRootElement();
+  if (!root) return;
+  const rect = root.getBoundingClientRect();
+  if (rect.right - clientX <= EDGE_HIDE_CONFIG.hideThresholdPx) {
+    PANEL_STATE.codeVisible = false;
+    setPaneVisible('right', false, '隐藏', '恢复');
+    return;
+  }
+  setRightWidthPx(rect.right - clientX);
+});
+
+updateResizeHandleState();
+
+renderAllCode();
+computeStepDiffs();
+renderStep(0);
+</script>
+</body>
+</html>
