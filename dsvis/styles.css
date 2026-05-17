@@ -269,3 +269,65 @@
   #runLineInput { width:72px; padding:4px 6px; font-size:14px; font-family:Consolas, monospace; }
   #autoFitWrap { margin-left:auto; font-size:13px; user-select:none; display:flex; align-items:center; gap:6px; }
   #breakpointInfo { color:#6b7280; font-size:12px; }
+
+  /* ---------- hidden nodes panel ---------- */
+  #hiddenNodesPanel {
+    max-height:0;
+    overflow:hidden;
+    transition: max-height 200ms ease;
+    background:#f5f7fb;
+  }
+  #hiddenNodesPanel.open {
+    max-height:200px;
+  }
+  #hiddenNodesPanel .pane-header {
+    background:#fef0f0;
+    border-bottom:1px solid #f5c6cb;
+  }
+  #hiddenNodesPanel .pane-title {
+    color:#8b2525;
+  }
+  #hiddenNodesList {
+    padding:8px;
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px;
+    overflow-y:auto;
+    max-height:150px;
+  }
+  .hidden-node-item {
+    display:inline-block;
+    padding:3px 10px;
+    background:#fff;
+    border:1px solid #e0c0c0;
+    border-radius:12px;
+    font-size:12px;
+    font-family:Consolas, monospace;
+    color:#7a1a1a;
+    cursor:pointer;
+    user-select:none;
+  }
+  .hidden-node-item:hover {
+    background:#fef0f0;
+    border-color:#c03030;
+    color:#a02020;
+  }
+  #hiddenNodesBtn {
+    position:relative;
+  }
+  #hiddenNodesBtn::after {
+    content: attr(data-count);
+    position:absolute;
+    top:-4px;
+    right:-6px;
+    background:#e04040;
+    color:#fff;
+    font-size:10px;
+    line-height:1;
+    padding:2px 5px;
+    border-radius:8px;
+    display:none;
+  }
+  #hiddenNodesBtn.has-count::after {
+    display:block;
+  }

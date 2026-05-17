@@ -78,6 +78,12 @@ def _resolve_object_fields(owner, obj, item_map, obj_id,
     for mapping in bind_groups.values():
         bound_fields.update(mapping.keys())
 
+    # Track which bound fields were actually handled by a bind-group block.
+    # Non-container bound fields (e.g. tree node references) can't be animated
+    # and must fall through to unbound processing instead of being silently
+    # dropped.
+    actually_bound: set[str] = set()
+
     # ---------- bind-group animation blocks ----------
     for group_name, mapping in bind_groups.items():
         ordered_fields = [attr for attr in mapping.keys() if attr in item_map]
@@ -95,6 +101,9 @@ def _resolve_object_fields(owner, obj, item_map, obj_id,
             }
         if len(bound_streams) < 2:
             continue
+        for attr in ordered_fields:
+            if attr in bound_streams:
+                actually_bound.add(attr)
         block_index = 0
         progressed = True
         while progressed:
@@ -120,7 +129,7 @@ def _resolve_object_fields(owner, obj, item_map, obj_id,
 
     # ---------- unbound fields ----------
     for attr, val in item_map.items():
-        if attr in bound_fields:
+        if attr in actually_bound:
             continue
         if is_primitive(val):
             _append_field(owner, attr, val)

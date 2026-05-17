@@ -46,11 +46,19 @@ __STYLES__
         <input id="runLineInput" type="number" min="1" step="1" />
         <button id="runToLineBtn">Go</button>
       </span>
+      <button id="hiddenNodesBtn" class="icon-btn" type="button" title="隐藏节点列表">👁</button>
       <span id="breakpointInfo">breakpoints: click line numbers, forward navigation stops on hits</span>
       <label id="autoFitWrap">
         <input id="autoFitToggle" type="checkbox" checked />
         自动缩放
       </label>
+    </div>
+    <div id="hiddenNodesPanel">
+      <div class="pane-header">
+        <span class="pane-title">隐藏节点</span>
+        <button id="hiddenNodesCloseBtn" class="pane-toggle" type="button">关闭</button>
+      </div>
+      <div id="hiddenNodesList"></div>
     </div>
   </div>
   <button id="stackRestoreBtn" class="edge-toggle edge-toggle-left" type="button" title="显示左侧栈面板" aria-label="显示左侧栈面板"></button>
@@ -77,6 +85,8 @@ let hoveredFrameKey = null;
 let selectedFrameKey = null;
 const BREAKPOINTS = new Set();
 const BREAKPOINTS_ENABLED = __BREAKPOINTS_ENABLED__;
+const HIDDEN_NODES = new Set();  // Set of hidden node IDs
+let hiddenPanelVisible = false;
 const LAYOUT_PRESET = {
   minNodeWidth: 120,
   minNodeHeight: 60,
@@ -908,6 +918,18 @@ function initGraph(data) {
   graph.on('element:dragstart', onDragStart);
   graph.on('element:drag', onDragMove);
   graph.on('element:dragend', onDragEnd);
+  // Right-click on node → hide it and suppress browser context menu.
+  // Right-click on empty canvas → normal browser menu (save image, etc.).
+  graph.on('node:pointerup', (evt) => {
+    const orig = evt?.originalEvent || evt?.nativeEvent || {};
+    if (orig.button !== 2) return;
+    // Suppress browser context menu on this node
+    (orig.preventDefault || (() => {})).call(orig);
+    (orig.stopPropagation || (() => {})).call(orig);
+    if (typeof evt.preventDefault === 'function') evt.preventDefault();
+    const nodeId = evt?.target?.id || evt?.item?.id || evt?.data?.id;
+    if (nodeId) hideNode(String(nodeId));
+  });
 
   if (typeof graph.once === 'function') {
     graph.once('afterlayout', refreshGraphVisuals);
@@ -1677,6 +1699,64 @@ function renderStackPanel(stackData, stepIndex) {
   syncStackHighlights();
 }
 
+function filterHiddenNodes(graphData) {
+  if (!HIDDEN_NODES.size) return graphData;
+  const hiddenSet = new Set(HIDDEN_NODES);
+  const nodes = (Array.isArray(graphData?.nodes) ? graphData.nodes : [])
+    .filter((n) => !hiddenSet.has(String(n.id)));
+  const visibleIds = new Set(nodes.map((n) => String(n.id)));
+  const edges = (Array.isArray(graphData?.edges) ? graphData.edges : [])
+    .filter((e) => visibleIds.has(String(e.source)) && visibleIds.has(String(e.target)));
+  return { ...(graphData || {}), nodes, edges };
+}
+
+function hideNode(nodeId) {
+  HIDDEN_NODES.add(String(nodeId));
+  syncHiddenPanel();
+  renderStep(current);
+}
+
+function restoreNode(nodeId) {
+  HIDDEN_NODES.delete(String(nodeId));
+  syncHiddenPanel();
+  renderStep(current);
+}
+
+function toggleHiddenPanel() {
+  hiddenPanelVisible = !hiddenPanelVisible;
+  const panel = document.getElementById('hiddenNodesPanel');
+  if (panel) panel.classList.toggle('open', hiddenPanelVisible);
+  const btn = document.getElementById('hiddenNodesBtn');
+  if (btn) btn.classList.toggle('active', hiddenPanelVisible);
+}
+
+function syncHiddenPanel() {
+  const list = document.getElementById('hiddenNodesList');
+  const btn = document.getElementById('hiddenNodesBtn');
+  if (btn) {
+    btn.setAttribute('data-count', HIDDEN_NODES.size);
+    btn.classList.toggle('has-count', HIDDEN_NODES.size > 0);
+    btn.title = HIDDEN_NODES.size ? `隐藏节点 (${HIDDEN_NODES.size}个)` : '隐藏节点列表';
+  }
+  if (!list) return;
+  list.innerHTML = '';
+  if (!HIDDEN_NODES.size) {
+    const empty = document.createElement('div');
+    empty.className = 'stack-empty';
+    empty.textContent = '没有隐藏的节点（右键点击图节点可隐藏）';
+    list.appendChild(empty);
+    return;
+  }
+  for (const id of HIDDEN_NODES) {
+    const item = document.createElement('div');
+    item.className = 'hidden-node-item';
+    item.textContent = String(id);
+    item.title = '点击恢复显示';
+    item.addEventListener('click', () => restoreNode(id));
+    list.appendChild(item);
+  }
+}
+
 function renderStep(i) {
   if (!DISPLAY_INDICES.length) return;
   current = Math.max(0, Math.min(i, DISPLAY_INDICES.length - 1));
@@ -1684,7 +1764,8 @@ function renderStep(i) {
   hoveredFrameKey = null;
   const ri = toReal(current);
   const s = STEPS[ri];
-  const graphData = applyStepHighlights(cloneGraphData(s.graph), ri);
+  const rawGraph = applyStepHighlights(cloneGraphData(s.graph), ri);
+  const graphData = filterHiddenNodes(rawGraph);
   const frames = getStepFrames(current);
   if (frames.length) {
     const hasSelection = selectedFrameKey && frames.some((frame, idx) => frameKey(frame, idx) === selectedFrameKey);
@@ -1885,6 +1966,17 @@ bindHorizontalResizer('rightResizeHandle', (clientX) => {
   }
   setRightWidthPx(rect.right - clientX);
 });
+
+// Hidden nodes toggle button
+const hiddenNodesBtn = document.getElementById('hiddenNodesBtn');
+if (hiddenNodesBtn) {
+  hiddenNodesBtn.addEventListener('click', toggleHiddenPanel);
+}
+const hiddenNodesCloseBtn = document.getElementById('hiddenNodesCloseBtn');
+if (hiddenNodesCloseBtn) {
+  hiddenNodesCloseBtn.addEventListener('click', toggleHiddenPanel);
+}
+syncHiddenPanel();
 
 updateResizeHandleState();
 
