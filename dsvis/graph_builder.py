@@ -199,7 +199,9 @@ def walk_graph(
             "type": typename(obj),
             "rows": [],
             "refs": [],
-            "class_name": type(obj).__name__ if obj else "NoneType",
+            # Avoid truthiness checks here: bool(obj) may call user __len__
+            # while objects are still being initialized.
+            "class_name": type(obj).__name__ if obj is not None else "NoneType",
             "is_class_object": is_class_object(obj),
         }
         if value_text is not None:

@@ -205,12 +205,6 @@ DSVis/
 │   ├── styles.css           # 前端样式
 │   ├── template.html        # 前端骨架
 │   └── runtime/             # 运行时（AST 插桩 + 调度）
-├── demo_btree.py            # B 树示例
-├── demo_bubble.py           # 冒泡排序示例
-├── demo_hash.py             # 哈希表示例
-├── demo_queue.py            # 队列示例
-├── demo_stack.py            # 栈示例
-├── demo_longlist.py         # 长链表示例
 └── README.md
 ```
 

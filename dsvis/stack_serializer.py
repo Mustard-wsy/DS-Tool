@@ -182,17 +182,18 @@ def serialize_runtime_stack(caller_frame, include_private=False):
     globals_source = frames[-1].f_globals
     stack_frames = []
     for frame in reversed(frames):
-        if frame.f_code.co_name == "<module>":
-            continue
+        is_module = frame.f_code.co_name == "<module>"
+        params = None if is_module else _frame_parameter_names(frame)
         stack_frames.append({
-            "name": frame.f_code.co_name,
+            "name": "(main)" if is_module else frame.f_code.co_name,
             "lineno": frame.f_lineno,
             "filename": Path(frame.f_code.co_filename).name,
             "locals": serialize_scope_rows(
                 frame.f_locals,
                 include_private=include_private,
-                preferred_order=_frame_parameter_names(frame),
+                preferred_order=params,
             ),
+            "kind": "module" if is_module else "function",
         })
 
     return {

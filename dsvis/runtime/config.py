@@ -1,8 +1,8 @@
 import os
 
-_MODE = os.environ.get("DSVIS_MODE", "line").strip().lower()
+_MODE = os.environ.get("DSVIS_MODE", "coarse").strip().lower()
 if _MODE not in {"coarse", "fine", "line"}:
-    _MODE = "line"
+    _MODE = "coarse"
 
 _WATCH_STACK = []
 _GLOBAL_WATCH_VARS = set()

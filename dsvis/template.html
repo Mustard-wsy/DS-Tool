@@ -148,7 +148,12 @@ function frameKey(frame, frameIndex) {
 function getCurrentLine(stepIndex = current) {
   const frame = getDeepestFrame(stepIndex);
   const frameLine = Number(frame?.lineno);
-  return Number.isFinite(frameLine) && frameLine > 0 ? frameLine : 1;
+  if (Number.isFinite(frameLine) && frameLine > 0) return frameLine;
+  
+  // 如果 frame 无效，回退使用步骤本身的 lineno，而不是硬编码的 1
+  const step = STEPS[toReal(stepIndex)];
+  const stepLine = Number(step?.lineno);
+  return Number.isFinite(stepLine) && stepLine > 0 ? stepLine : 1;
 }
 
 function getFocusedLine(stepIndex = current) {
@@ -1632,8 +1637,10 @@ function renderStackPanel(stackData, stepIndex) {
   addCard('globals', 'module scope', globals);
   frames.forEach((frame, frameIdx) => {
     const key = frameKey(frame, frameIdx);
+    const isModule = frame?.kind === 'module';
+    const title = isModule ? (frame?.name || 'main') : `${frame?.name || 'function'}()`;
     const card = addCard(
-      `${frame?.name || 'function'}()`,
+      title,
       `${frame?.filename || ''}:${frame?.lineno ?? '-'}`,
       Array.isArray(frame?.locals) ? frame.locals : [],
       { frameKey: key, stepIndex }
