@@ -331,3 +331,58 @@
   #hiddenNodesBtn.has-count::after {
     display:block;
   }
+
+  /* ---------- settings panel ---------- */
+  #settingsPanel {
+    max-height:0;
+    overflow:hidden;
+    transition: max-height 200ms ease;
+    background:#f5f7fb;
+  }
+  #settingsPanel.open {
+    max-height:180px;
+  }
+  #settingsPanel .pane-header {
+    background:#e8f0fe;
+    border-bottom:1px solid #c8d6f5;
+  }
+  #settingsPanel .pane-title {
+    color:#0f2c63;
+  }
+  #settingsBody {
+    padding:10px 12px;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+  }
+  .settings-row {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    font-size:13px;
+    color:#333;
+    user-select:none;
+  }
+  .settings-row select,
+  .settings-row input[type=checkbox] {
+    font-size:13px;
+    font-family:Consolas, monospace;
+  }
+  .settings-actions {
+    display:flex;
+    justify-content:flex-end;
+    gap:8px;
+  }
+  .settings-actions button {
+    padding:4px 16px;
+    font-size:13px;
+    border:1px solid #b8c7e6;
+    background:#fff;
+    color:#25457a;
+    border-radius:4px;
+    cursor:pointer;
+  }
+  .settings-actions button:hover {
+    background:#e8f0fe;
+    border-color:#94add7;
+  }

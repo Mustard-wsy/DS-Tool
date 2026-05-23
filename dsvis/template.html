@@ -47,6 +47,7 @@ __STYLES__
         <button id="runToLineBtn">Go</button>
       </span>
       <button id="hiddenNodesBtn" class="icon-btn" type="button" title="隐藏节点列表">👁</button>
+      <button id="settingsBtn" class="icon-btn" type="button" title="样式设置">⚙</button>
       <span id="breakpointInfo">breakpoints: click line numbers, forward navigation stops on hits</span>
       <label id="autoFitWrap">
         <input id="autoFitToggle" type="checkbox" checked />
@@ -59,6 +60,28 @@ __STYLES__
         <button id="hiddenNodesCloseBtn" class="pane-toggle" type="button">关闭</button>
       </div>
       <div id="hiddenNodesList"></div>
+    </div>
+    <div id="settingsPanel">
+      <div class="pane-header">
+        <span class="pane-title">样式设置</span>
+        <button id="settingsCloseBtn" class="pane-toggle" type="button">关闭</button>
+      </div>
+      <div id="settingsBody">
+        <label class="settings-row">
+          <span>文本方向</span>
+          <select id="settingsTextFlow">
+            <option value="horizontal">横向</option>
+            <option value="vertical">纵向</option>
+          </select>
+        </label>
+        <label class="settings-row">
+          <span>显示类型标注</span>
+          <input id="settingsShowSubtitle" type="checkbox" />
+        </label>
+        <div class="settings-actions">
+          <button id="settingsApplyBtn" type="button">Apply</button>
+        </div>
+      </div>
     </div>
   </div>
   <button id="stackRestoreBtn" class="edge-toggle edge-toggle-left" type="button" title="显示左侧栈面板" aria-label="显示左侧栈面板"></button>
@@ -88,6 +111,51 @@ const BREAKPOINTS = new Set();
 const BREAKPOINTS_ENABLED = __BREAKPOINTS_ENABLED__;
 const HIDDEN_NODES = new Map();  // Map<nodeId, label> — hidden nodes
 let hiddenPanelVisible = false;
+
+// ── Visualisation configuration ──
+const VIS_CONFIG_STORAGE_KEY = 'dsvis:config';
+const DEFAULT_VIS_CONFIG = {
+  textFlow: 'horizontal',
+  showSubtitle: true,
+};
+
+function loadVisConfig() {
+  try {
+    const raw = localStorage.getItem(VIS_CONFIG_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_VIS_CONFIG };
+    const parsed = JSON.parse(raw);
+    // Merge: only accept known keys, fall back to defaults for missing/invalid
+    const merged = { ...DEFAULT_VIS_CONFIG };
+    for (const key of Object.keys(DEFAULT_VIS_CONFIG)) {
+      if (key in parsed && typeof parsed[key] === typeof DEFAULT_VIS_CONFIG[key]) {
+        merged[key] = parsed[key];
+      }
+    }
+    return merged;
+  } catch (_) {
+    return { ...DEFAULT_VIS_CONFIG };
+  }
+}
+
+function saveVisConfig(config) {
+  try {
+    localStorage.setItem(VIS_CONFIG_STORAGE_KEY, JSON.stringify(config));
+  } catch (_) { /* storage unavailable — silently ignore */ }
+}
+
+/** Apply VIS_CONFIG changes and re-render. Usable from devtools:
+ *  > VIS_CONFIG.textFlow = 'vertical'; applyVisConfig();
+ */
+function applyVisConfig() {
+  saveVisConfig(VIS_CONFIG);
+  if (currentRaw != null) {
+    renderStepRaw(currentRaw);
+  } else {
+    renderStep(current);
+  }
+}
+
+const VIS_CONFIG = loadVisConfig();
 const LAYOUT_PRESET = {
   minNodeWidth: 120,
   minNodeHeight: 60,
@@ -783,7 +851,7 @@ function initGraph(data) {
       this.__prevHeaderLineCount = headerLines.length;
 
       // ── subtitle ──
-      const showSubtitle = attributes.showSubtitle;
+      const showSubtitle = VIS_CONFIG.showSubtitle && attributes.showSubtitle;
       const subtitleText = attributes.subtitle || '';
       const subtitleY = -h/2 + paddingY + 2 + headerLines.length * 14;
       this.upsert('subtitle', 'text', {
@@ -802,7 +870,7 @@ function initGraph(data) {
       };
 
       // ── text-flow dispatch ──
-      const textFlow = attributes.textFlow || 'horizontal';
+      const textFlow = VIS_CONFIG.textFlow;
 
       if (textFlow === 'vertical') {
         const contentTop = -h / 2 + headerH + paddingY;
@@ -2105,6 +2173,44 @@ if (hiddenNodesCloseBtn) {
   hiddenNodesCloseBtn.addEventListener('click', toggleHiddenPanel);
 }
 syncHiddenPanel();
+
+// ── Settings panel ──
+let settingsPanelVisible = false;
+
+function toggleSettingsPanel() {
+  settingsPanelVisible = !settingsPanelVisible;
+  const panel = document.getElementById('settingsPanel');
+  if (panel) panel.classList.toggle('open', settingsPanelVisible);
+  if (settingsPanelVisible) syncSettingsPanel();
+}
+
+function syncSettingsPanel() {
+  const sel = document.getElementById('settingsTextFlow');
+  const cb = document.getElementById('settingsShowSubtitle');
+  if (sel) sel.value = VIS_CONFIG.textFlow;
+  if (cb) cb.checked = VIS_CONFIG.showSubtitle;
+}
+
+function applySettings() {
+  const sel = document.getElementById('settingsTextFlow');
+  const cb = document.getElementById('settingsShowSubtitle');
+  if (sel) VIS_CONFIG.textFlow = sel.value;
+  if (cb) VIS_CONFIG.showSubtitle = cb.checked;
+  applyVisConfig();
+}
+
+const settingsBtn = document.getElementById('settingsBtn');
+if (settingsBtn) {
+  settingsBtn.addEventListener('click', toggleSettingsPanel);
+}
+const settingsCloseBtn = document.getElementById('settingsCloseBtn');
+if (settingsCloseBtn) {
+  settingsCloseBtn.addEventListener('click', toggleSettingsPanel);
+}
+const settingsApplyBtn = document.getElementById('settingsApplyBtn');
+if (settingsApplyBtn) {
+  settingsApplyBtn.addEventListener('click', applySettings);
+}
 
 updateResizeHandleState();
 
