@@ -93,3 +93,7 @@ docs/
 
 #demo
 demo/
+
+.scratch/
+
+CONTEXT.md
