@@ -6,7 +6,90 @@ Also handles HTML generation (``render_debugger()``).
 import json
 import tempfile
 import webbrowser
+from dataclasses import dataclass, field
 from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# Node style system
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TextLayoutConfig:
+    """Pixel-level text layout constants for card rendering.
+
+    These are the *source of truth* for all card dimension calculations.
+    The frontend currently also hardcodes its own copies; future work
+    should make it consume these from the node style payload.
+    """
+    padding_x: int = 10
+    padding_y: int = 8
+    row_h: int = 18
+    default_header_h: int = 22
+    section_gap: int = 6
+    min_card_w: int = 100
+    max_card_w: int = 280
+    char_px: float = 6.0
+
+
+@dataclass
+class PortLayoutDescriptor:
+    """Data-driven port naming so ``resolvePortsForEdge`` in JS doesn't branch on rankdir.
+
+    ``entry``:  [port_when_target_is_right_or_below,  port_when_target_is_left_or_above]
+    ``ref``:    per-ref-row  [port_when_source_is_right_or_below,  port_when_source_is_left_or_above]
+    """
+    direction: str            # "LR" | "TB"
+    entry: list[str]          # len=2, ordered [positive, negative]
+    ref: list[dict] = field(default_factory=list)  # [{"idx": 3, "ports": ["pr3","pl3"]}, ...]
+
+
+@dataclass
+class NodeStyle:
+    """All visual metadata for a single G6 card node.
+
+    Serialized via ``to_dict()`` into the ``style`` block that
+    ``CardNode.drawKeyShape`` and ``resolvePortsForEdge`` consume.
+    """
+    size: tuple[int, int]
+    name: str
+    header_height: int
+    rows: list[str]
+    row_bind_groups: list
+    row_bind_blocks: list
+    ref_row_indices: list[int]
+    ref_label_map: dict
+    section_gap: int
+    ports: list[dict]
+    port_layout: PortLayoutDescriptor | None = None
+    show_subtitle: bool = False
+    subtitle: str | None = None
+    text_flow: str = "horizontal"  # "horizontal" | "vertical" (future)
+
+    def to_dict(self) -> dict:
+        d = {
+            "size": list(self.size),
+            "name": self.name,
+            "headerHeight": self.header_height,
+            "rows": self.rows,
+            "rowBindGroups": self.row_bind_groups,
+            "rowBindBlocks": self.row_bind_blocks,
+            "refRowIndices": self.ref_row_indices,
+            "refLabelMap": self.ref_label_map,
+            "sectionGap": self.section_gap,
+            "ports": self.ports,
+            "textFlow": self.text_flow,
+        }
+        if self.port_layout is not None:
+            d["portLayout"] = {
+                "direction": self.port_layout.direction,
+                "entry": self.port_layout.entry,
+                "ref": self.port_layout.ref,
+            }
+        if self.show_subtitle and self.subtitle:
+            d["showSubtitle"] = True
+            d["subtitle"] = self.subtitle
+        return d
 
 
 # ---------------------------------------------------------------------------
@@ -40,10 +123,175 @@ def _wrap_multiline(text, max_chars):
 # G6 card builder
 # ---------------------------------------------------------------------------
 
-def build_g6_data(nodes, edges, layout=None):
+def _build_ports(*, is_vertical, ref_row_indices, header_h, height, text_cfg):
+    """Return (ports_list, port_layout_descriptor)."""
+    ports = []
+    ref_entries = []
+    direction = "TB" if is_vertical else "LR"
+
+    if is_vertical:
+        num_ref_rows = len(ref_row_indices)
+        header_center_x = 0.5
+        ports = [
+            {"key": "inT", "placement": [header_center_x, 0], "r": 0, "fill": "transparent", "stroke": "transparent"},
+            {"key": "inB", "placement": [header_center_x, 1], "r": 0, "fill": "transparent", "stroke": "transparent"},
+        ]
+        for i, row_idx in enumerate(ref_row_indices):
+            if num_ref_rows > 1:
+                x = 0.1 + (0.8 * i / (num_ref_rows - 1))
+            else:
+                x = 0.5
+            ports.append({"key": f"pt{row_idx}", "placement": [x, 0], "r": 0, "fill": "transparent", "stroke": "transparent"})
+            ports.append({"key": f"pb{row_idx}", "placement": [x, 1], "r": 0, "fill": "transparent", "stroke": "transparent"})
+            ref_entries.append({"idx": row_idx, "ports": [f"pb{row_idx}", f"pt{row_idx}"]})
+        port_layout = PortLayoutDescriptor(
+            direction="TB",
+            entry=["inT", "inB"],
+            ref=ref_entries,
+        )
+    else:
+        header_center_y = (text_cfg.padding_y + header_h / 2) / height
+        ports = [
+            {"key": "inL", "placement": [0, header_center_y], "r": 0, "fill": "transparent", "stroke": "transparent"},
+            {"key": "inR", "placement": [1, header_center_y], "r": 0, "fill": "transparent", "stroke": "transparent"},
+        ]
+        for row_idx in ref_row_indices:
+            y = (text_cfg.padding_y + header_h + row_idx * text_cfg.row_h + text_cfg.row_h / 2) / height
+            ports.append({"key": f"pl{row_idx}", "placement": [0, y], "r": 0, "fill": "transparent", "stroke": "transparent"})
+            ports.append({"key": f"pr{row_idx}", "placement": [1, y], "r": 0, "fill": "transparent", "stroke": "transparent"})
+            ref_entries.append({"idx": row_idx, "ports": [f"pr{row_idx}", f"pl{row_idx}"]})
+        port_layout = PortLayoutDescriptor(
+            direction="LR",
+            entry=["inL", "inR"],
+            ref=ref_entries,
+        )
+
+    return ports, port_layout
+
+
+def _layout_horizontal_node(name, rows, subtitle_text, text_cfg):
+    """Horizontal text flow: compute card dimensions and row layout.
+
+    Returns ``(card_w, height, header_h, display_name, display_rows,
+    bind_groups, bind_blocks, ref_row_indices, ref_label_map)``.
+    """
+    raw_header_lines = str(name).splitlines() or [str(name)]
+    candidate_lengths = [len(line) for line in raw_header_lines]
+
+    if subtitle_text:
+        subtitle_lines = _wrap_multiline(subtitle_text, 999)
+        candidate_lengths.extend(len(line) for line in subtitle_lines)
+    else:
+        subtitle_lines = []
+
+    candidate_lengths.extend(len(str(r.get("text", ""))) for r in rows)
+    max_len = max(candidate_lengths) if candidate_lengths else 0
+
+    target_w = int(text_cfg.padding_x * 2 + max_len * text_cfg.char_px + 12)
+    card_w = max(text_cfg.min_card_w, min(text_cfg.max_card_w, target_w))
+    max_chars = max(10, int((card_w - text_cfg.padding_x * 2 - 6) / text_cfg.char_px))
+
+    header_lines = _wrap_multiline(name, max_chars)
+    display_name = "\n".join(header_lines)
+
+    display_rows = []
+    bind_groups = []
+    bind_blocks = []
+    ref_row_indices = []
+    ref_label_map = {}
+
+    for row in rows:
+        text = str(row.get("text", ""))
+        wrapped_lines = _wrap_multiline(text, max_chars)
+        visual_start = len(display_rows)
+        for line in wrapped_lines:
+            display_rows.append(line)
+            bind_groups.append(row.get("bind_group"))
+            bind_blocks.append(row.get("bind_block"))
+        if row.get("kind") == "ref":
+            ref_row_indices.append(visual_start)
+            if text not in ref_label_map:
+                ref_label_map[text] = visual_start
+
+    header_line_count = max(1, len(header_lines))
+    header_h = max(text_cfg.default_header_h, header_line_count * 16)
+    if subtitle_text:
+        header_h += 14
+    height = text_cfg.padding_y * 2 + header_h + max(len(display_rows), 1) * text_cfg.row_h
+
+    return card_w, height, header_h, display_name, display_rows, bind_groups, bind_blocks, ref_row_indices, ref_label_map
+
+
+def _layout_vertical_node(name, rows, subtitle_text, text_cfg):
+    """Vertical text flow: compute card dimensions and row layout.
+
+    In vertical mode, each row becomes a column. The longest text line
+    determines card *height*; the number of rows determines card *width*.
+    """
+    raw_header_lines = str(name).splitlines() or [str(name)]
+    all_text_lens = [len(line) for line in raw_header_lines]
+
+    if subtitle_text:
+        subtitle_lines = _wrap_multiline(subtitle_text, 999)
+        all_text_lens.extend(len(line) for line in subtitle_lines)
+    else:
+        subtitle_lines = []
+
+    all_text_lens.extend(len(str(r.get("text", ""))) for r in rows)
+    max_text_len = max(all_text_lens) if all_text_lens else 0
+
+    # ── build display rows (same flattening as horizontal) ──
+    # Don't wrap in vertical mode — each source row becomes one column
+    display_rows = []
+    bind_groups = []
+    bind_blocks = []
+    ref_row_indices = []
+    ref_label_map = {}
+
+    for row in rows:
+        text = str(row.get("text", ""))
+        visual_start = len(display_rows)
+        display_rows.append(text)  # no wrapping — one column per row
+        bind_groups.append(row.get("bind_group"))
+        bind_blocks.append(row.get("bind_block"))
+        if row.get("kind") == "ref":
+            ref_row_indices.append(visual_start)
+            if text not in ref_label_map:
+                ref_label_map[text] = visual_start
+
+    # ── header ──
+    header_line_count = max(1, len(raw_header_lines))
+    header_h = max(text_cfg.default_header_h, header_line_count * 16)
+    if subtitle_text:
+        header_h += 14
+
+    # ── card dimensions ──
+    column_count = max(len(display_rows), 1)
+    # Match frontend: column width clamped to [16, …]
+    usable_w = text_cfg.max_card_w - text_cfg.padding_x * 2
+    column_w = max(16, int(usable_w / column_count))
+    card_w = max(text_cfg.min_card_w,
+                 text_cfg.padding_x * 2 + column_count * column_w)
+    # Height: header + longest text line
+    text_block_h = max_text_len * text_cfg.char_px
+    card_h = text_cfg.padding_y * 2 + header_h + max(text_block_h, text_cfg.row_h)
+
+    display_name = "\n".join(raw_header_lines)  # no wrapping
+
+    return card_w, card_h, header_h, display_name, display_rows, bind_groups, bind_blocks, ref_row_indices, ref_label_map
+
+
+def _layout_node(name, rows, subtitle_text, text_flow, text_cfg):
+    """Dispatch card layout by text flow direction."""
+    if text_flow == "vertical":
+        return _layout_vertical_node(name, rows, subtitle_text, text_cfg)
+    return _layout_horizontal_node(name, rows, subtitle_text, text_cfg)
+
+
+def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
     """Convert internal graph representation to G6 card format.
 
-    Returns ``{"nodes": [...], "edges": [...]}``.
+    *text_flow* sets the default text flow for all cards ("horizontal" | "vertical").
     """
     g6_data: dict = {"nodes": [], "edges": []}
 
@@ -52,18 +300,10 @@ def build_g6_data(nodes, edges, layout=None):
         rankdir = layout.get("rankdir", "LR")
 
     is_vertical = rankdir == "TB"
+    text_cfg = TextLayoutConfig()
 
     id_to_name: dict[str, str] = {}
     class_count: dict[str, int] = {}
-
-    padding_x = 10
-    padding_y = 8
-    row_h = 18
-    default_header_h = 22
-    section_gap = 6
-    min_card_w = 100
-    max_card_w = 280
-    char_px = 6.0
 
     for n in nodes:
         cls = n.get("class_name") or "Obj"
@@ -72,83 +312,47 @@ def build_g6_data(nodes, edges, layout=None):
         id_to_name[str(n["id"])] = name
 
         rows = n.get("rows", [])
-        raw_header_lines = str(name).splitlines() or [str(name)]
-        candidate_lengths = [len(line) for line in raw_header_lines]
-        candidate_lengths.extend(len(str(r.get("text", ""))) for r in rows)
-        max_len = max(candidate_lengths) if candidate_lengths else 0
+        subtitle_text = cls if n.get("is_class_object") else None
 
-        target_w = int(padding_x * 2 + max_len * char_px + 12)
-        card_w = max(min_card_w, min(max_card_w, target_w))
-        max_chars = max(10, int((card_w - padding_x * 2 - 6) / char_px))
+        # ── text-flow dispatch: layout card dimensions + rows ──
+        (card_w, height, header_h, display_name,
+         display_rows, bind_groups, bind_blocks,
+         ref_row_indices, ref_label_map) = _layout_node(
+            name=name, rows=rows, subtitle_text=subtitle_text,
+            text_flow=text_flow, text_cfg=text_cfg,
+        )
 
-        header_lines = _wrap_multiline(name, max_chars)
-        display_name = "\n".join(header_lines)
+        # ── ports + port layout descriptor ──
+        use_vertical_ports = is_vertical or (text_flow == "vertical")
+        ports, port_layout = _build_ports(
+            is_vertical=use_vertical_ports,
+            ref_row_indices=ref_row_indices,
+            header_h=header_h,
+            height=height,
+            text_cfg=text_cfg,
+        )
 
-        display_rows = []
-        bind_groups = []
-        bind_blocks = []
-        ref_row_indices = []
-        ref_label_map = {}
-
-        for row in rows:
-            text = str(row.get("text", ""))
-            wrapped_lines = _wrap_multiline(text, max_chars)
-            visual_start = len(display_rows)
-            for line in wrapped_lines:
-                display_rows.append(line)
-                bind_groups.append(row.get("bind_group"))
-                bind_blocks.append(row.get("bind_block"))
-            if row.get("kind") == "ref":
-                ref_row_indices.append(visual_start)
-                if text not in ref_label_map:
-                    ref_label_map[text] = visual_start
-
-        header_line_count = max(1, len(header_lines))
-        header_h = max(default_header_h, header_line_count * 16)
-
-        height = padding_y * 2 + header_h + max(len(display_rows), 1) * row_h
-
-        # ---------- ports ----------
-        if is_vertical:
-            num_ref_rows = len(ref_row_indices)
-            header_center_x = 0.5
-            ports = [
-                {"key": "inT", "placement": [header_center_x, 0], "r": 0, "fill": "transparent", "stroke": "transparent"},
-                {"key": "inB", "placement": [header_center_x, 1], "r": 0, "fill": "transparent", "stroke": "transparent"},
-            ]
-            for i, row_idx in enumerate(ref_row_indices):
-                if num_ref_rows > 1:
-                    x = 0.1 + (0.8 * i / (num_ref_rows - 1))
-                else:
-                    x = 0.5
-                ports.append({"key": f"pt{row_idx}", "placement": [x, 0], "r": 0, "fill": "transparent", "stroke": "transparent"})
-                ports.append({"key": f"pb{row_idx}", "placement": [x, 1], "r": 0, "fill": "transparent", "stroke": "transparent"})
-        else:
-            header_center_y = (padding_y + header_h / 2) / height
-            ports = [
-                {"key": "inL", "placement": [0, header_center_y], "r": 0, "fill": "transparent", "stroke": "transparent"},
-                {"key": "inR", "placement": [1, header_center_y], "r": 0, "fill": "transparent", "stroke": "transparent"},
-            ]
-            for row_idx in ref_row_indices:
-                y = (padding_y + header_h + row_idx * row_h + row_h / 2) / height
-                ports.append({"key": f"pl{row_idx}", "placement": [0, y], "r": 0, "fill": "transparent", "stroke": "transparent"})
-                ports.append({"key": f"pr{row_idx}", "placement": [1, y], "r": 0, "fill": "transparent", "stroke": "transparent"})
+        node_style = NodeStyle(
+            size=(card_w, height),
+            name=display_name,
+            header_height=header_h,
+            rows=display_rows,
+            row_bind_groups=bind_groups,
+            row_bind_blocks=bind_blocks,
+            ref_row_indices=ref_row_indices,
+            ref_label_map=ref_label_map,
+            section_gap=text_cfg.section_gap,
+            ports=ports,
+            port_layout=port_layout,
+            show_subtitle=bool(subtitle_text),
+            subtitle=subtitle_text,
+            text_flow=text_flow,
+        )
 
         g6_data["nodes"].append({
             "id": str(n["id"]),
             "type": "card",
-            "style": {
-                "size": [card_w, height],
-                "name": display_name,
-                "headerHeight": header_h,
-                "rows": display_rows,
-                "rowBindGroups": bind_groups,
-                "rowBindBlocks": bind_blocks,
-                "refRowIndices": ref_row_indices,
-                "refLabelMap": ref_label_map,
-                "sectionGap": section_gap,
-                "ports": ports,
-            },
+            "style": node_style.to_dict(),
         })
 
     # ---------- edges ----------
@@ -198,11 +402,12 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
     still available for breakpoint / line navigation.
     """
     from .dsvis import _normalize_layout  # deferred — avoids circular import
-    from .runtime.config import breakpoints_enabled
+    from .runtime.config import breakpoints_enabled, get_text_flow
 
     if display_indices is None:
         display_indices = list(range(len(steps)))
 
+    text_flow = get_text_flow()
     normalized_layout = _normalize_layout(layout)
     step_payload = []
     for idx, step in enumerate(steps, start=1):
@@ -210,7 +415,7 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
             "step": idx,
             "lineno": step.get("lineno"),
             "stack": step.get("stack", {"globals": [], "frames": []}),
-            "graph": build_g6_data(step.get("nodes", []), step.get("edges", []), normalized_layout),
+            "graph": build_g6_data(step.get("nodes", []), step.get("edges", []), normalized_layout, text_flow),
         })
 
     template_path = Path(__file__).parent / "template.html"

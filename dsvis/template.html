@@ -749,7 +749,6 @@ function initGraph(data) {
   class CardNode extends BaseNode {
     drawKeyShape(attributes, container) {
       const rankdir = (baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR';
-      const isVertical = rankdir === 'TB';
       
       const name = attributes.name || '';
       const rows = Array.isArray(attributes.rows) ? attributes.rows : [];
@@ -782,6 +781,17 @@ function initGraph(data) {
         }, container);
       }
       this.__prevHeaderLineCount = headerLines.length;
+
+      // ── subtitle ──
+      const showSubtitle = attributes.showSubtitle;
+      const subtitleText = attributes.subtitle || '';
+      const subtitleY = -h/2 + paddingY + 2 + headerLines.length * 14;
+      this.upsert('subtitle', 'text', {
+        x: -w/2 + paddingX, y: subtitleY,
+        text: showSubtitle ? subtitleText : '',
+        fontSize: 11, fill: '#888', textBaseline: 'top'
+      }, container);
+
       const rowCount = rows.length;
       const bindPalette = ['#d9ecff', '#d6f5e8', '#fbe6c8', '#e6dcff', '#ffe1ea'];
       const colorForGroup = (group) => {
@@ -791,7 +801,10 @@ function initGraph(data) {
         return bindPalette[h % bindPalette.length];
       };
 
-      if (isVertical) {
+      // ── text-flow dispatch ──
+      const textFlow = attributes.textFlow || 'horizontal';
+
+      if (textFlow === 'vertical') {
         const contentTop = -h / 2 + headerH + paddingY;
         const contentHeight = Math.max(h - headerH - paddingY * 2, 1);
         const columnCount = Math.max(rowCount, 1);
@@ -1053,28 +1066,20 @@ function resolvePortsForEdge(e, nodeMap) {
   if (!src || !tgt) return null;
   const refIndex = e.data ? e.data.refIndex : null;
   if (refIndex === null || refIndex === undefined) return null;
-  
-  const rankdir = (baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR';
-  
-  if (rankdir === 'TB') {
-    // 纵排：根据 y 坐标判断方向
-    const sy = src.style?.y ?? 0;
-    const ty = tgt.style?.y ?? 0;
-    const useTop = ty < sy;
-    return {
-      sourcePort: useTop ? `pt${refIndex}` : `pb${refIndex}`,
-      targetPort: useTop ? 'inB' : 'inT',
-    };
-  } else {
-    // 横排：根据 x 坐标判断方向
-    const sx = src.style?.x ?? 0;
-    const tx = tgt.style?.x ?? 0;
-    const useLeft = tx < sx;
-    return {
-      sourcePort: useLeft ? `pl${refIndex}` : `pr${refIndex}`,
-      targetPort: useLeft ? 'inR' : 'inL',
-    };
-  }
+
+  // Data-driven port resolution — reads portLayout from node style
+  const pl = src?.style?.portLayout;
+  if (!pl || !Array.isArray(pl.entry) || !Array.isArray(pl.ref)) return null;
+
+  const sx = src.style?.x ?? 0, tx = tgt.style?.x ?? 0;
+  const sy = src.style?.y ?? 0, ty = tgt.style?.y ?? 0;
+  const neg = pl.direction === 'TB' ? (ty < sy) : (tx < sx);
+  const ref = pl.ref.find((r) => r.idx === refIndex);
+  if (!ref || !Array.isArray(ref.ports) || ref.ports.length < 2) return null;
+  return {
+    sourcePort: neg ? ref.ports[1] : ref.ports[0],
+    targetPort: neg ? pl.entry[1] : pl.entry[0],
+  };
 }
 
 function updateEdgePorts(focusNodeId = null) {

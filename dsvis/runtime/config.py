@@ -12,6 +12,21 @@ _LAYOUT = os.environ.get("DSVIS_LAYOUT", "default")
 # collection regardless of _MODE.  When OFF, collection follows _MODE.
 _BREAKPOINTS_ENABLED = True
 
+_TEXT_FLOW = os.environ.get("DSVIS_TEXT_FLOW", "horizontal").strip().lower()
+if _TEXT_FLOW not in {"horizontal", "vertical"}:
+    _TEXT_FLOW = "horizontal"
+
+
+def get_text_flow() -> str:
+    return _TEXT_FLOW
+
+
+def set_text_flow(flow: str):
+    global _TEXT_FLOW
+    if flow not in {"horizontal", "vertical"}:
+        raise ValueError("text_flow must be 'horizontal' or 'vertical'")
+    _TEXT_FLOW = flow
+
 
 def set_mode(mode: str | None = None):
     global _MODE
