@@ -85,7 +85,7 @@ let hoveredFrameKey = null;
 let selectedFrameKey = null;
 const BREAKPOINTS = new Set();
 const BREAKPOINTS_ENABLED = __BREAKPOINTS_ENABLED__;
-const HIDDEN_NODES = new Set();  // Set of hidden node IDs
+const HIDDEN_NODES = new Map();  // Map<nodeId, label> — hidden nodes
 let hiddenPanelVisible = false;
 const LAYOUT_PRESET = {
   minNodeWidth: 120,
@@ -920,15 +920,18 @@ function initGraph(data) {
   graph.on('element:dragend', onDragEnd);
   // Right-click on node → hide it and suppress browser context menu.
   // Right-click on empty canvas → normal browser menu (save image, etc.).
-  graph.on('node:pointerup', (evt) => {
+  graph.on('node:contextmenu', (evt) => {
+    // Prevent the browser's native contextmenu from appearing
     const orig = evt?.originalEvent || evt?.nativeEvent || {};
-    if (orig.button !== 2) return;
-    // Suppress browser context menu on this node
-    (orig.preventDefault || (() => {})).call(orig);
-    (orig.stopPropagation || (() => {})).call(orig);
+    if (typeof orig.preventDefault === 'function') orig.preventDefault();
+    if (typeof orig.stopPropagation === 'function') orig.stopPropagation();
     if (typeof evt.preventDefault === 'function') evt.preventDefault();
     const nodeId = evt?.target?.id || evt?.item?.id || evt?.data?.id;
-    if (nodeId) hideNode(String(nodeId));
+    if (!nodeId) return;
+    // Extract label from G6 node data
+    const nd = graph?.getNodeData?.(String(nodeId));
+    const label = nd?.style?.name || nd?.data?.name || String(nodeId);
+    hideNode(String(nodeId), String(label));
   });
 
   if (typeof graph.once === 'function') {
@@ -1701,7 +1704,7 @@ function renderStackPanel(stackData, stepIndex) {
 
 function filterHiddenNodes(graphData) {
   if (!HIDDEN_NODES.size) return graphData;
-  const hiddenSet = new Set(HIDDEN_NODES);
+  const hiddenSet = new Set(HIDDEN_NODES.keys());
   const nodes = (Array.isArray(graphData?.nodes) ? graphData.nodes : [])
     .filter((n) => !hiddenSet.has(String(n.id)));
   const visibleIds = new Set(nodes.map((n) => String(n.id)));
@@ -1710,8 +1713,14 @@ function filterHiddenNodes(graphData) {
   return { ...(graphData || {}), nodes, edges };
 }
 
-function hideNode(nodeId) {
-  HIDDEN_NODES.add(String(nodeId));
+function hideNode(nodeId, label) {
+  const id = String(nodeId);
+  // Look up label from current graph if not provided
+  if (!label && graph) {
+    const nd = graph.getNodeData?.(id);
+    label = nd?.style?.name || nd?.data?.name || id;
+  }
+  HIDDEN_NODES.set(id, label || id);
   syncHiddenPanel();
   renderStep(current);
 }
@@ -1747,11 +1756,11 @@ function syncHiddenPanel() {
     list.appendChild(empty);
     return;
   }
-  for (const id of HIDDEN_NODES) {
+  for (const [id, label] of HIDDEN_NODES) {
     const item = document.createElement('div');
     item.className = 'hidden-node-item';
-    item.textContent = String(id);
-    item.title = '点击恢复显示';
+    item.textContent = String(label);
+    item.title = `恢复显示: ${String(label)}`;
     item.addEventListener('click', () => restoreNode(id));
     list.appendChild(item);
   }
