@@ -182,8 +182,8 @@ const ANIMATION_CONFIG = {
   easing: 'linear',
 };
 const PANEL_STATE = {
-  stackVisible: true,
-  codeVisible: true,
+  stackVisible: false,
+  codeVisible: false,
 };
 const RESIZE_CONFIG = {
   stack: { min: 220, max: 560, collapsed: 56 },
@@ -828,6 +828,11 @@ function initGraph(data) {
       const rowH = 18;
       const headerH = attributes.headerHeight || 22;
       const headerLines = String(name).split('\n');
+
+      // ── text-flow dispatch (must be early — used by debug logs + subtitle) ──
+      const textFlow = VIS_CONFIG.textFlow;
+      const showSubtitle = VIS_CONFIG.showSubtitle && attributes.showSubtitle;
+
       const key = this.upsert('key', 'rect', {
         x: -w/2, y: -h/2, width:w, height:h, radius:4,
         fill: attributes.fill || DELTA_COLORS.unchanged.fill,
@@ -835,6 +840,14 @@ function initGraph(data) {
         lineWidth: attributes.lineWidth || 1,
         zIndex: -1
       }, container);
+      // [DEBUG-vflow] — log keyShape bbox
+      if (textFlow === 'vertical' && !this.__vkeyShown) {
+        this.__vkeyShown = true;
+        console.log('[DEBUG-vflow] keyShape bbox',
+          'x:', -w/2, 'y:', -h/2, 'w:', w, 'h:', h,
+          'cardW:', w, 'cardH:', h,
+          'textFlow:', textFlow, 'name:', String(name).substring(0,30));
+      }
       const prevHeaderLineCount = this.__prevHeaderLineCount || 0;
       headerLines.forEach((line, i) => {
         this.upsert(`title-${i}`, 'text', {
@@ -851,7 +864,6 @@ function initGraph(data) {
       this.__prevHeaderLineCount = headerLines.length;
 
       // ── subtitle ──
-      const showSubtitle = VIS_CONFIG.showSubtitle && attributes.showSubtitle;
       const subtitleText = attributes.subtitle || '';
       const subtitleY = -h/2 + paddingY + 2 + headerLines.length * 14;
       this.upsert('subtitle', 'text', {
@@ -870,9 +882,22 @@ function initGraph(data) {
       };
 
       // ── text-flow dispatch ──
-      const textFlow = VIS_CONFIG.textFlow;
 
       if (textFlow === 'vertical') {
+        // [DEBUG-vflow] — vertical rendering path entry
+        if (!this.__vlogShown) {
+          this.__vlogShown = true;
+          console.log('[DEBUG-vflow] vertical path entered',
+            'name:', String(name).substring(0,30),
+            'size:', [w,h],
+            'headerH:', headerH,
+            'rowCount:', rowCount,
+            'rows:', rows.slice(0,4).map(function(r){return String(r).substring(0,20)}),
+            'ports:', (attributes.ports||[]).length,
+            'portLayout:', attributes.portLayout,
+            'textFlow:', textFlow,
+            'showSubtitle:', showSubtitle);
+        }
         const contentTop = -h / 2 + headerH + paddingY;
         const contentHeight = Math.max(h - headerH - paddingY * 2, 1);
         const columnCount = Math.max(rowCount, 1);
@@ -904,7 +929,7 @@ function initGraph(data) {
             : rowDeltaType === 'changed'
               ? DELTA_COLORS.changed.line
               : '#333';
-          const rowText = String(row ?? '');
+          const rowText = String(rows[i] ?? '');
           const textWidth = Math.max(fontSize * 1.2, rowText.length * fontSize * 0.62);
           const textHeight = fontSize + 2;
           const anchorX = columnX + columnWidth / 2 - textHeight / 2;
@@ -1035,7 +1060,22 @@ function initGraph(data) {
           }, container);
         }
       }
+      // ── cross-path cleanup: hide stale bind-block elements from horizontal render ──
+      if (textFlow === 'vertical') {
+        const prevBindRunCount = this.__prevBindRunCount || 0;
+        for (let i = 0; i < prevBindRunCount; i++) {
+          this.upsert(`bind-block-${i}`, 'rect', {
+            x: -w/2, y: -h/2, width: 0, height: 0, radius: 0,
+            fill: 'transparent', stroke: 'transparent', zIndex: -99
+          }, container);
+        }
+      }
       this.__prevRowCount = rows.length;
+      // [DEBUG-vflow] — confirm function returns
+      if (textFlow === 'vertical' && !this.__vretShown) {
+        this.__vretShown = true;
+        console.log('[DEBUG-vflow] drawKeyShape returning key:', typeof key, 'isNull:', key === null);
+      }
       return key;
     }
   }
@@ -1956,9 +1996,15 @@ function renderStepImpl(ri, displayIndex) {
   } else {
     const prepared = prepareGraphForLayout(graphData, getGraphSize());
     const nextLayout = prepared.layout;
-    if (typeof graph.setOptions === 'function') {
+    // Tag node data with a render epoch so G6 always sees a change
+    // even when VIS_CONFIG (external) is the only thing that changed.
+    const now = Date.now();
+    for (const n of (prepared.data.nodes || [])) {
+      if (n.style) n.style._renderEpoch = now;
+    }
+    if (typeof graph.setOptions === 'function' && nextLayout.type !== 'preset') {
       graph.setOptions({ layout: nextLayout });
-    } else if (typeof graph.setLayout === 'function') {
+    } else if (typeof graph.setLayout === 'function' && nextLayout.type !== 'preset') {
       graph.setLayout(nextLayout);
     }
     graph.setData(prepared.data);
