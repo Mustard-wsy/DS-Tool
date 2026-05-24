@@ -909,9 +909,9 @@ function initGraph(data) {
 
         // Grid separator lines
         const nodeStroke = attributes.stroke || DELTA_COLORS.unchanged.stroke;
-        // Horizontal divider between header and data rows
+        // Horizontal divider between header and data rows (skip title col because it spans 2 rows)
         this.upsert('grid-hdiv', 'line', {
-          x1: gridLeft, y1: gridTop + gridRowH,
+          x1: gridLeft + titleColW, y1: gridTop + gridRowH,
           x2: gridLeft + titleColW + numFields * fieldColW, y2: gridTop + gridRowH,
           stroke: nodeStroke, lineWidth: 0.5, zIndex: 0
         }, container);
@@ -971,15 +971,51 @@ function initGraph(data) {
         // Cleanup old elements
         const prevFieldCount = this.__prevFieldCount || 0;
         for (let i = numFields; i < prevFieldCount; i++) {
-          ['vdiv', 'vh-bg', 'vh', 'vd'].forEach(function(pref) {
-            this.upsert(`${pref}-${i}`, 'text', {
-              x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
-            }, container);
-          });
+          this.upsert(`vdiv-${i}`, 'line', {
+            x1: -w/2, y1: -h/2, x2: -w/2, y2: -h/2,
+            stroke: 'transparent', lineWidth: 0, zIndex: -99
+          }, container);
+          this.upsert(`vh-bg-${i}`, 'rect', {
+            x: -w/2, y: -h/2, width: 0, height: 0,
+            fill: 'transparent', stroke: 'transparent', zIndex: -99
+          }, container);
+          this.upsert(`vh-${i}`, 'text', {
+            x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+          }, container);
+          this.upsert(`vd-${i}`, 'text', {
+            x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+          }, container);
         }
         this.__prevFieldCount = numFields;
         this.__prevBindRunCount = 0;
       } else {
+        // clear vertical-only artifacts when switching back to horizontal mode
+        this.upsert('grid-hdiv', 'line', {
+          x1: -w/2, y1: -h/2, x2: -w/2, y2: -h/2,
+          stroke: 'transparent', lineWidth: 0, zIndex: -99
+        }, container);
+        this.upsert('vtitle-bg', 'rect', {
+          x: -w/2, y: -h/2, width: 0, height: 0,
+          fill: 'transparent', stroke: 'transparent', zIndex: -99
+        }, container);
+        const prevFieldCount = this.__prevFieldCount || 0;
+        for (let i = 0; i < prevFieldCount; i++) {
+          this.upsert(`vdiv-${i}`, 'line', {
+            x1: -w/2, y1: -h/2, x2: -w/2, y2: -h/2,
+            stroke: 'transparent', lineWidth: 0, zIndex: -99
+          }, container);
+          this.upsert(`vh-bg-${i}`, 'rect', {
+            x: -w/2, y: -h/2, width: 0, height: 0,
+            fill: 'transparent', stroke: 'transparent', zIndex: -99
+          }, container);
+          this.upsert(`vh-${i}`, 'text', {
+            x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+          }, container);
+          this.upsert(`vd-${i}`, 'text', {
+            x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+          }, container);
+        }
+        this.__prevFieldCount = 0;
         const runs = [];
         let runStart = null;
         let runGroup = null;
@@ -1552,18 +1588,18 @@ function adaptNodesForTextFlow(graphData) {
     const w = Number(st.size?.[0]) || 120;
     const h = Number(st.size?.[1]) || 56;
     const titleCenterX = (padX + titleW / 2) / Math.max(w, 1);
-    const topRowCenterY = (padY + rowH / 2) / Math.max(h, 1);
-    const bottomRowCenterY = (padY + rowH + rowH / 2) / Math.max(h, 1);
+    const topEdgeY = 0;
+    const bottomEdgeY = 1;
 
     st.ports = [
-      { key: 'inT', placement: [titleCenterX, topRowCenterY], r: 0, fill: 'transparent', stroke: 'transparent' },
-      { key: 'inB', placement: [titleCenterX, bottomRowCenterY], r: 0, fill: 'transparent', stroke: 'transparent' },
+      { key: 'inT', placement: [titleCenterX, topEdgeY], r: 0, fill: 'transparent', stroke: 'transparent' },
+      { key: 'inB', placement: [titleCenterX, bottomEdgeY], r: 0, fill: 'transparent', stroke: 'transparent' },
     ];
     const refEntries = [];
     st.gridRefs.forEach((rowIdx) => {
       const cellCenterX = (padX + titleW + rowIdx * colW + colW / 2) / Math.max(w, 1);
-      st.ports.push({ key: `pt${rowIdx}`, placement: [cellCenterX, topRowCenterY], r: 0, fill: 'transparent', stroke: 'transparent' });
-      st.ports.push({ key: `pb${rowIdx}`, placement: [cellCenterX, bottomRowCenterY], r: 0, fill: 'transparent', stroke: 'transparent' });
+      st.ports.push({ key: `pt${rowIdx}`, placement: [cellCenterX, topEdgeY], r: 0, fill: 'transparent', stroke: 'transparent' });
+      st.ports.push({ key: `pb${rowIdx}`, placement: [cellCenterX, bottomEdgeY], r: 0, fill: 'transparent', stroke: 'transparent' });
       refEntries.push({ idx: rowIdx, ports: [`pb${rowIdx}`, `pt${rowIdx}`] });
     });
     st.portLayout = { direction: 'TB', entry: ['inT', 'inB'], ref: refEntries };
