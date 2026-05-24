@@ -1547,16 +1547,23 @@ function adaptNodesForTextFlow(graphData) {
     st.fieldColW = colW;
     st.size = [Math.max(120, padX * 2 + titleW + numFields * colW), padY * 2 + rowH * 2];
 
+    // Ports should attach to cell centers (not whole-node border centers).
+    // Vertical table has 2 rows and (1 + numFields) columns, where column 0 is title.
+    const w = Number(st.size?.[0]) || 120;
+    const h = Number(st.size?.[1]) || 56;
+    const titleCenterX = (padX + titleW / 2) / Math.max(w, 1);
+    const topRowCenterY = (padY + rowH / 2) / Math.max(h, 1);
+    const bottomRowCenterY = (padY + rowH + rowH / 2) / Math.max(h, 1);
+
     st.ports = [
-      { key: 'inT', placement: [0.5, 0], r: 0, fill: 'transparent', stroke: 'transparent' },
-      { key: 'inB', placement: [0.5, 1], r: 0, fill: 'transparent', stroke: 'transparent' },
+      { key: 'inT', placement: [titleCenterX, topRowCenterY], r: 0, fill: 'transparent', stroke: 'transparent' },
+      { key: 'inB', placement: [titleCenterX, bottomRowCenterY], r: 0, fill: 'transparent', stroke: 'transparent' },
     ];
     const refEntries = [];
-    const totalRefs = st.gridRefs.length;
-    st.gridRefs.forEach((rowIdx, i) => {
-      const x = totalRefs > 1 ? (0.1 + (0.8 * i / (totalRefs - 1))) : 0.5;
-      st.ports.push({ key: `pt${rowIdx}`, placement: [x, 0], r: 0, fill: 'transparent', stroke: 'transparent' });
-      st.ports.push({ key: `pb${rowIdx}`, placement: [x, 1], r: 0, fill: 'transparent', stroke: 'transparent' });
+    st.gridRefs.forEach((rowIdx) => {
+      const cellCenterX = (padX + titleW + rowIdx * colW + colW / 2) / Math.max(w, 1);
+      st.ports.push({ key: `pt${rowIdx}`, placement: [cellCenterX, topRowCenterY], r: 0, fill: 'transparent', stroke: 'transparent' });
+      st.ports.push({ key: `pb${rowIdx}`, placement: [cellCenterX, bottomRowCenterY], r: 0, fill: 'transparent', stroke: 'transparent' });
       refEntries.push({ idx: rowIdx, ports: [`pb${rowIdx}`, `pt${rowIdx}`] });
     });
     st.portLayout = { direction: 'TB', entry: ['inT', 'inB'], ref: refEntries };
