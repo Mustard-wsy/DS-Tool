@@ -592,7 +592,7 @@ function analyzeLayoutMetrics(graphData, viewport) {
 
 function computeAdaptiveLayout(graphData, viewport = null) {
   const metrics = analyzeLayoutMetrics(graphData, viewport);
-  const rankdir = (baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR';
+  const rankdir = VIS_CONFIG.textFlow === 'vertical' ? 'TB' : ((baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR');
   
   if (!metrics.nodes.length) {
     return {
@@ -812,7 +812,7 @@ function initGraph(data) {
 
   class CardNode extends BaseNode {
     drawKeyShape(attributes, container) {
-      const rankdir = (baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR';
+      const rankdir = VIS_CONFIG.textFlow === 'vertical' ? 'TB' : ((baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR');
       
       const name = attributes.name || '';
       const rows = Array.isArray(attributes.rows) ? attributes.rows : [];
@@ -826,7 +826,7 @@ function initGraph(data) {
       const headerLines = String(name).split('\n');
 
       // ── text-flow dispatch (must be early — used by debug logs + subtitle) ──
-      const textFlow = VIS_CONFIG.textFlow;
+      const textFlow = attributes.textFlow || VIS_CONFIG.textFlow;
       const showSubtitle = VIS_CONFIG.showSubtitle && attributes.showSubtitle;
 
       const key = this.upsert('key', 'rect', {
@@ -845,28 +845,43 @@ function initGraph(data) {
           'textFlow:', textFlow, 'name:', String(name).substring(0,30));
       }
       const prevHeaderLineCount = this.__prevHeaderLineCount || 0;
-      headerLines.forEach((line, i) => {
-        this.upsert(`title-${i}`, 'text', {
-          x: -w/2 + paddingX, y: -h/2 + paddingY + 2 + i * 14, text:line,
-          fontSize:12, fill:'#111', textBaseline:'top'
+      const subtitleText = attributes.subtitle || '';
+      if (textFlow !== 'vertical') {
+        headerLines.forEach((line, i) => {
+          this.upsert(`title-${i}`, 'text', {
+            x: -w/2 + paddingX, y: -h/2 + paddingY + 2 + i * 14, text:line,
+            fontSize:12, fill:'#111', textBaseline:'top'
+          }, container);
+        });
+        for (let i = headerLines.length; i < prevHeaderLineCount; i++) {
+          this.upsert(`title-${i}`, 'text', {
+            x: -w/2 + paddingX, y: -h/2 + paddingY + 2 + i * 14, text:'',
+            fontSize:12, fill:'#111', textBaseline:'top'
+          }, container);
+        }
+        this.__prevHeaderLineCount = headerLines.length;
+
+        // ── subtitle ──
+        const subtitleY = -h/2 + paddingY + 2 + headerLines.length * 14;
+        this.upsert('subtitle', 'text', {
+          x: -w/2 + paddingX, y: subtitleY,
+          text: showSubtitle ? subtitleText : '',
+          fontSize: 11, fill: '#888', textBaseline: 'top'
         }, container);
-      });
-      for (let i = headerLines.length; i < prevHeaderLineCount; i++) {
-        this.upsert(`title-${i}`, 'text', {
-          x: -w/2 + paddingX, y: -h/2 + paddingY + 2 + i * 14, text:'',
-          fontSize:12, fill:'#111', textBaseline:'top'
+      } else {
+        for (let i = 0; i < prevHeaderLineCount; i++) {
+          this.upsert(`title-${i}`, 'text', {
+            x: -w/2 + paddingX, y: -h/2 + paddingY + 2 + i * 14, text:'',
+            fontSize:12, fill:'transparent', textBaseline:'top'
+          }, container);
+        }
+        this.__prevHeaderLineCount = 0;
+        this.upsert('subtitle', 'text', {
+          x: -w/2 + paddingX, y: -h/2 + paddingY + 2,
+          text: '',
+          fontSize: 11, fill: 'transparent', textBaseline: 'top'
         }, container);
       }
-      this.__prevHeaderLineCount = headerLines.length;
-
-      // ── subtitle ──
-      const subtitleText = attributes.subtitle || '';
-      const subtitleY = -h/2 + paddingY + 2 + headerLines.length * 14;
-      this.upsert('subtitle', 'text', {
-        x: -w/2 + paddingX, y: subtitleY,
-        text: showSubtitle ? subtitleText : '',
-        fontSize: 11, fill: '#888', textBaseline: 'top'
-      }, container);
 
       const rowCount = rows.length;
       const bindPalette = ['#d9ecff', '#d6f5e8', '#fbe6c8', '#e6dcff', '#ffe1ea'];
