@@ -1501,6 +1501,68 @@ function highlightPythonLine(sourceLine) {
   return html;
 }
 
+
+function parseVerticalField(rowText, isRef) {
+  const raw = String(rowText || '').trim();
+  if (!raw) return { name: '', value: '' };
+  if (!isRef && raw.includes(' = ')) {
+    const idx = raw.indexOf(' = ');
+    return { name: raw.slice(0, idx).trim(), value: raw.slice(idx + 3).trim() };
+  }
+  for (const sep of [' -> ', ': ', '=>', '→']) {
+    if (raw.includes(sep)) {
+      const idx = raw.indexOf(sep);
+      return {
+        name: raw.slice(0, idx).trim(),
+        value: isRef ? '' : raw.slice(idx + sep.length).trim(),
+      };
+    }
+  }
+  if (isRef && raw.includes(' ')) {
+    return { name: raw.split(/\s+/, 1)[0], value: '' };
+  }
+  return { name: raw, value: isRef ? '' : raw };
+}
+
+function adaptNodesForTextFlow(graphData) {
+  if (VIS_CONFIG.textFlow !== 'vertical') return graphData;
+  const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  for (const n of nodes) {
+    n.style = n.style || {};
+    const st = n.style;
+    st.textFlow = 'vertical';
+    const rows = Array.isArray(st.rows) ? st.rows : [];
+    const refRowSet = new Set(Array.isArray(st.refRowIndices) ? st.refRowIndices : []);
+    const parsed = rows.map((r, i) => parseVerticalField(r, refRowSet.has(i)));
+    st.gridNames = parsed.map((x) => x.name);
+    st.gridValues = parsed.map((x) => x.value);
+    st.gridRefs = parsed.map((_, i) => i).filter((i) => refRowSet.has(i));
+
+    const title = String(st.name || '');
+    const titleW = Math.max(60, Math.min(180, Math.ceil(Math.max(...title.split('\n').map((x) => x.length), 1) * 6 + 12)));
+    const colW = Math.max(50, Math.min(130, Math.ceil(Math.max(1, ...parsed.map((x) => Math.max(String(x.name).length, String(x.value).length))) * 6 + 12)));
+    const numFields = Math.max(1, parsed.length);
+    const padX = 10, padY = 8, rowH = 20;
+    st.titleColW = titleW;
+    st.fieldColW = colW;
+    st.size = [Math.max(120, padX * 2 + titleW + numFields * colW), padY * 2 + rowH * 2];
+
+    st.ports = [
+      { key: 'inT', placement: [0.5, 0], r: 0, fill: 'transparent', stroke: 'transparent' },
+      { key: 'inB', placement: [0.5, 1], r: 0, fill: 'transparent', stroke: 'transparent' },
+    ];
+    const refEntries = [];
+    const totalRefs = st.gridRefs.length;
+    st.gridRefs.forEach((rowIdx, i) => {
+      const x = totalRefs > 1 ? (0.1 + (0.8 * i / (totalRefs - 1))) : 0.5;
+      st.ports.push({ key: `pt${rowIdx}`, placement: [x, 0], r: 0, fill: 'transparent', stroke: 'transparent' });
+      st.ports.push({ key: `pb${rowIdx}`, placement: [x, 1], r: 0, fill: 'transparent', stroke: 'transparent' });
+      refEntries.push({ idx: rowIdx, ports: [`pb${rowIdx}`, `pt${rowIdx}`] });
+    });
+    st.portLayout = { direction: 'TB', entry: ['inT', 'inB'], ref: refEntries };
+  }
+  return graphData;
+}
 function cloneGraphData(data) {
   return JSON.parse(JSON.stringify(data || { nodes: [], edges: [] }));
 }
@@ -1989,7 +2051,8 @@ function renderStepImpl(ri, displayIndex) {
   hoveredFrameKey = null;
   const s = STEPS[ri];
   const rawGraph = applyStepHighlights(cloneGraphData(s.graph), ri);
-  const graphData = filterHiddenNodes(rawGraph);
+  const adaptedGraph = adaptNodesForTextFlow(rawGraph);
+  const graphData = filterHiddenNodes(adaptedGraph);
   const frames = Array.isArray(s?.stack?.frames) ? s.stack.frames : [];
   if (frames.length) {
     const hasSelection = selectedFrameKey && frames.some((frame, idx) => frameKey(frame, idx) === selectedFrameKey);
