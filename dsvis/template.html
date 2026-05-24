@@ -74,10 +74,6 @@ __STYLES__
             <option value="vertical">纵向</option>
           </select>
         </label>
-        <label class="settings-row">
-          <span>显示类型标注</span>
-          <input id="settingsShowSubtitle" type="checkbox" />
-        </label>
         <div class="settings-actions">
           <button id="settingsApplyBtn" type="button">Apply</button>
         </div>
@@ -884,90 +880,89 @@ function initGraph(data) {
       // ── text-flow dispatch ──
 
       if (textFlow === 'vertical') {
-        // [DEBUG-vflow] — vertical rendering path entry
-        if (!this.__vlogShown) {
-          this.__vlogShown = true;
-          console.log('[DEBUG-vflow] vertical path entered',
-            'name:', String(name).substring(0,30),
-            'size:', [w,h],
-            'headerH:', headerH,
-            'rowCount:', rowCount,
-            'rows:', rows.slice(0,4).map(function(r){return String(r).substring(0,20)}),
-            'ports:', (attributes.ports||[]).length,
-            'portLayout:', attributes.portLayout,
-            'textFlow:', textFlow,
-            'showSubtitle:', showSubtitle);
-        }
-        const contentTop = -h / 2 + headerH + paddingY;
-        const contentHeight = Math.max(h - headerH - paddingY * 2, 1);
-        const columnCount = Math.max(rowCount, 1);
-        const columnWidth = Math.max(16, (w - paddingX * 2) / columnCount);
-        const contentCenterY = contentTop + contentHeight / 2;
-        const fontSize = 11;
+        // ── vertical grid layout ──
+        const titleColW = attributes.titleColW || 80;
+        const fieldColW = attributes.fieldColW || 60;
+        const gridNames = Array.isArray(attributes.gridNames) ? attributes.gridNames : [];
+        const gridValues = Array.isArray(attributes.gridValues) ? attributes.gridValues : [];
+        const gridRefs = Array.isArray(attributes.gridRefs) ? attributes.gridRefs : [];
+        const numFields = Math.max(gridNames.length, 1);
 
-        for (let i = 0; i < rowCount; i++) {
-          const columnX = -w / 2 + paddingX + i * columnWidth;
-          const bindGroup = rowBindGroups[i];
-          const nodeStroke = attributes.stroke || DELTA_COLORS.unchanged.stroke;
-          const bindLineWidth = Math.max(0.5, (attributes.lineWidth || 1) * 0.6);
+        const gridRowH = 20;
+        const gridTop = -h/2 + paddingY;
+        const gridLeft = -w/2 + paddingX;
 
-          this.upsert(`bind-bg-${i}`, 'rect', {
-            x: columnX + 1,
-            y: contentTop,
-            width: Math.max(columnWidth - 2, 2),
-            height: contentHeight,
-            radius: 3,
-            fill: 'transparent',
-            stroke: bindGroup ? nodeStroke : 'transparent',
-            lineWidth: bindGroup ? bindLineWidth : 0,
-            zIndex: 0
+        // Grid separator lines
+        const nodeStroke = attributes.stroke || DELTA_COLORS.unchanged.stroke;
+        // Horizontal divider between header and data rows
+        this.upsert('grid-hdiv', 'line', {
+          x1: gridLeft, y1: gridTop + gridRowH,
+          x2: gridLeft + titleColW + numFields * fieldColW, y2: gridTop + gridRowH,
+          stroke: nodeStroke, lineWidth: 0.5, zIndex: 0
+        }, container);
+
+        // Title cell (spans 2 rows)
+        this.upsert('vtitle-bg', 'rect', {
+          x: gridLeft, y: gridTop, width: titleColW, height: 2 * gridRowH,
+          fill: '#e8f0fe', stroke: 'none', radius: 0, zIndex: -1
+        }, container);
+        const titleLines = String(name).split('\n');
+        titleLines.forEach((line, ti) => {
+          this.upsert(`vtitle-${ti}`, 'text', {
+            x: gridLeft + 4, y: gridTop + gridRowH - 2 - (titleLines.length - 1 - ti) * 12,
+            text: line, fontSize: 12, fill: '#0f2c63', fontWeight: 700,
+            textBaseline: 'middle'
+          }, container);
+        });
+
+        // Field columns
+        for (let i = 0; i < numFields; i++) {
+          const colX = gridLeft + titleColW + i * fieldColW;
+          const isRef = gridRefs.includes(i);
+
+          // Vertical divider
+          this.upsert(`vdiv-${i}`, 'line', {
+            x1: colX, y1: gridTop,
+            x2: colX, y2: gridTop + 2 * gridRowH,
+            stroke: nodeStroke, lineWidth: 0.5, zIndex: 0
           }, container);
 
-          const rowDeltaType = Array.isArray(attributes.rowDeltaTypes) ? attributes.rowDeltaTypes[i] : null;
-          const rowColor = rowDeltaType === 'added'
-            ? DELTA_COLORS.added.line
-            : rowDeltaType === 'changed'
-              ? DELTA_COLORS.changed.line
-              : '#333';
-          const rowText = String(rows[i] ?? '');
-          const textWidth = Math.max(fontSize * 1.2, rowText.length * fontSize * 0.62);
-          const textHeight = fontSize + 2;
-          const anchorX = columnX + columnWidth / 2 - textHeight / 2;
-          const anchorY = contentCenterY + textWidth / 2;
-
-          this.upsert(`r-${i}`, 'text', {
-            x: anchorX,
-            y: anchorY,
-            text: rowText,
-            fontSize,
-            fill: rowColor,
-            fontWeight: rowDeltaType ? 600 : 400,
-            transform: 'rotate(-90)',
-            zIndex: 2
+          // Header row cell
+          if (isRef) {
+            this.upsert(`vh-bg-${i}`, 'rect', {
+              x: colX, y: gridTop, width: fieldColW, height: gridRowH,
+              fill: '#fff5e6', stroke: 'none', zIndex: -1
+            }, container);
+          }
+          this.upsert(`vh-${i}`, 'text', {
+            x: colX + 3, y: gridTop + gridRowH / 2,
+            text: String(gridNames[i] || ''),
+            fontSize: 11, fill: isRef ? '#c97200' : '#333',
+            fontWeight: isRef ? 600 : 400,
+            textBaseline: 'middle'
           }, container);
-        }
 
-        const prevRowCount = this.__prevRowCount || 0;
-        for (let i = rowCount; i < prevRowCount; i++) {
-          this.upsert(`bind-bg-${i}`, 'rect', {
-            x: -w / 2 + paddingX,
-            y: contentTop,
-            width: 0,
-            height: 0,
-            radius: 0,
-            fill: 'transparent',
-            stroke: 'transparent',
-            zIndex: 0
-          }, container);
-          this.upsert(`r-${i}`, 'text', {
-            x: -w / 2 + paddingX,
-            y: contentCenterY,
-            text: '',
-            fontSize,
-            fill: '#333',
-            zIndex: 2
+          // Data row cell
+          const dataY = gridTop + gridRowH;
+          const valText = isRef ? '' : String(gridValues[i] || '');
+          this.upsert(`vd-${i}`, 'text', {
+            x: colX + 3, y: dataY + gridRowH / 2,
+            text: valText,
+            fontSize: 11, fill: '#333',
+            textBaseline: 'middle'
           }, container);
         }
+
+        // Cleanup old elements
+        const prevFieldCount = this.__prevFieldCount || 0;
+        for (let i = numFields; i < prevFieldCount; i++) {
+          ['vdiv', 'vh-bg', 'vh', 'vd'].forEach(function(pref) {
+            this.upsert(`${pref}-${i}`, 'text', {
+              x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+            }, container);
+          });
+        }
+        this.__prevFieldCount = numFields;
         this.__prevBindRunCount = 0;
       } else {
         const runs = [];
@@ -2232,16 +2227,12 @@ function toggleSettingsPanel() {
 
 function syncSettingsPanel() {
   const sel = document.getElementById('settingsTextFlow');
-  const cb = document.getElementById('settingsShowSubtitle');
   if (sel) sel.value = VIS_CONFIG.textFlow;
-  if (cb) cb.checked = VIS_CONFIG.showSubtitle;
 }
 
 function applySettings() {
   const sel = document.getElementById('settingsTextFlow');
-  const cb = document.getElementById('settingsShowSubtitle');
   if (sel) VIS_CONFIG.textFlow = sel.value;
-  if (cb) VIS_CONFIG.showSubtitle = cb.checked;
   applyVisConfig();
 }
 

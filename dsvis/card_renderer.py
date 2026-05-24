@@ -65,6 +65,12 @@ class NodeStyle:
     show_subtitle: bool = False
     subtitle: str | None = None
     text_flow: str = "horizontal"  # "horizontal" | "vertical" (future)
+    # Vertical grid layout fields
+    title_col_w: int = 0
+    field_col_w: int = 0
+    grid_names: list = field(default_factory=list)
+    grid_values: list = field(default_factory=list)
+    grid_refs: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = {
@@ -89,6 +95,12 @@ class NodeStyle:
         if self.show_subtitle and self.subtitle:
             d["showSubtitle"] = True
             d["subtitle"] = self.subtitle
+        if self.title_col_w:
+            d["titleColW"] = self.title_col_w
+            d["fieldColW"] = self.field_col_w
+            d["gridNames"] = self.grid_names
+            d["gridValues"] = self.grid_values
+            d["gridRefs"] = self.grid_refs
         return d
 
 
@@ -223,60 +235,70 @@ def _layout_horizontal_node(name, rows, subtitle_text, text_cfg):
 
 
 def _layout_vertical_node(name, rows, subtitle_text, text_cfg):
-    """Vertical text flow: compute card dimensions and row layout.
+    """Vertical grid layout: title column + field-name/value grid rows.
 
-    In vertical mode, each row becomes a column. The longest text line
-    determines card *height*; the number of rows determines card *width*.
+    Card structure:
+        ┌──────────┬────────┬────────┬──────────┐
+        │  Title   │ name_0 │ name_1 │ name_2   │  ← header row
+        │          │ val_0  │ val_1  │ val_2    │  ← data row
+        └──────────┴────────┴────────┴──────────┘
+    Title spans both rows vertically. Ref rows show name only (data cell empty).
     """
     raw_header_lines = str(name).splitlines() or [str(name)]
-    all_text_lens = [len(line) for line in raw_header_lines]
+    display_name = "\n".join(raw_header_lines)
 
-    if subtitle_text:
-        subtitle_lines = _wrap_multiline(subtitle_text, 999)
-        all_text_lens.extend(len(line) for line in subtitle_lines)
-    else:
-        subtitle_lines = []
-
-    all_text_lens.extend(len(str(r.get("text", ""))) for r in rows)
-    max_text_len = max(all_text_lens) if all_text_lens else 0
-
-    # ── build display rows (same flattening as horizontal) ──
-    # Don't wrap in vertical mode — each source row becomes one column
-    display_rows = []
-    bind_groups = []
-    bind_blocks = []
-    ref_row_indices = []
-    ref_label_map = {}
-
+    # Split each row into (name, value, is_ref)
+    field_defs = []
     for row in rows:
         text = str(row.get("text", ""))
-        visual_start = len(display_rows)
-        display_rows.append(text)  # no wrapping — one column per row
-        bind_groups.append(row.get("bind_group"))
-        bind_blocks.append(row.get("bind_block"))
-        if row.get("kind") == "ref":
-            ref_row_indices.append(visual_start)
-            if text not in ref_label_map:
-                ref_label_map[text] = visual_start
+        is_ref = row.get("kind") == "ref"
+        if " = " in text and not is_ref:
+            parts = text.split(" = ", 1)
+            field_defs.append((parts[0], parts[1], False))
+        else:
+            field_defs.append((text, "", is_ref))
 
-    # ── header ──
-    header_line_count = max(1, len(raw_header_lines))
-    header_h = max(text_cfg.default_header_h, header_line_count * 16)
-    if subtitle_text:
-        header_h += 14
+    # column widths
+    title_col_w = int(max(len(line) for line in raw_header_lines) * text_cfg.char_px + 12)
+    title_col_w = max(60, min(160, title_col_w))
 
-    # ── card dimensions ──
-    column_count = max(len(display_rows), 1)
-    # Match frontend: column width clamped to [16, …]
-    usable_w = text_cfg.max_card_w - text_cfg.padding_x * 2
-    column_w = max(16, int(usable_w / column_count))
+    field_col_w = 16
+    if field_defs:
+        for fname, fval, _ in field_defs:
+            w = max(len(fname), len(fval)) * text_cfg.char_px + 12
+            field_col_w = max(field_col_w, int(w))
+    field_col_w = max(50, min(120, field_col_w))
+
+    num_fields = max(len(field_defs), 1)
     card_w = max(text_cfg.min_card_w,
-                 text_cfg.padding_x * 2 + column_count * column_w)
-    # Height: header + longest text line
-    text_block_h = max_text_len * text_cfg.char_px
-    card_h = text_cfg.padding_y * 2 + header_h + max(text_block_h, text_cfg.row_h)
+                 text_cfg.padding_x * 2 + title_col_w + num_fields * field_col_w)
 
-    display_name = "\n".join(raw_header_lines)  # no wrapping
+    # card height: 2 grid rows
+    grid_row_h = 20
+    card_h = text_cfg.padding_y * 2 + 2 * grid_row_h
+
+    # grid data for frontend
+    grid_names = [f[0] for f in field_defs]
+    grid_values = [f[1] for f in field_defs]
+    grid_refs = [i for i, f in enumerate(field_defs) if f[2]]
+
+    # build display_rows for backward compat
+    display_rows = [str(r.get("text", "")) for r in rows]
+    bind_groups = [r.get("bind_group") for r in rows]
+    bind_blocks = [r.get("bind_block") for r in rows]
+    ref_row_indices = grid_refs[:]
+    ref_label_map = {}
+    for i in grid_refs:
+        t = str(rows[i].get("text", ""))
+        if t not in ref_label_map:
+            ref_label_map[t] = i
+
+    header_h = 0  # unused in grid mode
+
+    return (card_w, card_h, header_h, display_name,
+            display_rows, bind_groups, bind_blocks,
+            ref_row_indices, ref_label_map,
+            title_col_w, field_col_w, grid_names, grid_values, grid_refs)
 
     return card_w, card_h, header_h, display_name, display_rows, bind_groups, bind_blocks, ref_row_indices, ref_label_map
 
@@ -315,12 +337,15 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
         subtitle_text = cls if n.get("is_class_object") else None
 
         # ── text-flow dispatch: layout card dimensions + rows ──
-        (card_w, height, header_h, display_name,
-         display_rows, bind_groups, bind_blocks,
-         ref_row_indices, ref_label_map) = _layout_node(
+        layout_result = _layout_node(
             name=name, rows=rows, subtitle_text=subtitle_text,
             text_flow=text_flow, text_cfg=text_cfg,
         )
+        (card_w, height, header_h, display_name,
+         display_rows, bind_groups, bind_blocks,
+         ref_row_indices, ref_label_map) = layout_result[:9]
+        # Vertical grid extras (unpacked only when present)
+        grid_extras = layout_result[9:] if len(layout_result) > 9 else ()
 
         # ── ports + port layout descriptor ──
         use_vertical_ports = is_vertical or (text_flow == "vertical")
@@ -347,6 +372,11 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
             show_subtitle=bool(subtitle_text),
             subtitle=subtitle_text,
             text_flow=text_flow,
+            title_col_w=grid_extras[0] if len(grid_extras) > 0 else 0,
+            field_col_w=grid_extras[1] if len(grid_extras) > 1 else 0,
+            grid_names=grid_extras[2] if len(grid_extras) > 2 else [],
+            grid_values=grid_extras[3] if len(grid_extras) > 3 else [],
+            grid_refs=grid_extras[4] if len(grid_extras) > 4 else [],
         )
 
         g6_data["nodes"].append({
