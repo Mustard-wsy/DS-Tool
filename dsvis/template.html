@@ -939,6 +939,51 @@ function initGraph(data) {
         }
         this.__prevVTitleLineCount = titleLines.length;
 
+        // Vertical bind-field runs (merge adjacent columns with same bind block)
+        const vruns = [];
+        let vRunStart = null;
+        let vRunGroup = null;
+        let vRunBlock = null;
+        for (let i = 0; i < numFields; i++) {
+          const g = rowBindGroups[i] || null;
+          const b = rowBindBlocks[i] || null;
+          if (!g || !b) {
+            if (vRunGroup !== null) {
+              vruns.push({ start: vRunStart, end: i - 1, group: vRunGroup, block: vRunBlock });
+              vRunStart = null; vRunGroup = null; vRunBlock = null;
+            }
+            continue;
+          }
+          if (vRunGroup === null) {
+            vRunStart = i; vRunGroup = g; vRunBlock = b;
+            continue;
+          }
+          if (b !== vRunBlock) {
+            vruns.push({ start: vRunStart, end: i - 1, group: vRunGroup, block: vRunBlock });
+            vRunStart = i; vRunGroup = g; vRunBlock = b;
+          }
+        }
+        if (vRunGroup !== null) {
+          vruns.push({ start: vRunStart, end: numFields - 1, group: vRunGroup, block: vRunBlock });
+        }
+        const vBindLineWidth = Math.max(0.5, (attributes.lineWidth || 1) * 0.6);
+        vruns.forEach((run, ri) => {
+          const x = gridLeft + titleColW + run.start * fieldColW + 1;
+          const width = Math.max((run.end - run.start + 1) * fieldColW - 2, 2);
+          this.upsert(`vbind-block-${ri}`, 'rect', {
+            x, y: gridTop + 1, width, height: Math.max(2 * gridRowH - 2, 2), radius: 3,
+            fill: 'transparent', stroke: nodeStroke, lineWidth: vBindLineWidth, zIndex: 0
+          }, container);
+        });
+        const prevVRunCount = this.__prevVBindRunCount || 0;
+        for (let i = vruns.length; i < prevVRunCount; i++) {
+          this.upsert(`vbind-block-${i}`, 'rect', {
+            x: -w/2, y: -h/2, width: 0, height: 0,
+            fill: 'transparent', stroke: 'transparent', zIndex: -99
+          }, container);
+        }
+        this.__prevVBindRunCount = vruns.length;
+
         // Field columns
         for (let i = 0; i < numFields; i++) {
           const colX = gridLeft + titleColW + i * fieldColW;
@@ -958,25 +1003,10 @@ function initGraph(data) {
               ? DELTA_COLORS.changed.line
               : (isRef ? '#c97200' : '#333');
 
-          const bindGroup = rowBindGroups[i];
-          const bindStroke = bindGroup ? nodeStroke : 'transparent';
-          const bindLineWidth = bindGroup ? Math.max(0.5, (attributes.lineWidth || 1) * 0.6) : 0;
-          this.upsert(`vbind-${i}`, 'rect', {
-            x: colX + 1, y: gridTop + 1, width: Math.max(fieldColW - 2, 0), height: Math.max(2 * gridRowH - 2, 0),
-            fill: 'transparent', stroke: bindStroke, lineWidth: bindLineWidth, radius: 2, zIndex: 0
+          this.upsert(`vh-bg-${i}`, 'rect', {
+            x: colX, y: gridTop, width: fieldColW, height: gridRowH,
+            fill: 'transparent', stroke: 'none', zIndex: -1
           }, container);
-
-          if (isRef) {
-            this.upsert(`vh-bg-${i}`, 'rect', {
-              x: colX, y: gridTop, width: fieldColW, height: gridRowH,
-              fill: '#fff5e6', stroke: 'none', zIndex: -1
-            }, container);
-          } else {
-            this.upsert(`vh-bg-${i}`, 'rect', {
-              x: colX, y: gridTop, width: fieldColW, height: gridRowH,
-              fill: 'transparent', stroke: 'none', zIndex: -1
-            }, container);
-          }
           this.upsert(`vh-${i}`, 'text', {
             x: colX + 3, y: gridTop + gridRowH / 2,
             text: String(gridNames[i] || ''),
@@ -1014,7 +1044,20 @@ function initGraph(data) {
           this.upsert(`vd-${i}`, 'text', {
             x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
           }, container);
-          this.upsert(`vbind-${i}`, 'rect', {
+                  }
+        const prevRowCount = this.__prevRowCount || 0;
+        for (let i = 0; i < prevRowCount; i++) {
+          this.upsert(`bind-bg-${i}`, 'rect', {
+            x: -w/2, y: -h/2, width: 0, height: 0,
+            fill: 'transparent', stroke: 'transparent', zIndex: -99
+          }, container);
+          this.upsert(`r-${i}`, 'text', {
+            x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+          }, container);
+        }
+        const prevHRunCount = this.__prevBindRunCount || 0;
+        for (let i = 0; i < prevHRunCount; i++) {
+          this.upsert(`bind-block-${i}`, 'rect', {
             x: -w/2, y: -h/2, width: 0, height: 0,
             fill: 'transparent', stroke: 'transparent', zIndex: -99
           }, container);
@@ -1047,17 +1090,21 @@ function initGraph(data) {
           this.upsert(`vd-${i}`, 'text', {
             x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
           }, container);
-          this.upsert(`vbind-${i}`, 'rect', {
-            x: -w/2, y: -h/2, width: 0, height: 0,
-            fill: 'transparent', stroke: 'transparent', zIndex: -99
-          }, container);
-        }
+                  }
         for (let ti = 0; ti < (this.__prevVTitleLineCount || 0); ti++) {
           this.upsert(`vtitle-${ti}`, 'text', {
             x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
           }, container);
         }
         this.__prevVTitleLineCount = 0;
+        const prevVRunCount = this.__prevVBindRunCount || 0;
+        for (let i = 0; i < prevVRunCount; i++) {
+          this.upsert(`vbind-block-${i}`, 'rect', {
+            x: -w/2, y: -h/2, width: 0, height: 0,
+            fill: 'transparent', stroke: 'transparent', zIndex: -99
+          }, container);
+        }
+        this.__prevVBindRunCount = 0;
         this.__prevFieldCount = 0;
         const runs = [];
         let runStart = null;
