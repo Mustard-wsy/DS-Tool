@@ -902,6 +902,7 @@ function initGraph(data) {
         const gridValues = Array.isArray(attributes.gridValues) ? attributes.gridValues : [];
         const gridRefs = Array.isArray(attributes.gridRefs) ? attributes.gridRefs : [];
         const numFields = Math.max(gridNames.length, 1);
+        const rowDeltaTypes = Array.isArray(attributes.rowDeltaTypes) ? attributes.rowDeltaTypes : [];
 
         const gridRowH = 20;
         const gridTop = -h/2 + paddingY;
@@ -929,6 +930,14 @@ function initGraph(data) {
             textBaseline: 'middle'
           }, container);
         });
+        const prevVTitleLineCount = this.__prevVTitleLineCount || 0;
+        for (let ti = titleLines.length; ti < prevVTitleLineCount; ti++) {
+          this.upsert(`vtitle-${ti}`, 'text', {
+            x: gridLeft + 4, y: gridTop + gridRowH / 2,
+            text: '', fontSize: 12, fill: 'transparent', textBaseline: 'middle'
+          }, container);
+        }
+        this.__prevVTitleLineCount = titleLines.length;
 
         // Field columns
         for (let i = 0; i < numFields; i++) {
@@ -942,18 +951,37 @@ function initGraph(data) {
             stroke: nodeStroke, lineWidth: 0.5, zIndex: 0
           }, container);
 
-          // Header row cell
+          const rowDeltaType = rowDeltaTypes[i] || null;
+          const rowColor = rowDeltaType === 'added'
+            ? DELTA_COLORS.added.line
+            : rowDeltaType === 'changed'
+              ? DELTA_COLORS.changed.line
+              : (isRef ? '#c97200' : '#333');
+
+          const bindGroup = rowBindGroups[i];
+          const bindStroke = bindGroup ? nodeStroke : 'transparent';
+          const bindLineWidth = bindGroup ? Math.max(0.5, (attributes.lineWidth || 1) * 0.6) : 0;
+          this.upsert(`vbind-${i}`, 'rect', {
+            x: colX + 1, y: gridTop + 1, width: Math.max(fieldColW - 2, 0), height: Math.max(2 * gridRowH - 2, 0),
+            fill: 'transparent', stroke: bindStroke, lineWidth: bindLineWidth, radius: 2, zIndex: 0
+          }, container);
+
           if (isRef) {
             this.upsert(`vh-bg-${i}`, 'rect', {
               x: colX, y: gridTop, width: fieldColW, height: gridRowH,
               fill: '#fff5e6', stroke: 'none', zIndex: -1
             }, container);
+          } else {
+            this.upsert(`vh-bg-${i}`, 'rect', {
+              x: colX, y: gridTop, width: fieldColW, height: gridRowH,
+              fill: 'transparent', stroke: 'none', zIndex: -1
+            }, container);
           }
           this.upsert(`vh-${i}`, 'text', {
             x: colX + 3, y: gridTop + gridRowH / 2,
             text: String(gridNames[i] || ''),
-            fontSize: 11, fill: isRef ? '#c97200' : '#333',
-            fontWeight: isRef ? 600 : 400,
+            fontSize: 11, fill: rowColor,
+            fontWeight: (isRef || rowDeltaType) ? 600 : 400,
             textBaseline: 'middle'
           }, container);
 
@@ -963,7 +991,8 @@ function initGraph(data) {
           this.upsert(`vd-${i}`, 'text', {
             x: colX + 3, y: dataY + gridRowH / 2,
             text: valText,
-            fontSize: 11, fill: '#333',
+            fontSize: 11, fill: rowColor,
+            fontWeight: rowDeltaType ? 600 : 400,
             textBaseline: 'middle'
           }, container);
         }
@@ -984,6 +1013,10 @@ function initGraph(data) {
           }, container);
           this.upsert(`vd-${i}`, 'text', {
             x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+          }, container);
+          this.upsert(`vbind-${i}`, 'rect', {
+            x: -w/2, y: -h/2, width: 0, height: 0,
+            fill: 'transparent', stroke: 'transparent', zIndex: -99
           }, container);
         }
         this.__prevFieldCount = numFields;
@@ -1014,7 +1047,17 @@ function initGraph(data) {
           this.upsert(`vd-${i}`, 'text', {
             x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
           }, container);
+          this.upsert(`vbind-${i}`, 'rect', {
+            x: -w/2, y: -h/2, width: 0, height: 0,
+            fill: 'transparent', stroke: 'transparent', zIndex: -99
+          }, container);
         }
+        for (let ti = 0; ti < (this.__prevVTitleLineCount || 0); ti++) {
+          this.upsert(`vtitle-${ti}`, 'text', {
+            x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+          }, container);
+        }
+        this.__prevVTitleLineCount = 0;
         this.__prevFieldCount = 0;
         const runs = [];
         let runStart = null;
