@@ -920,7 +920,7 @@ function initGraph(data) {
         // Title cell (spans 2 rows)
         this.upsert('vtitle-bg', 'rect', {
           x: gridLeft, y: gridTop, width: titleColW, height: 2 * gridRowH,
-          fill: '#e8f0fe', stroke: 'none', radius: 0, zIndex: -1
+          fill: attributes.fill || DELTA_COLORS.unchanged.fill, stroke: 'none', radius: 0, zIndex: -1
         }, container);
         const titleLines = String(name).split('\n');
         titleLines.forEach((line, ti) => {
@@ -1045,23 +1045,6 @@ function initGraph(data) {
             x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
           }, container);
                   }
-        const prevRowCount = this.__prevRowCount || 0;
-        for (let i = 0; i < prevRowCount; i++) {
-          this.upsert(`bind-bg-${i}`, 'rect', {
-            x: -w/2, y: -h/2, width: 0, height: 0,
-            fill: 'transparent', stroke: 'transparent', zIndex: -99
-          }, container);
-          this.upsert(`r-${i}`, 'text', {
-            x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
-          }, container);
-        }
-        const prevHRunCount = this.__prevBindRunCount || 0;
-        for (let i = 0; i < prevHRunCount; i++) {
-          this.upsert(`bind-block-${i}`, 'rect', {
-            x: -w/2, y: -h/2, width: 0, height: 0,
-            fill: 'transparent', stroke: 'transparent', zIndex: -99
-          }, container);
-        }
         this.__prevFieldCount = numFields;
         this.__prevBindRunCount = 0;
       } else {
