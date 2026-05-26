@@ -234,6 +234,28 @@ def _layout_horizontal_node(name, rows, subtitle_text, text_cfg):
     return card_w, height, header_h, display_name, display_rows, bind_groups, bind_blocks, ref_row_indices, ref_label_map
 
 
+
+
+def _parse_vertical_field(text, is_ref):
+    """Parse row text into (field_name, field_value) for vertical table view."""
+    raw = str(text or '').strip()
+    if not raw:
+        return '', ''
+
+    if ' = ' in raw and not is_ref:
+        k, v = raw.split(' = ', 1)
+        return k.strip(), v.strip()
+
+    for sep in (' -> ', ': ', '=>', '→'):
+        if sep in raw:
+            k, v = raw.split(sep, 1)
+            return k.strip(), ('' if is_ref else v.strip())
+
+    if is_ref and ' ' in raw:
+        return raw.split(' ', 1)[0].strip(), ''
+
+    return raw, '' if is_ref else raw
+
 def _layout_vertical_node(name, rows, subtitle_text, text_cfg):
     """Vertical grid layout: title column + field-name/value grid rows.
 
@@ -252,11 +274,8 @@ def _layout_vertical_node(name, rows, subtitle_text, text_cfg):
     for row in rows:
         text = str(row.get("text", ""))
         is_ref = row.get("kind") == "ref"
-        if " = " in text and not is_ref:
-            parts = text.split(" = ", 1)
-            field_defs.append((parts[0], parts[1], False))
-        else:
-            field_defs.append((text, "", is_ref))
+        fname, fval = _parse_vertical_field(text, is_ref)
+        field_defs.append((fname, fval, is_ref, text))
 
     # column widths
     title_col_w = int(max(len(line) for line in raw_header_lines) * text_cfg.char_px + 12)
@@ -264,7 +283,7 @@ def _layout_vertical_node(name, rows, subtitle_text, text_cfg):
 
     field_col_w = 16
     if field_defs:
-        for fname, fval, _ in field_defs:
+        for fname, fval, _, _raw_text in field_defs:
             w = max(len(fname), len(fval)) * text_cfg.char_px + 12
             field_col_w = max(field_col_w, int(w))
     field_col_w = max(50, min(120, field_col_w))
@@ -300,7 +319,6 @@ def _layout_vertical_node(name, rows, subtitle_text, text_cfg):
             ref_row_indices, ref_label_map,
             title_col_w, field_col_w, grid_names, grid_values, grid_refs)
 
-    return card_w, card_h, header_h, display_name, display_rows, bind_groups, bind_blocks, ref_row_indices, ref_label_map
 
 
 def _layout_node(name, rows, subtitle_text, text_flow, text_cfg):
