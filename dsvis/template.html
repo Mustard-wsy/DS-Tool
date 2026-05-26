@@ -144,11 +144,30 @@ function saveVisConfig(config) {
  */
 function applyVisConfig() {
   saveVisConfig(VIS_CONFIG);
+  // Text-flow switching changes node geometry/ports/shape composition deeply.
+  // Force a full graph remount to avoid stale G6 shape caches across modes.
+  resetGraphInstance();
   if (currentRaw != null) {
     renderStepRaw(currentRaw);
   } else {
     renderStep(current);
   }
+}
+
+function resetGraphInstance() {
+  if (!graph) return;
+  try {
+    if (typeof graphResizeObserver?.disconnect === 'function') {
+      graphResizeObserver.disconnect();
+    }
+  } catch (_) {}
+  graphResizeObserver = null;
+  try {
+    if (typeof graph.destroy === 'function') {
+      graph.destroy();
+    }
+  } catch (_) {}
+  graph = null;
 }
 
 const VIS_CONFIG = loadVisConfig();
