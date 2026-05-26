@@ -98,6 +98,8 @@ const STACK_UI_STATE = {
 let current = 0;
 let currentRaw = null;  // non-null when stepping through execution events (raw STEPS index)
 let graph = null;
+let pendingRenderRequest = null;
+let renderRafId = null;
 let codeRows = [];
 let graphResizeObserver = null;
 let hoveredLine = null;
@@ -144,11 +146,32 @@ function saveVisConfig(config) {
  */
 function applyVisConfig() {
   saveVisConfig(VIS_CONFIG);
+  // Text-flow switching changes node geometry/ports/shape composition deeply.
+  // Force a full graph remount to avoid stale G6 shape caches across modes.
+  resetGraphInstance();
   if (currentRaw != null) {
     renderStepRaw(currentRaw);
   } else {
     renderStep(current);
   }
+  // Re-apply auto-fit after mode switch render to prevent dense overlap.
+  fitGraph();
+}
+
+function resetGraphInstance() {
+  if (!graph) return;
+  try {
+    if (typeof graphResizeObserver?.disconnect === 'function') {
+      graphResizeObserver.disconnect();
+    }
+  } catch (_) {}
+  graphResizeObserver = null;
+  try {
+    if (typeof graph.destroy === 'function') {
+      graph.destroy();
+    }
+  } catch (_) {}
+  graph = null;
 }
 
 const VIS_CONFIG = loadVisConfig();
@@ -592,7 +615,7 @@ function analyzeLayoutMetrics(graphData, viewport) {
 
 function computeAdaptiveLayout(graphData, viewport = null) {
   const metrics = analyzeLayoutMetrics(graphData, viewport);
-  const rankdir = (baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR';
+  const rankdir = VIS_CONFIG.textFlow === 'vertical' ? 'TB' : ((baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR');
   
   if (!metrics.nodes.length) {
     return {
@@ -812,7 +835,7 @@ function initGraph(data) {
 
   class CardNode extends BaseNode {
     drawKeyShape(attributes, container) {
-      const rankdir = (baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR';
+      const rankdir = VIS_CONFIG.textFlow === 'vertical' ? 'TB' : ((baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR');
       
       const name = attributes.name || '';
       const rows = Array.isArray(attributes.rows) ? attributes.rows : [];
@@ -826,7 +849,7 @@ function initGraph(data) {
       const headerLines = String(name).split('\n');
 
       // ── text-flow dispatch (must be early — used by debug logs + subtitle) ──
-      const textFlow = VIS_CONFIG.textFlow;
+      const textFlow = attributes.textFlow || VIS_CONFIG.textFlow;
       const showSubtitle = VIS_CONFIG.showSubtitle && attributes.showSubtitle;
 
       const key = this.upsert('key', 'rect', {
@@ -845,28 +868,43 @@ function initGraph(data) {
           'textFlow:', textFlow, 'name:', String(name).substring(0,30));
       }
       const prevHeaderLineCount = this.__prevHeaderLineCount || 0;
-      headerLines.forEach((line, i) => {
-        this.upsert(`title-${i}`, 'text', {
-          x: -w/2 + paddingX, y: -h/2 + paddingY + 2 + i * 14, text:line,
-          fontSize:12, fill:'#111', textBaseline:'top'
+      const subtitleText = attributes.subtitle || '';
+      if (textFlow !== 'vertical') {
+        headerLines.forEach((line, i) => {
+          this.upsert(`title-${i}`, 'text', {
+            x: -w/2 + paddingX, y: -h/2 + paddingY + 2 + i * 14, text:line,
+            fontSize:12, fill:'#111', textBaseline:'top'
+          }, container);
+        });
+        for (let i = headerLines.length; i < prevHeaderLineCount; i++) {
+          this.upsert(`title-${i}`, 'text', {
+            x: -w/2 + paddingX, y: -h/2 + paddingY + 2 + i * 14, text:'',
+            fontSize:12, fill:'#111', textBaseline:'top'
+          }, container);
+        }
+        this.__prevHeaderLineCount = headerLines.length;
+
+        // ── subtitle ──
+        const subtitleY = -h/2 + paddingY + 2 + headerLines.length * 14;
+        this.upsert('subtitle', 'text', {
+          x: -w/2 + paddingX, y: subtitleY,
+          text: showSubtitle ? subtitleText : '',
+          fontSize: 11, fill: '#888', textBaseline: 'top'
         }, container);
-      });
-      for (let i = headerLines.length; i < prevHeaderLineCount; i++) {
-        this.upsert(`title-${i}`, 'text', {
-          x: -w/2 + paddingX, y: -h/2 + paddingY + 2 + i * 14, text:'',
-          fontSize:12, fill:'#111', textBaseline:'top'
+      } else {
+        for (let i = 0; i < prevHeaderLineCount; i++) {
+          this.upsert(`title-${i}`, 'text', {
+            x: -w/2 + paddingX, y: -h/2 + paddingY + 2 + i * 14, text:'',
+            fontSize:12, fill:'transparent', textBaseline:'top'
+          }, container);
+        }
+        this.__prevHeaderLineCount = 0;
+        this.upsert('subtitle', 'text', {
+          x: -w/2 + paddingX, y: -h/2 + paddingY + 2,
+          text: '',
+          fontSize: 11, fill: 'transparent', textBaseline: 'top'
         }, container);
       }
-      this.__prevHeaderLineCount = headerLines.length;
-
-      // ── subtitle ──
-      const subtitleText = attributes.subtitle || '';
-      const subtitleY = -h/2 + paddingY + 2 + headerLines.length * 14;
-      this.upsert('subtitle', 'text', {
-        x: -w/2 + paddingX, y: subtitleY,
-        text: showSubtitle ? subtitleText : '',
-        fontSize: 11, fill: '#888', textBaseline: 'top'
-      }, container);
 
       const rowCount = rows.length;
       const bindPalette = ['#d9ecff', '#d6f5e8', '#fbe6c8', '#e6dcff', '#ffe1ea'];
@@ -887,6 +925,7 @@ function initGraph(data) {
         const gridValues = Array.isArray(attributes.gridValues) ? attributes.gridValues : [];
         const gridRefs = Array.isArray(attributes.gridRefs) ? attributes.gridRefs : [];
         const numFields = Math.max(gridNames.length, 1);
+        const rowDeltaTypes = Array.isArray(attributes.rowDeltaTypes) ? attributes.rowDeltaTypes : [];
 
         const gridRowH = 20;
         const gridTop = -h/2 + paddingY;
@@ -894,9 +933,9 @@ function initGraph(data) {
 
         // Grid separator lines
         const nodeStroke = attributes.stroke || DELTA_COLORS.unchanged.stroke;
-        // Horizontal divider between header and data rows
+        // Horizontal divider between header and data rows (skip title col because it spans 2 rows)
         this.upsert('grid-hdiv', 'line', {
-          x1: gridLeft, y1: gridTop + gridRowH,
+          x1: gridLeft + titleColW, y1: gridTop + gridRowH,
           x2: gridLeft + titleColW + numFields * fieldColW, y2: gridTop + gridRowH,
           stroke: nodeStroke, lineWidth: 0.5, zIndex: 0
         }, container);
@@ -904,7 +943,7 @@ function initGraph(data) {
         // Title cell (spans 2 rows)
         this.upsert('vtitle-bg', 'rect', {
           x: gridLeft, y: gridTop, width: titleColW, height: 2 * gridRowH,
-          fill: '#e8f0fe', stroke: 'none', radius: 0, zIndex: -1
+          fill: attributes.fill || DELTA_COLORS.unchanged.fill, stroke: 'none', radius: 0, zIndex: -1
         }, container);
         const titleLines = String(name).split('\n');
         titleLines.forEach((line, ti) => {
@@ -914,6 +953,59 @@ function initGraph(data) {
             textBaseline: 'middle'
           }, container);
         });
+        const prevVTitleLineCount = this.__prevVTitleLineCount || 0;
+        for (let ti = titleLines.length; ti < prevVTitleLineCount; ti++) {
+          this.upsert(`vtitle-${ti}`, 'text', {
+            x: gridLeft + 4, y: gridTop + gridRowH / 2,
+            text: '', fontSize: 12, fill: 'transparent', textBaseline: 'middle'
+          }, container);
+        }
+        this.__prevVTitleLineCount = titleLines.length;
+
+        // Vertical bind-field runs (merge adjacent columns with same bind block)
+        const vruns = [];
+        let vRunStart = null;
+        let vRunGroup = null;
+        let vRunBlock = null;
+        for (let i = 0; i < numFields; i++) {
+          const g = rowBindGroups[i] || null;
+          const b = rowBindBlocks[i] || null;
+          if (!g || !b) {
+            if (vRunGroup !== null) {
+              vruns.push({ start: vRunStart, end: i - 1, group: vRunGroup, block: vRunBlock });
+              vRunStart = null; vRunGroup = null; vRunBlock = null;
+            }
+            continue;
+          }
+          if (vRunGroup === null) {
+            vRunStart = i; vRunGroup = g; vRunBlock = b;
+            continue;
+          }
+          if (b !== vRunBlock) {
+            vruns.push({ start: vRunStart, end: i - 1, group: vRunGroup, block: vRunBlock });
+            vRunStart = i; vRunGroup = g; vRunBlock = b;
+          }
+        }
+        if (vRunGroup !== null) {
+          vruns.push({ start: vRunStart, end: numFields - 1, group: vRunGroup, block: vRunBlock });
+        }
+        const vBindLineWidth = Math.max(0.5, (attributes.lineWidth || 1) * 0.6);
+        vruns.forEach((run, ri) => {
+          const x = gridLeft + titleColW + run.start * fieldColW + 1;
+          const width = Math.max((run.end - run.start + 1) * fieldColW - 2, 2);
+          this.upsert(`vbind-block-${ri}`, 'rect', {
+            x, y: gridTop + 1, width, height: Math.max(2 * gridRowH - 2, 2), radius: 3,
+            fill: 'transparent', stroke: nodeStroke, lineWidth: vBindLineWidth, zIndex: 0
+          }, container);
+        });
+        const prevVRunCount = this.__prevVBindRunCount || 0;
+        for (let i = vruns.length; i < prevVRunCount; i++) {
+          this.upsert(`vbind-block-${i}`, 'rect', {
+            x: -w/2, y: -h/2, width: 0, height: 0,
+            fill: 'transparent', stroke: 'transparent', zIndex: -99
+          }, container);
+        }
+        this.__prevVBindRunCount = vruns.length;
 
         // Field columns
         for (let i = 0; i < numFields; i++) {
@@ -927,18 +1019,22 @@ function initGraph(data) {
             stroke: nodeStroke, lineWidth: 0.5, zIndex: 0
           }, container);
 
-          // Header row cell
-          if (isRef) {
-            this.upsert(`vh-bg-${i}`, 'rect', {
-              x: colX, y: gridTop, width: fieldColW, height: gridRowH,
-              fill: '#fff5e6', stroke: 'none', zIndex: -1
-            }, container);
-          }
+          const rowDeltaType = rowDeltaTypes[i] || null;
+          const rowColor = rowDeltaType === 'added'
+            ? DELTA_COLORS.added.line
+            : rowDeltaType === 'changed'
+              ? DELTA_COLORS.changed.line
+              : (isRef ? '#c97200' : '#333');
+
+          this.upsert(`vh-bg-${i}`, 'rect', {
+            x: colX, y: gridTop, width: fieldColW, height: gridRowH,
+            fill: 'transparent', stroke: 'none', zIndex: -1
+          }, container);
           this.upsert(`vh-${i}`, 'text', {
             x: colX + 3, y: gridTop + gridRowH / 2,
             text: String(gridNames[i] || ''),
-            fontSize: 11, fill: isRef ? '#c97200' : '#333',
-            fontWeight: isRef ? 600 : 400,
+            fontSize: 11, fill: rowColor,
+            fontWeight: (isRef || rowDeltaType) ? 600 : 400,
             textBaseline: 'middle'
           }, container);
 
@@ -948,7 +1044,8 @@ function initGraph(data) {
           this.upsert(`vd-${i}`, 'text', {
             x: colX + 3, y: dataY + gridRowH / 2,
             text: valText,
-            fontSize: 11, fill: '#333',
+            fontSize: 11, fill: rowColor,
+            fontWeight: rowDeltaType ? 600 : 400,
             textBaseline: 'middle'
           }, container);
         }
@@ -956,15 +1053,65 @@ function initGraph(data) {
         // Cleanup old elements
         const prevFieldCount = this.__prevFieldCount || 0;
         for (let i = numFields; i < prevFieldCount; i++) {
-          ['vdiv', 'vh-bg', 'vh', 'vd'].forEach(function(pref) {
-            this.upsert(`${pref}-${i}`, 'text', {
-              x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
-            }, container);
-          });
-        }
+          this.upsert(`vdiv-${i}`, 'line', {
+            x1: -w/2, y1: -h/2, x2: -w/2, y2: -h/2,
+            stroke: 'transparent', lineWidth: 0, zIndex: -99
+          }, container);
+          this.upsert(`vh-bg-${i}`, 'rect', {
+            x: -w/2, y: -h/2, width: 0, height: 0,
+            fill: 'transparent', stroke: 'transparent', zIndex: -99
+          }, container);
+          this.upsert(`vh-${i}`, 'text', {
+            x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+          }, container);
+          this.upsert(`vd-${i}`, 'text', {
+            x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+          }, container);
+                  }
         this.__prevFieldCount = numFields;
         this.__prevBindRunCount = 0;
       } else {
+        // clear vertical-only artifacts when switching back to horizontal mode
+        this.upsert('grid-hdiv', 'line', {
+          x1: -w/2, y1: -h/2, x2: -w/2, y2: -h/2,
+          stroke: 'transparent', lineWidth: 0, zIndex: -99
+        }, container);
+        this.upsert('vtitle-bg', 'rect', {
+          x: -w/2, y: -h/2, width: 0, height: 0,
+          fill: 'transparent', stroke: 'transparent', zIndex: -99
+        }, container);
+        const prevFieldCount = this.__prevFieldCount || 0;
+        for (let i = 0; i < prevFieldCount; i++) {
+          this.upsert(`vdiv-${i}`, 'line', {
+            x1: -w/2, y1: -h/2, x2: -w/2, y2: -h/2,
+            stroke: 'transparent', lineWidth: 0, zIndex: -99
+          }, container);
+          this.upsert(`vh-bg-${i}`, 'rect', {
+            x: -w/2, y: -h/2, width: 0, height: 0,
+            fill: 'transparent', stroke: 'transparent', zIndex: -99
+          }, container);
+          this.upsert(`vh-${i}`, 'text', {
+            x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+          }, container);
+          this.upsert(`vd-${i}`, 'text', {
+            x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+          }, container);
+                  }
+        for (let ti = 0; ti < (this.__prevVTitleLineCount || 0); ti++) {
+          this.upsert(`vtitle-${ti}`, 'text', {
+            x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+          }, container);
+        }
+        this.__prevVTitleLineCount = 0;
+        const prevVRunCount = this.__prevVBindRunCount || 0;
+        for (let i = 0; i < prevVRunCount; i++) {
+          this.upsert(`vbind-block-${i}`, 'rect', {
+            x: -w/2, y: -h/2, width: 0, height: 0,
+            fill: 'transparent', stroke: 'transparent', zIndex: -99
+          }, container);
+        }
+        this.__prevVBindRunCount = 0;
+        this.__prevFieldCount = 0;
         const runs = [];
         let runStart = null;
         let runGroup = null;
@@ -1486,6 +1633,75 @@ function highlightPythonLine(sourceLine) {
   return html;
 }
 
+
+function parseVerticalField(rowText, isRef) {
+  const raw = String(rowText || '').trim();
+  if (!raw) return { name: '', value: '' };
+  if (!isRef && raw.includes(' = ')) {
+    const idx = raw.indexOf(' = ');
+    return { name: raw.slice(0, idx).trim(), value: raw.slice(idx + 3).trim() };
+  }
+  for (const sep of [' -> ', ': ', '=>', '→']) {
+    if (raw.includes(sep)) {
+      const idx = raw.indexOf(sep);
+      return {
+        name: raw.slice(0, idx).trim(),
+        value: isRef ? '' : raw.slice(idx + sep.length).trim(),
+      };
+    }
+  }
+  if (isRef && raw.includes(' ')) {
+    return { name: raw.split(/\s+/, 1)[0], value: '' };
+  }
+  return { name: raw, value: isRef ? '' : raw };
+}
+
+function adaptNodesForTextFlow(graphData) {
+  if (VIS_CONFIG.textFlow !== 'vertical') return graphData;
+  const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  for (const n of nodes) {
+    n.style = n.style || {};
+    const st = n.style;
+    st.textFlow = 'vertical';
+    const rows = Array.isArray(st.rows) ? st.rows : [];
+    const refRowSet = new Set(Array.isArray(st.refRowIndices) ? st.refRowIndices : []);
+    const parsed = rows.map((r, i) => parseVerticalField(r, refRowSet.has(i)));
+    st.gridNames = parsed.map((x) => x.name);
+    st.gridValues = parsed.map((x) => x.value);
+    st.gridRefs = parsed.map((_, i) => i).filter((i) => refRowSet.has(i));
+
+    const title = String(st.name || '');
+    const titleW = Math.max(60, Math.min(180, Math.ceil(Math.max(...title.split('\n').map((x) => x.length), 1) * 6 + 12)));
+    const colW = Math.max(50, Math.min(130, Math.ceil(Math.max(1, ...parsed.map((x) => Math.max(String(x.name).length, String(x.value).length))) * 6 + 12)));
+    const numFields = Math.max(1, parsed.length);
+    const padX = 10, padY = 8, rowH = 20;
+    st.titleColW = titleW;
+    st.fieldColW = colW;
+    st.size = [Math.max(120, padX * 2 + titleW + numFields * colW), padY * 2 + rowH * 2];
+
+    // Ports should attach to cell centers (not whole-node border centers).
+    // Vertical table has 2 rows and (1 + numFields) columns, where column 0 is title.
+    const w = Number(st.size?.[0]) || 120;
+    const h = Number(st.size?.[1]) || 56;
+    const titleCenterX = (padX + titleW / 2) / Math.max(w, 1);
+    const topEdgeY = 0;
+    const bottomEdgeY = 1;
+
+    st.ports = [
+      { key: 'inT', placement: [titleCenterX, topEdgeY], r: 0, fill: 'transparent', stroke: 'transparent' },
+      { key: 'inB', placement: [titleCenterX, bottomEdgeY], r: 0, fill: 'transparent', stroke: 'transparent' },
+    ];
+    const refEntries = [];
+    st.gridRefs.forEach((rowIdx) => {
+      const cellCenterX = (padX + titleW + rowIdx * colW + colW / 2) / Math.max(w, 1);
+      st.ports.push({ key: `pt${rowIdx}`, placement: [cellCenterX, topEdgeY], r: 0, fill: 'transparent', stroke: 'transparent' });
+      st.ports.push({ key: `pb${rowIdx}`, placement: [cellCenterX, bottomEdgeY], r: 0, fill: 'transparent', stroke: 'transparent' });
+      refEntries.push({ idx: rowIdx, ports: [`pb${rowIdx}`, `pt${rowIdx}`] });
+    });
+    st.portLayout = { direction: 'TB', entry: ['inT', 'inB'], ref: refEntries };
+  }
+  return graphData;
+}
 function cloneGraphData(data) {
   return JSON.parse(JSON.stringify(data || { nodes: [], edges: [] }));
 }
@@ -1958,7 +2174,7 @@ function renderStep(i) {
   if (!DISPLAY_INDICES.length) return;
   current = Math.max(0, Math.min(i, DISPLAY_INDICES.length - 1));
   currentRaw = null;  // back to display-index mode
-  renderStepImpl(toReal(current), current);
+  scheduleRenderStepImpl(toReal(current), current);
 }
 
 // Render from a raw STEPS index directly (for execution-level stepping)
@@ -1966,7 +2182,19 @@ function renderStepRaw(ri) {
   if (!STEPS.length || ri < 0 || ri >= STEPS.length) return;
   current = toDisplay(ri);
   currentRaw = ri;
-  renderStepImpl(ri, current);
+  scheduleRenderStepImpl(ri, current);
+}
+
+function scheduleRenderStepImpl(ri, displayIndex) {
+  pendingRenderRequest = { ri, displayIndex };
+  if (renderRafId != null) return;
+  renderRafId = requestAnimationFrame(() => {
+    renderRafId = null;
+    const req = pendingRenderRequest;
+    pendingRenderRequest = null;
+    if (!req) return;
+    renderStepImpl(req.ri, req.displayIndex);
+  });
 }
 
 function renderStepImpl(ri, displayIndex) {
@@ -1974,7 +2202,8 @@ function renderStepImpl(ri, displayIndex) {
   hoveredFrameKey = null;
   const s = STEPS[ri];
   const rawGraph = applyStepHighlights(cloneGraphData(s.graph), ri);
-  const graphData = filterHiddenNodes(rawGraph);
+  const adaptedGraph = adaptNodesForTextFlow(rawGraph);
+  const graphData = filterHiddenNodes(adaptedGraph);
   const frames = Array.isArray(s?.stack?.frames) ? s.stack.frames : [];
   if (frames.length) {
     const hasSelection = selectedFrameKey && frames.some((frame, idx) => frameKey(frame, idx) === selectedFrameKey);
