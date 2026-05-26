@@ -152,6 +152,24 @@ function applyVisConfig() {
   } else {
     renderStep(current);
   }
+  // Re-apply auto-fit after mode switch render to prevent dense overlap.
+  fitGraph();
+}
+
+function resetGraphInstance() {
+  if (!graph) return;
+  try {
+    if (typeof graphResizeObserver?.disconnect === 'function') {
+      graphResizeObserver.disconnect();
+    }
+  } catch (_) {}
+  graphResizeObserver = null;
+  try {
+    if (typeof graph.destroy === 'function') {
+      graph.destroy();
+    }
+  } catch (_) {}
+  graph = null;
 }
 
 function resetGraphInstance() {
