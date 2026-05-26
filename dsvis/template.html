@@ -98,6 +98,8 @@ const STACK_UI_STATE = {
 let current = 0;
 let currentRaw = null;  // non-null when stepping through execution events (raw STEPS index)
 let graph = null;
+let pendingRenderRequest = null;
+let renderRafId = null;
 let codeRows = [];
 let graphResizeObserver = null;
 let hoveredLine = null;
@@ -154,22 +156,6 @@ function applyVisConfig() {
   }
   // Re-apply auto-fit after mode switch render to prevent dense overlap.
   fitGraph();
-}
-
-function resetGraphInstance() {
-  if (!graph) return;
-  try {
-    if (typeof graphResizeObserver?.disconnect === 'function') {
-      graphResizeObserver.disconnect();
-    }
-  } catch (_) {}
-  graphResizeObserver = null;
-  try {
-    if (typeof graph.destroy === 'function') {
-      graph.destroy();
-    }
-  } catch (_) {}
-  graph = null;
 }
 
 function resetGraphInstance() {
@@ -2188,7 +2174,7 @@ function renderStep(i) {
   if (!DISPLAY_INDICES.length) return;
   current = Math.max(0, Math.min(i, DISPLAY_INDICES.length - 1));
   currentRaw = null;  // back to display-index mode
-  renderStepImpl(toReal(current), current);
+  scheduleRenderStepImpl(toReal(current), current);
 }
 
 // Render from a raw STEPS index directly (for execution-level stepping)
@@ -2196,7 +2182,19 @@ function renderStepRaw(ri) {
   if (!STEPS.length || ri < 0 || ri >= STEPS.length) return;
   current = toDisplay(ri);
   currentRaw = ri;
-  renderStepImpl(ri, current);
+  scheduleRenderStepImpl(ri, current);
+}
+
+function scheduleRenderStepImpl(ri, displayIndex) {
+  pendingRenderRequest = { ri, displayIndex };
+  if (renderRafId != null) return;
+  renderRafId = requestAnimationFrame(() => {
+    renderRafId = null;
+    const req = pendingRenderRequest;
+    pendingRenderRequest = null;
+    if (!req) return;
+    renderStepImpl(req.ri, req.displayIndex);
+  });
 }
 
 function renderStepImpl(ri, displayIndex) {
