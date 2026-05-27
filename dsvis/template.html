@@ -32,9 +32,11 @@ __STYLES__
     <div id="controls">
       <button id="prevStepBtn">Prev</button>
       <button id="nextStepBtn">Next</button>
+      <button id="stepIntoBtn">Step Into</button>
       <button id="stepBackBtn">Step Back</button>
       <button id="stepOverBtn">Step Over</button>
       <button id="stepOutBtn">Step Out</button>
+      <button id="runBtn">Run</button>
       <span>
         Step
         <input id="stepInput" type="number" min="1" step="1" />
@@ -109,6 +111,10 @@ const BREAKPOINTS = new Set();
 const BREAKPOINTS_ENABLED = __BREAKPOINTS_ENABLED__;
 const HIDDEN_NODES = new Map();  // Map<nodeId, label> — hidden nodes
 let hiddenPanelVisible = false;
+const AUTO_RUN_INTERVAL_MS = 500;
+let autoRunTimerId = null;
+let autoRunActive = false;
+let autoRunPauseLine = null;
 
 // ── Visualisation configuration ──
 const VIS_CONFIG_STORAGE_KEY = 'dsvis:config';
@@ -154,8 +160,6 @@ function applyVisConfig() {
   } else {
     renderStep(current);
   }
-  // Re-apply auto-fit after mode switch render to prevent dense overlap.
-  fitGraph();
 }
 
 function resetGraphInstance() {
@@ -313,6 +317,15 @@ function toggleBreakpoint(lineno) {
   syncCodeHighlights(false);
 }
 
+function getCurrentRawIndex() {
+  return currentRaw ?? toReal(current);
+}
+
+function findStepIntoRaw() {
+  const raw = getCurrentRawIndex();
+  return raw + 1 < STEPS.length ? raw + 1 : -1;
+}
+
 function stepHasBreakpoint(step) {
   const line = Number(step?.lineno);
   if (Number.isFinite(line) && BREAKPOINTS.has(line)) return true;
@@ -321,6 +334,100 @@ function stepHasBreakpoint(step) {
     const frameLine = Number(frame?.lineno);
     return Number.isFinite(frameLine) && BREAKPOINTS.has(frameLine);
   });
+}
+
+function findBreakpointLine(step) {
+  const line = Number(step?.lineno);
+  if (Number.isFinite(line) && BREAKPOINTS.has(line)) return line;
+  const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
+  for (const frame of frames) {
+    const frameLine = Number(frame?.lineno);
+    if (Number.isFinite(frameLine) && BREAKPOINTS.has(frameLine)) return frameLine;
+  }
+  return null;
+}
+
+function findNextBreakpointRaw(startRaw = getCurrentRawIndex()) {
+  for (let i = startRaw + 1; i < STEPS.length; i++) {
+    if (stepHasBreakpoint(STEPS[i])) return i;
+  }
+  return -1;
+}
+
+function syncRunButtonLabel() {
+  const runBtn = document.getElementById('runBtn');
+  if (!runBtn) return;
+  if (autoRunActive) {
+    runBtn.textContent = 'Pause';
+  } else if (autoRunPauseLine != null) {
+    runBtn.textContent = 'Continue';
+  } else {
+    runBtn.textContent = 'Run';
+  }
+}
+
+function refreshBreakpointInfo() {
+  const bpInfo = document.getElementById('breakpointInfo');
+  if (!bpInfo) return;
+  if (autoRunActive) {
+    bpInfo.textContent = `auto-run: ${AUTO_RUN_INTERVAL_MS} ms/step`;
+    return;
+  }
+  if (autoRunPauseLine != null) {
+    bpInfo.textContent = `auto-run paused before breakpoint line ${autoRunPauseLine}`;
+    return;
+  }
+  bpInfo.textContent = 'breakpoints: click line numbers, forward navigation stops on hits';
+}
+
+function stopAutoRun(hitLine = null) {
+  if (autoRunTimerId != null) {
+    clearTimeout(autoRunTimerId);
+    autoRunTimerId = null;
+  }
+  autoRunActive = false;
+  autoRunPauseLine = hitLine;
+  syncRunButtonLabel();
+  refreshBreakpointInfo();
+}
+
+function scheduleAutoRunTick() {
+  if (!autoRunActive) return;
+  if (autoRunTimerId != null) {
+    clearTimeout(autoRunTimerId);
+  }
+  autoRunTimerId = window.setTimeout(() => {
+    autoRunTimerId = null;
+    if (!autoRunActive) return;
+    const raw = getCurrentRawIndex();
+    const next = raw + 1;
+    if (next >= STEPS.length) {
+      stopAutoRun();
+      return;
+    }
+    const hitLine = findBreakpointLine(STEPS[next]);
+    if (hitLine != null) {
+      stopAutoRun(hitLine);
+      return;
+    }
+    autoRunPauseLine = null;
+    renderStepRaw(next);
+    refreshBreakpointInfo();
+    scheduleAutoRunTick();
+  }, AUTO_RUN_INTERVAL_MS);
+}
+
+function startAutoRun() {
+  if (!STEPS.length) return;
+  if (autoRunTimerId != null) {
+    clearTimeout(autoRunTimerId);
+    autoRunTimerId = null;
+  }
+  autoRunPauseLine = null;
+  autoRunActive = true;
+  syncRunButtonLabel();
+  refreshBreakpointInfo();
+  scheduleAutoRunTick();
 }
 
 function findNextBreakpointStep(startDisplayIndex = current + 1) {
@@ -356,11 +463,15 @@ function syncCodeHighlights(scrollToCurrent = false) {
     row.classList.toggle('current', lineNo === currentLine);
     row.classList.toggle('hover', hoveredLine !== null && lineNo === hoveredLine);
     row.classList.toggle('breakpoint', BREAKPOINTS.has(lineNo));
+    row.classList.toggle('breakpoint-pause', autoRunPauseLine != null && lineNo === autoRunPauseLine);
     row.classList.toggle('active', lineNo === focusedLine && lineNo !== currentLine);
     const bp = row.querySelector('.ln-breakpoint');
     if (bp) bp.classList.toggle('on', BREAKPOINTS.has(lineNo));
     const arrow = row.querySelector('.ln-arrow');
-    if (arrow) { arrow.textContent = lineNo === currentLine ? '\u279c' : ''; }
+    if (arrow) {
+      arrow.textContent = lineNo === currentLine ? '\u279c' : '';
+      arrow.classList.toggle('breakpoint-pause', autoRunPauseLine != null && lineNo === autoRunPauseLine);
+    }
   });
   const scrollLine = focusedLine || currentLine;
   if (scrollToCurrent && codeRows[scrollLine - 1]) {
@@ -391,6 +502,7 @@ function syncStackHighlights() {
   });
 }
 
+      
 // Map a real STEPS index back to the nearest display index
 function toDisplay(realIdx) {
   for (let d = 0; d < DISPLAY_INDICES.length; d++) {
@@ -658,24 +770,17 @@ function applyCompactGridLayout(graphData, viewport = null) {
   const cols = Math.max(1, metrics.cols);
   const stepX = Math.max(metrics.maxW + metrics.boundaryGapX, 96);
   const stepY = Math.max(metrics.maxH + metrics.boundaryGapY, 72);
-  const totalRows = Math.max(1, Math.ceil(nodes.length / cols));
-  const totalW = Math.max(0, (cols - 1) * stepX);
-  const totalH = Math.max(0, (totalRows - 1) * stepY);
-  const startX = -Math.floor(totalW / 2);
-  const startY = -Math.floor(totalH / 2);
-
-  nodes.sort((a, b) => String(a?.id ?? '').localeCompare(String(b?.id ?? '')));
-  nodes.forEach((node, idx) => {
-    const row = Math.floor(idx / cols);
-    const col = idx % cols;
-    node.style = node.style || {};
-    node.style.x = startX + col * stepX;
-    node.style.y = startY + row * stepY;
-  });
 
   return {
     data: workingData,
-    layout: { type: 'preset' },
+    layout: {
+      type: 'grid',
+      cols,
+      preventOverlap: true,
+      nodeSize: [metrics.maxW, metrics.maxH],
+      sortBy: 'id',
+      preventOverlapPadding: Math.max(stepX, stepY),
+    },
   };
 }
 
@@ -2263,39 +2368,60 @@ function setIconButton(button, icon, label) {
 }
 
 setIconButton(document.getElementById('prevStepBtn'), 'prev', '上一个执行步骤');
+setIconButton(document.getElementById('stepIntoBtn'), 'next', '逐过程执行到下一个原始步骤');
 setIconButton(document.getElementById('stepBackBtn'), 'stepBack', '返回上一行（同函数内）');
 setIconButton(document.getElementById('stepOverBtn'), 'stepOver', '执行下一行（同函数内）');
 setIconButton(document.getElementById('nextStepBtn'), 'next', '下一个执行步骤');
 setIconButton(document.getElementById('stepOutBtn'), 'stepOut', '跳出当前函数');
 setIconButton(document.getElementById('runToLineBtn'), 'runToLine', '运行到指定行');
+syncRunButtonLabel();
+refreshBreakpointInfo();
 
 document.getElementById('prevStepBtn').addEventListener('click', () => jumpToStep(current - 1));
+document.getElementById('stepIntoBtn').addEventListener('click', () => {
+  stopAutoRun();
+  const ri = findStepIntoRaw();
+  if (ri >= 0) renderStepRaw(ri);
+});
 document.getElementById('stepBackBtn').addEventListener('click', () => {
+  stopAutoRun();
   const ri = findStepBackRaw();
   if (ri >= 0) renderStepRaw(ri);
 });
 document.getElementById('stepOverBtn').addEventListener('click', () => {
+  stopAutoRun();
   const ri = findStepOverRaw();
   if (ri >= 0) renderStepRaw(ri);
 });
 document.getElementById('nextStepBtn').addEventListener('click', () => jumpToStep(current + 1));
 document.getElementById('stepOutBtn').addEventListener('click', () => {
+  stopAutoRun();
   const ri = findStepOutRaw();
   if (ri >= 0) renderStepRaw(ri);
 });
+document.getElementById('runBtn').addEventListener('click', () => {
+  if (autoRunActive) {
+    stopAutoRun();
+    return;
+  }
+  startAutoRun();
+});
 document.getElementById('runToLineBtn').addEventListener('click', () => {
+  stopAutoRun();
   const raw = Number(document.getElementById('runLineInput').value);
   if (!Number.isFinite(raw)) return;
   advanceStep(findNextLineStep(raw));
 });
 const stepInput = document.getElementById('stepInput');
 stepInput.addEventListener('change', () => {
+  stopAutoRun();
   const raw = Number(stepInput.value);
   if (!Number.isFinite(raw)) return;
   advanceStep(raw - 1);
 });
 stepInput.addEventListener('keydown', (evt) => {
   if (evt.key !== 'Enter') return;
+  stopAutoRun();
   const raw = Number(stepInput.value);
   if (!Number.isFinite(raw)) return;
   advanceStep(raw - 1);
@@ -2306,11 +2432,52 @@ window.addEventListener('keydown', (evt) => {
   if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
   if (evt.key === 'ArrowLeft') {
     evt.preventDefault();
+    stopAutoRun();
     jumpToStep(current - 1);
     return;
   }
   evt.preventDefault();
+  stopAutoRun();
   jumpToStep(current + 1);
+});
+// VSCode-style debugger keys: F5=Continue, F10=Step Over, F11=Step Into, Shift+F11=Step Out
+window.addEventListener('keydown', (evt) => {
+  // Ignore when typing in inputs
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
+
+  if (evt.key === 'F5') {
+    evt.preventDefault();
+    // Toggle: if running, pause; if paused or idle, start/continue
+    if (autoRunActive) {
+      stopAutoRun();
+    } else {
+      startAutoRun();
+    }
+    return;
+  }
+
+  if (evt.key === 'F10') {
+    evt.preventDefault();
+    stopAutoRun();
+    const ri = findStepOverRaw();
+    if (ri >= 0) renderStepRaw(ri);
+    return;
+  }
+
+  if (evt.key === 'F11') {
+    evt.preventDefault();
+    stopAutoRun();
+    // If Shift is held, this is Step Out
+    if (evt.shiftKey) {
+      const ri = findStepOutRaw();
+      if (ri >= 0) renderStepRaw(ri);
+    } else {
+      const ri = findStepIntoRaw();
+      if (ri >= 0) renderStepRaw(ri);
+    }
+    return;
+  }
 });
 window.addEventListener('keydown', (evt) => {
   if (evt.key !== 'ArrowUp' && evt.key !== 'ArrowDown') return;
@@ -2318,9 +2485,11 @@ window.addEventListener('keydown', (evt) => {
   if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
   evt.preventDefault();
   if (evt.key === 'ArrowUp') {
+    stopAutoRun();
     const ri = findStepBackRaw();
     if (ri >= 0) renderStepRaw(ri);
   } else {
+    stopAutoRun();
     const ri = findStepOverRaw();
     if (ri >= 0) renderStepRaw(ri);
   }
@@ -2341,14 +2510,18 @@ if (autoFitToggle) {
 // Show/hide line-navigation buttons based on breakpoint state
 (function initBreakpointUI() {
   const bpInfo = document.getElementById('breakpointInfo');
+  const stepIntoBtn = document.getElementById('stepIntoBtn');
   const stepBackBtn = document.getElementById('stepBackBtn');
   const stepOverBtn = document.getElementById('stepOverBtn');
+  const runBtn = document.getElementById('runBtn');
   const runLineInput = document.getElementById('runLineInput');
   const runToLineBtn = document.getElementById('runToLineBtn');
 
   if (!BREAKPOINTS_ENABLED) {
+    if (stepIntoBtn) stepIntoBtn.style.display = 'inline-block';
     if (stepBackBtn) stepBackBtn.style.display = 'none';
     if (stepOverBtn) stepOverBtn.style.display = 'none';
+    if (runBtn) runBtn.style.display = 'inline-block';
     if (runLineInput) runLineInput.style.display = 'none';
     if (runToLineBtn) runToLineBtn.style.display = 'none';
     if (bpInfo) bpInfo.textContent = 'breakpoints disabled — line-nav hidden';

@@ -243,6 +243,7 @@
   .ln-breakpoint { display:inline-block; width:12px; height:12px; border-radius:50%; margin-right:4px; vertical-align:middle; box-sizing:border-box; }
   .ln-breakpoint.on { background:#e04848; box-shadow:0 0 0 2px rgba(224,72,72,0.12); }
   .ln-arrow { width:18px; color:#1e8e3e; font-weight:700; display:inline-block; text-align:center }
+  .ln-arrow.breakpoint-pause { color:#d93025; }
   .ln-number { cursor:pointer; }
   .txt { flex:1; }
   .active { background:#fff3cd; }
