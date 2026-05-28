@@ -218,7 +218,6 @@
   .line.current { background:#eaf6ea; }
   .line.hover { background:#eef4ff; }
   .line.active { background:#fff3cd; }
-  .line.breakpoint { background:linear-gradient(90deg, rgba(255, 204, 0, 0.18), transparent 60%); }
   .ln { width:64px; color:#999; user-select:none; display:flex; align-items:center; gap:4px; flex:0 0 64px; }
   .ln-breakpoint { display:inline-block; width:12px; height:12px; border-radius:50%; margin-right:4px; vertical-align:middle; box-sizing:border-box; }
   .ln-breakpoint.on { background:#e04848; box-shadow:0 0 0 2px rgba(224,72,72,0.12); }
