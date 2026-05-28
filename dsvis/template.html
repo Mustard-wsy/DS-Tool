@@ -30,34 +30,38 @@ __STYLES__
     </div>
     <div id="codeView"></div>
     <div id="controls">
-      <button id="prevStepBtn">Previous Display Step</button>
-      <button id="nextStepBtn">Next Display Step</button>
-      <button id="stepIntoBtn">Step Into</button>
-      <button id="stepOverBtn">Step Over</button>
-      <button id="stepOutBtn">Step Out</button>
-      <button id="runBtn">Continue</button>
-      <button id="pauseBtn">Pause</button>
-      <button id="restartBtn">Restart</button>
-      <button id="stopBtn">Stop</button>
-      <button id="toggleBreakpointsBtn">Toggle Breakpoints</button>
-      <span>
-        Jump to Display Step
-        <input id="stepInput" type="number" min="1" step="1" />
-        / <span id="stepTotal">0</span>
-        &nbsp;|&nbsp; line <span id="lineInfo">-</span>
-      </span>
-      <span>
-        运行到行
-        <input id="runLineInput" type="number" min="1" step="1" />
-        <button id="runToLineBtn">跳转</button>
-      </span>
-      <button id="hiddenNodesBtn" class="icon-btn" type="button" title="隐藏节点列表">👁</button>
-      <button id="settingsBtn" class="icon-btn" type="button" title="样式设置">⚙</button>
-      <span id="breakpointInfo">断点：点击代码行设置；继续和单步回放会在命中前暂停</span>
-      <label id="autoFitWrap">
-        <input id="autoFitToggle" type="checkbox" checked />
-        自动缩放
-      </label>
+      <div class="controls-row controls-row-main">
+        <button id="prevStepBtn">Previous Display Step</button>
+        <button id="nextStepBtn">Next Display Step</button>
+        <button id="stepIntoBtn">Step Into</button>
+        <button id="stepOverBtn">Step Over</button>
+        <button id="stepOutBtn">Step Out</button>
+        <button id="runBtn">Continue</button>
+        <button id="pauseBtn">Pause</button>
+        <button id="restartBtn">Restart</button>
+        <button id="stopBtn">Stop</button>
+        <button id="toggleBreakpointsBtn">Toggle Breakpoints</button>
+      </div>
+      <div class="controls-row controls-row-meta">
+        <span class="controls-inline-group">
+          Jump to Display Step
+          <input id="stepInput" type="number" min="1" step="1" />
+          / <span id="stepTotal">0</span>
+          &nbsp;|&nbsp; line <span id="lineInfo">-</span>
+        </span>
+        <span class="controls-inline-group">
+          运行到行
+          <input id="runLineInput" type="number" min="1" step="1" />
+          <button id="runToLineBtn">跳转</button>
+        </span>
+        <button id="hiddenNodesBtn" class="icon-btn" type="button" title="隐藏节点列表"></button>
+        <button id="settingsBtn" class="icon-btn" type="button" title="样式设置"></button>
+        <span id="breakpointInfo">断点：点击代码行设置；继续和单步回放会在命中前暂停</span>
+        <label id="autoFitWrap">
+          <input id="autoFitToggle" type="checkbox" checked />
+          自动缩放
+        </label>
+      </div>
     </div>
     <div id="hiddenNodesPanel">
       <div class="pane-header">
@@ -2391,6 +2395,7 @@ function renderStepImpl(ri, displayIndex) {
 const ICONS = {
   prev: 'codicon-arrow-left',
   next: 'codicon-arrow-right',
+  nextDisplay: 'codicon-arrow-small-right',
   continue: 'codicon-debug-continue',
   pause: 'codicon-debug-pause',
   restart: 'codicon-debug-restart',
@@ -2416,9 +2421,9 @@ function setIconButton(button, icon, label) {
 }
 
 setIconButton(document.getElementById('prevStepBtn'), 'prev', '上一个展示步');
-setIconButton(document.getElementById('stepIntoBtn'), 'next', '逐过程执行到下一个 Raw Step');
+setIconButton(document.getElementById('stepIntoBtn'), 'stepInto', '逐过程执行到下一个 Raw Step');
 setIconButton(document.getElementById('stepOverBtn'), 'stepOver', '按当前帧控制流前进，不进入被调函数');
-setIconButton(document.getElementById('nextStepBtn'), 'next', '下一个展示步');
+setIconButton(document.getElementById('nextStepBtn'), 'nextDisplay', '下一个展示步');
 setIconButton(document.getElementById('stepOutBtn'), 'stepOut', '跳出当前函数并停在调用者');
 setIconButton(document.getElementById('runBtn'), 'continue', '继续回放');
 setIconButton(document.getElementById('runToLineBtn'), 'runToLine', '运行到指定代码行');
@@ -2426,6 +2431,8 @@ setIconButton(document.getElementById('pauseBtn'), 'pause', '暂停自动回放'
 setIconButton(document.getElementById('restartBtn'), 'restart', '重新从第一个步骤开始回放');
 setIconButton(document.getElementById('stopBtn'), 'stop', '停止当前调试会话');
 setIconButton(document.getElementById('toggleBreakpointsBtn'), 'breakpointOn', '切换断点命中开关');
+setIconButton(document.getElementById('hiddenNodesBtn'), 'eye', '隐藏节点列表');
+setIconButton(document.getElementById('settingsBtn'), 'gear', '样式设置');
 syncRunButtonLabel();
 syncBreakpointToggleButton();
 syncDebuggerControlState();
