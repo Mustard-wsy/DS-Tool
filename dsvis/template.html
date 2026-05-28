@@ -13,7 +13,7 @@ __STYLES__
 <div id="root">
   <div id="stack">
     <div class="pane-header">
-      <span class="pane-title">Runtime Stack</span>
+      <span class="pane-title">运行栈</span>
       <button id="stackToggleBtn" class="pane-toggle" type="button">隐藏</button>
     </div>
     <div id="stackView"></div>
@@ -25,32 +25,35 @@ __STYLES__
   <div id="rightResizeHandle" class="pane-resizer" role="separator" aria-label="resize right"></div>
   <div id="right">
     <div class="pane-header">
-      <span class="pane-title">Original Source </span>
+      <span class="pane-title">源代码</span>
       <button id="codeToggleBtn" class="pane-toggle" type="button">隐藏</button>
     </div>
     <div id="codeView"></div>
     <div id="controls">
-      <button id="prevStepBtn">Prev</button>
-      <button id="nextStepBtn">Next</button>
+      <button id="prevStepBtn">Previous Display Step</button>
+      <button id="nextStepBtn">Next Display Step</button>
       <button id="stepIntoBtn">Step Into</button>
-      <button id="stepBackBtn">Step Back</button>
       <button id="stepOverBtn">Step Over</button>
       <button id="stepOutBtn">Step Out</button>
-      <button id="runBtn">Run</button>
+      <button id="runBtn">Continue</button>
+      <button id="pauseBtn">Pause</button>
+      <button id="restartBtn">Restart</button>
+      <button id="stopBtn">Stop</button>
+      <button id="toggleBreakpointsBtn">Toggle Breakpoints</button>
       <span>
-        Step
+        Jump to Display Step
         <input id="stepInput" type="number" min="1" step="1" />
         / <span id="stepTotal">0</span>
         &nbsp;|&nbsp; line <span id="lineInfo">-</span>
       </span>
       <span>
-        Run to line
+        运行到行
         <input id="runLineInput" type="number" min="1" step="1" />
-        <button id="runToLineBtn">Go</button>
+        <button id="runToLineBtn">跳转</button>
       </span>
       <button id="hiddenNodesBtn" class="icon-btn" type="button" title="隐藏节点列表">👁</button>
       <button id="settingsBtn" class="icon-btn" type="button" title="样式设置">⚙</button>
-      <span id="breakpointInfo">breakpoints: click line numbers, forward navigation stops on hits</span>
+      <span id="breakpointInfo">断点：点击代码行设置；继续和单步回放会在命中前暂停</span>
       <label id="autoFitWrap">
         <input id="autoFitToggle" type="checkbox" checked />
         自动缩放
@@ -77,7 +80,7 @@ __STYLES__
           </select>
         </label>
         <div class="settings-actions">
-          <button id="settingsApplyBtn" type="button">Apply</button>
+          <button id="settingsApplyBtn" type="button">应用</button>
         </div>
       </div>
     </div>
@@ -108,13 +111,14 @@ let hoveredLine = null;
 let hoveredFrameKey = null;
 let selectedFrameKey = null;
 const BREAKPOINTS = new Set();
-const BREAKPOINTS_ENABLED = __BREAKPOINTS_ENABLED__;
+let BREAKPOINTS_ENABLED = __BREAKPOINTS_ENABLED__;
 const HIDDEN_NODES = new Map();  // Map<nodeId, label> — hidden nodes
 let hiddenPanelVisible = false;
 const AUTO_RUN_INTERVAL_MS = 500;
 let autoRunTimerId = null;
 let autoRunActive = false;
 let autoRunPauseLine = null;
+let debugSessionStopped = false;
 
 // ── Visualisation configuration ──
 const VIS_CONFIG_STORAGE_KEY = 'dsvis:config';
@@ -306,7 +310,6 @@ function clearHoveredLine() {
 }
 
 function toggleBreakpoint(lineno) {
-  if (!BREAKPOINTS_ENABLED) return;
   const line = Number(lineno);
   if (!Number.isFinite(line) || line <= 0) return;
   if (BREAKPOINTS.has(line)) {
@@ -314,6 +317,13 @@ function toggleBreakpoint(lineno) {
   } else {
     BREAKPOINTS.add(line);
   }
+  syncCodeHighlights(false);
+}
+
+function setBreakpointsEnabled(enabled) {
+  BREAKPOINTS_ENABLED = Boolean(enabled);
+  syncBreakpointToggleButton();
+  refreshBreakpointInfo();
   syncCodeHighlights(false);
 }
 
@@ -327,6 +337,7 @@ function findStepIntoRaw() {
 }
 
 function stepHasBreakpoint(step) {
+  if (!BREAKPOINTS_ENABLED) return false;
   const line = Number(step?.lineno);
   if (Number.isFinite(line) && BREAKPOINTS.has(line)) return true;
   const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
@@ -337,6 +348,7 @@ function stepHasBreakpoint(step) {
 }
 
 function findBreakpointLine(step) {
+  if (!BREAKPOINTS_ENABLED) return null;
   const line = Number(step?.lineno);
   if (Number.isFinite(line) && BREAKPOINTS.has(line)) return line;
   const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
@@ -348,6 +360,7 @@ function findBreakpointLine(step) {
 }
 
 function findNextBreakpointRaw(startRaw = getCurrentRawIndex()) {
+  if (!BREAKPOINTS_ENABLED) return -1;
   for (let i = startRaw + 1; i < STEPS.length; i++) {
     if (stepHasBreakpoint(STEPS[i])) return i;
   }
@@ -357,27 +370,65 @@ function findNextBreakpointRaw(startRaw = getCurrentRawIndex()) {
 function syncRunButtonLabel() {
   const runBtn = document.getElementById('runBtn');
   if (!runBtn) return;
-  if (autoRunActive) {
-    runBtn.textContent = 'Pause';
-  } else if (autoRunPauseLine != null) {
-    runBtn.textContent = 'Continue';
-  } else {
-    runBtn.textContent = 'Run';
+  runBtn.textContent = autoRunPauseLine != null ? 'Resume' : 'Continue';
+  runBtn.disabled = debugSessionStopped;
+}
+
+function syncBreakpointToggleButton() {
+  const btn = document.getElementById('toggleBreakpointsBtn');
+  if (!btn) return;
+  btn.textContent = 'Toggle Breakpoints';
+  btn.title = BREAKPOINTS_ENABLED ? '断点命中已开启' : '断点命中已关闭';
+  btn.setAttribute('aria-label', btn.title);
+  btn.setAttribute('aria-pressed', BREAKPOINTS_ENABLED ? 'true' : 'false');
+}
+
+function syncDebuggerControlState() {
+  const ids = [
+    'prevStepBtn', 'nextStepBtn', 'stepIntoBtn', 'stepOverBtn', 'stepOutBtn',
+    'runBtn', 'pauseBtn', 'restartBtn', 'stopBtn', 'runToLineBtn', 'stepInput', 'runLineInput',
+  ];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (id === 'restartBtn' || id === 'toggleBreakpointsBtn') continue;
+    el.disabled = debugSessionStopped;
   }
+  const stepIntoBtn = document.getElementById('stepIntoBtn');
+  const stepOverBtn = document.getElementById('stepOverBtn');
+  const stepOutBtn = document.getElementById('stepOutBtn');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const restartBtn = document.getElementById('restartBtn');
+  if (stepIntoBtn) stepIntoBtn.disabled = debugSessionStopped;
+  if (stepOverBtn) stepOverBtn.disabled = debugSessionStopped;
+  if (stepOutBtn) stepOutBtn.disabled = debugSessionStopped;
+  if (pauseBtn) pauseBtn.disabled = debugSessionStopped;
+  if (stopBtn) stopBtn.disabled = debugSessionStopped;
+  if (restartBtn) restartBtn.disabled = false;
+  syncBreakpointToggleButton();
 }
 
 function refreshBreakpointInfo() {
   const bpInfo = document.getElementById('breakpointInfo');
   if (!bpInfo) return;
+  if (debugSessionStopped) {
+    bpInfo.textContent = '调试会话已停止，点击 Restart 从头回放';
+    return;
+  }
   if (autoRunActive) {
-    bpInfo.textContent = `auto-run: ${AUTO_RUN_INTERVAL_MS} ms/step`;
+    bpInfo.textContent = `自动运行：${AUTO_RUN_INTERVAL_MS} 毫秒/步`;
     return;
   }
   if (autoRunPauseLine != null) {
-    bpInfo.textContent = `auto-run paused before breakpoint line ${autoRunPauseLine}`;
+    bpInfo.textContent = `自动运行已在断点行 ${autoRunPauseLine} 前暂停`;
     return;
   }
-  bpInfo.textContent = 'breakpoints: click line numbers, forward navigation stops on hits';
+  if (!BREAKPOINTS_ENABLED) {
+    bpInfo.textContent = '断点命中已关闭，但仍可点击行号编辑断点';
+    return;
+  }
+  bpInfo.textContent = '断点：点击行号设置；继续与单步回放会在命中前暂停';
 }
 
 function stopAutoRun(hitLine = null) {
@@ -391,14 +442,39 @@ function stopAutoRun(hitLine = null) {
   refreshBreakpointInfo();
 }
 
+function pauseDebugSession() {
+  if (debugSessionStopped) return;
+  stopAutoRun();
+}
+
+function restartDebugSession() {
+  debugSessionStopped = false;
+  stopAutoRun();
+  autoRunPauseLine = null;
+  syncRunButtonLabel();
+  syncDebuggerControlState();
+  refreshBreakpointInfo();
+  if (DISPLAY_INDICES.length) {
+    renderStep(0);
+  }
+}
+
+function stopDebugSession() {
+  debugSessionStopped = true;
+  stopAutoRun();
+  syncRunButtonLabel();
+  syncDebuggerControlState();
+  refreshBreakpointInfo();
+}
+
 function scheduleAutoRunTick() {
-  if (!autoRunActive) return;
+  if (!autoRunActive || debugSessionStopped) return;
   if (autoRunTimerId != null) {
     clearTimeout(autoRunTimerId);
   }
   autoRunTimerId = window.setTimeout(() => {
     autoRunTimerId = null;
-    if (!autoRunActive) return;
+    if (!autoRunActive || debugSessionStopped) return;
     const raw = getCurrentRawIndex();
     const next = raw + 1;
     if (next >= STEPS.length) {
@@ -418,7 +494,7 @@ function scheduleAutoRunTick() {
 }
 
 function startAutoRun() {
-  if (!STEPS.length) return;
+  if (!STEPS.length || debugSessionStopped) return;
   if (autoRunTimerId != null) {
     clearTimeout(autoRunTimerId);
     autoRunTimerId = null;
@@ -431,6 +507,7 @@ function startAutoRun() {
 }
 
 function findNextBreakpointStep(startDisplayIndex = current + 1) {
+  if (!BREAKPOINTS_ENABLED) return -1;
   const fromReal = toReal(startDisplayIndex);
   for (let i = fromReal + 1; i < STEPS.length; i++) {
     if (stepHasBreakpoint(STEPS[i])) {
@@ -571,25 +648,6 @@ function findStepOutRaw() {
   }, raw + 1);
 }
 
-function findStepBackRaw() {
-  const raw = currentRaw ?? toReal(current);
-  const frames = getStepFramesRaw(raw);
-  const currentDepth = frames.length;
-  const deepest = frames.length ? frames[frames.length - 1] : null;
-  const currentFrameKey = deepest ? frameKey(deepest, currentDepth - 1) : null;
-  const currentLine = Number(deepest?.lineno) || (STEPS[raw]?.lineno ?? 0);
-
-  return findStepRawReverse((step) => {
-    const fs = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
-    if (fs.length > currentDepth) return false;
-    const d = fs.length ? fs[fs.length - 1] : null;
-    if (!d) return true;
-    const nk = frameKey(d, fs.length - 1);
-    if (currentFrameKey && nk === currentFrameKey && Number(d?.lineno) === currentLine) return false;
-    return true;
-  }, raw - 1);
-}
-
 // Helper: get frames from a raw STEPS index
 function getStepFramesRaw(ri) {
   const frames = STEPS[ri]?.stack?.frames;
@@ -637,29 +695,10 @@ function findStepOutIndex(startIndex = current + 1) {
   }, startIndex);
 }
 
-function findStepBackIndex(startIndex = current - 1) {
-  const currentFrames = getStepFrames(current);
-  const currentDepth = currentFrames.length;
-  const currentFrame = getDeepestFrame(current);
-  const currentFrameKey = currentFrame ? frameKey(currentFrame, currentDepth - 1) : null;
-  const currentLine = Number(currentFrame?.lineno) || getCurrentLine();
-
-  return findStepIndexReverse((step) => {
-    const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
-    if (frames.length > currentDepth) return false;
-    const deepest = frames.length ? frames[frames.length - 1] : null;
-    if (!deepest) return true;
-    const nextKey = frameKey(deepest, frames.length - 1);
-    if (currentFrameKey && nextKey === currentFrameKey && Number(deepest?.lineno) === currentLine) {
-      return false;
-    }
-    return true;
-  }, startIndex);
-}
 
 // Raw step jump — no breakpoint check, no line semantics
 function jumpToStep(targetDisplayIndex) {
-  if (!DISPLAY_INDICES.length) return;
+  if (!DISPLAY_INDICES.length || debugSessionStopped) return;
   const target = Math.max(0, Math.min(targetDisplayIndex, DISPLAY_INDICES.length - 1));
   renderStep(target);
 }
@@ -2155,7 +2194,7 @@ function renderStackPanel(stackData, stepIndex) {
     if (!rows.length) {
       const emptyEl = document.createElement('div');
       emptyEl.className = 'stack-empty';
-      emptyEl.textContent = 'empty';
+      emptyEl.textContent = '空';
       rowsWrap.appendChild(emptyEl);
     } else {
       rows.forEach((row, rowIdx) => {
@@ -2204,7 +2243,7 @@ function renderStackPanel(stackData, stepIndex) {
   if (!globals.length && !frames.length) {
     const emptyEl = document.createElement('div');
     emptyEl.className = 'stack-empty';
-    emptyEl.textContent = 'no runtime stack data';
+    emptyEl.textContent = '暂无运行栈数据';
     stackView.appendChild(emptyEl);
   }
 
@@ -2351,7 +2390,7 @@ function renderStepImpl(ri, displayIndex) {
 const ICONS = {
   prev: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>',
   next: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>',
-  stepBack: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 10 20 15 15 20"></polyline><path d="M4 4v7a4 4 0 0 0 4 4h16"></path></svg>',
+  pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"></rect><rect x="14" y="5" width="4" height="14" rx="1"></rect></svg>',
   stepOver: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 10 4 15 9 20"></polyline><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg>',
   stepOut: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>',
   runToLine: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5l14 7-14 7V5z"></path></svg>',
@@ -2367,25 +2406,25 @@ function setIconButton(button, icon, label) {
   button.setAttribute('aria-label', label);
 }
 
-setIconButton(document.getElementById('prevStepBtn'), 'prev', '上一个执行步骤');
-setIconButton(document.getElementById('stepIntoBtn'), 'next', '逐过程执行到下一个原始步骤');
-setIconButton(document.getElementById('stepBackBtn'), 'stepBack', '返回上一行（同函数内）');
-setIconButton(document.getElementById('stepOverBtn'), 'stepOver', '执行下一行（同函数内）');
-setIconButton(document.getElementById('nextStepBtn'), 'next', '下一个执行步骤');
-setIconButton(document.getElementById('stepOutBtn'), 'stepOut', '跳出当前函数');
-setIconButton(document.getElementById('runToLineBtn'), 'runToLine', '运行到指定行');
+setIconButton(document.getElementById('prevStepBtn'), 'prev', '上一个展示步');
+setIconButton(document.getElementById('stepIntoBtn'), 'next', '逐过程执行到下一个 Raw Step');
+setIconButton(document.getElementById('stepOverBtn'), 'stepOver', '按当前帧控制流前进，不进入被调函数');
+setIconButton(document.getElementById('nextStepBtn'), 'next', '下一个展示步');
+setIconButton(document.getElementById('stepOutBtn'), 'stepOut', '跳出当前函数并停在调用者');
+setIconButton(document.getElementById('runToLineBtn'), 'runToLine', '运行到指定代码行');
+setIconButton(document.getElementById('pauseBtn'), 'pause', '暂停自动回放');
+setIconButton(document.getElementById('restartBtn'), 'prev', '重新从第一个步骤开始回放');
+setIconButton(document.getElementById('stopBtn'), 'stepOut', '停止当前调试会话');
+setIconButton(document.getElementById('toggleBreakpointsBtn'), 'stepOver', '切换断点命中开关');
 syncRunButtonLabel();
+syncBreakpointToggleButton();
+syncDebuggerControlState();
 refreshBreakpointInfo();
 
 document.getElementById('prevStepBtn').addEventListener('click', () => jumpToStep(current - 1));
 document.getElementById('stepIntoBtn').addEventListener('click', () => {
   stopAutoRun();
   const ri = findStepIntoRaw();
-  if (ri >= 0) renderStepRaw(ri);
-});
-document.getElementById('stepBackBtn').addEventListener('click', () => {
-  stopAutoRun();
-  const ri = findStepBackRaw();
   if (ri >= 0) renderStepRaw(ri);
 });
 document.getElementById('stepOverBtn').addEventListener('click', () => {
@@ -2400,13 +2439,25 @@ document.getElementById('stepOutBtn').addEventListener('click', () => {
   if (ri >= 0) renderStepRaw(ri);
 });
 document.getElementById('runBtn').addEventListener('click', () => {
-  if (autoRunActive) {
-    stopAutoRun();
-    return;
-  }
+  if (debugSessionStopped) return;
+  if (autoRunActive) return;
   startAutoRun();
 });
+document.getElementById('pauseBtn').addEventListener('click', () => {
+  if (debugSessionStopped) return;
+  pauseDebugSession();
+});
+document.getElementById('restartBtn').addEventListener('click', () => {
+  restartDebugSession();
+});
+document.getElementById('stopBtn').addEventListener('click', () => {
+  stopDebugSession();
+});
+document.getElementById('toggleBreakpointsBtn').addEventListener('click', () => {
+  setBreakpointsEnabled(!BREAKPOINTS_ENABLED);
+});
 document.getElementById('runToLineBtn').addEventListener('click', () => {
+  if (debugSessionStopped) return;
   stopAutoRun();
   const raw = Number(document.getElementById('runLineInput').value);
   if (!Number.isFinite(raw)) return;
@@ -2414,6 +2465,7 @@ document.getElementById('runToLineBtn').addEventListener('click', () => {
 });
 const stepInput = document.getElementById('stepInput');
 stepInput.addEventListener('change', () => {
+  if (debugSessionStopped) return;
   stopAutoRun();
   const raw = Number(stepInput.value);
   if (!Number.isFinite(raw)) return;
@@ -2421,6 +2473,7 @@ stepInput.addEventListener('change', () => {
 });
 stepInput.addEventListener('keydown', (evt) => {
   if (evt.key !== 'Enter') return;
+  if (debugSessionStopped) return;
   stopAutoRun();
   const raw = Number(stepInput.value);
   if (!Number.isFinite(raw)) return;
@@ -2432,33 +2485,37 @@ window.addEventListener('keydown', (evt) => {
   if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
   if (evt.key === 'ArrowLeft') {
     evt.preventDefault();
+    if (debugSessionStopped) return;
     stopAutoRun();
     jumpToStep(current - 1);
     return;
   }
   evt.preventDefault();
+  if (debugSessionStopped) return;
   stopAutoRun();
   jumpToStep(current + 1);
 });
-// VSCode-style debugger keys: F5=Continue, F10=Step Over, F11=Step Into, Shift+F11=Step Out
+// VSCode-style debugger keys: F5=Continue, Shift+F5=Stop, F10=Step Over, F11=Step Into, Shift+F11=Step Out
 window.addEventListener('keydown', (evt) => {
   // Ignore when typing in inputs
   const active = document.activeElement;
   if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
 
+  if (evt.key === 'F5' && evt.shiftKey) {
+    evt.preventDefault();
+    stopDebugSession();
+    return;
+  }
+
   if (evt.key === 'F5') {
     evt.preventDefault();
-    // Toggle: if running, pause; if paused or idle, start/continue
-    if (autoRunActive) {
-      stopAutoRun();
-    } else {
-      startAutoRun();
-    }
+    if (!debugSessionStopped) startAutoRun();
     return;
   }
 
   if (evt.key === 'F10') {
     evt.preventDefault();
+    if (debugSessionStopped) return;
     stopAutoRun();
     const ri = findStepOverRaw();
     if (ri >= 0) renderStepRaw(ri);
@@ -2467,6 +2524,7 @@ window.addEventListener('keydown', (evt) => {
 
   if (evt.key === 'F11') {
     evt.preventDefault();
+    if (debugSessionStopped) return;
     stopAutoRun();
     // If Shift is held, this is Step Out
     if (evt.shiftKey) {
@@ -2477,21 +2535,6 @@ window.addEventListener('keydown', (evt) => {
       if (ri >= 0) renderStepRaw(ri);
     }
     return;
-  }
-});
-window.addEventListener('keydown', (evt) => {
-  if (evt.key !== 'ArrowUp' && evt.key !== 'ArrowDown') return;
-  const active = document.activeElement;
-  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
-  evt.preventDefault();
-  if (evt.key === 'ArrowUp') {
-    stopAutoRun();
-    const ri = findStepBackRaw();
-    if (ri >= 0) renderStepRaw(ri);
-  } else {
-    stopAutoRun();
-    const ri = findStepOverRaw();
-    if (ri >= 0) renderStepRaw(ri);
   }
 });
 window.addEventListener('keydown', (evt) => {
@@ -2507,26 +2550,8 @@ if (autoFitToggle) {
   });
 }
 
-// Show/hide line-navigation buttons based on breakpoint state
-(function initBreakpointUI() {
-  const bpInfo = document.getElementById('breakpointInfo');
-  const stepIntoBtn = document.getElementById('stepIntoBtn');
-  const stepBackBtn = document.getElementById('stepBackBtn');
-  const stepOverBtn = document.getElementById('stepOverBtn');
-  const runBtn = document.getElementById('runBtn');
-  const runLineInput = document.getElementById('runLineInput');
-  const runToLineBtn = document.getElementById('runToLineBtn');
-
-  if (!BREAKPOINTS_ENABLED) {
-    if (stepIntoBtn) stepIntoBtn.style.display = 'inline-block';
-    if (stepBackBtn) stepBackBtn.style.display = 'none';
-    if (stepOverBtn) stepOverBtn.style.display = 'none';
-    if (runBtn) runBtn.style.display = 'inline-block';
-    if (runLineInput) runLineInput.style.display = 'none';
-    if (runToLineBtn) runToLineBtn.style.display = 'none';
-    if (bpInfo) bpInfo.textContent = 'breakpoints disabled — line-nav hidden';
-  }
-})();
+syncBreakpointToggleButton();
+syncDebuggerControlState();
 
 const stackRestoreBtn = document.getElementById('stackRestoreBtn');
 if (stackRestoreBtn) {
