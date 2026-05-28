@@ -3,11 +3,30 @@
 Also handles HTML generation (``render_debugger()``).
 """
 
+import base64
 import json
 import tempfile
 import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
+def _load_codicon_styles() -> str:
+    """Return codicon CSS with the font embedded as a data URI.
+
+    The generated HTML is opened from a temporary directory, so we cannot
+    rely on relative ``url(...)`` references inside the upstream CSS.
+    """
+    root = Path(__file__).resolve().parents[1]
+    css_path = root / "node_modules" / "@vscode" / "codicons" / "dist" / "codicon.css"
+    ttf_path = root / "node_modules" / "@vscode" / "codicons" / "dist" / "codicon.ttf"
+    if not css_path.is_file() or not ttf_path.is_file():
+        return ""
+    css = css_path.read_text(encoding="utf-8")
+    font_data = base64.b64encode(ttf_path.read_bytes()).decode("ascii")
+    font_url = f"data:font/ttf;base64,{font_data}"
+    css = css.replace("url(\"./codicon.ttf?721d4c0a96379d0c13d3d5596893c348\")", f"url('{font_url}')")
+    css += "\n.icon-btn .codicon, .edge-toggle .codicon, .pane-toggle .codicon { font-size: 18px; line-height: 1; }\n"
+    return css
+
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +489,9 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
     styles_path = Path(__file__).parent / "styles.css"
     html = template_path.read_text(encoding="utf-8")
     styles = styles_path.read_text(encoding="utf-8")
+    codicon_styles = _load_codicon_styles()
+    if codicon_styles:
+        styles = f"{codicon_styles}\n{styles}"
     html = html.replace("__TITLE__", title)
     html = html.replace("__STYLES__", styles)
     html = html.replace("__STEPS__", json.dumps(step_payload, ensure_ascii=False))

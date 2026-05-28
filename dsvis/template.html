@@ -370,16 +370,17 @@ function findNextBreakpointRaw(startRaw = getCurrentRawIndex()) {
 function syncRunButtonLabel() {
   const runBtn = document.getElementById('runBtn');
   if (!runBtn) return;
-  runBtn.textContent = autoRunPauseLine != null ? 'Resume' : 'Continue';
+  const label = autoRunPauseLine != null ? '恢复继续' : '继续';
+  runBtn.title = label;
+  runBtn.setAttribute('aria-label', label);
   runBtn.disabled = debugSessionStopped;
 }
 
 function syncBreakpointToggleButton() {
   const btn = document.getElementById('toggleBreakpointsBtn');
   if (!btn) return;
-  btn.textContent = 'Toggle Breakpoints';
-  btn.title = BREAKPOINTS_ENABLED ? '断点命中已开启' : '断点命中已关闭';
-  btn.setAttribute('aria-label', btn.title);
+  const label = BREAKPOINTS_ENABLED ? '断点命中已开启' : '断点命中已关闭';
+  setIconButton(btn, BREAKPOINTS_ENABLED ? 'breakpointOn' : 'breakpointOff', label);
   btn.setAttribute('aria-pressed', BREAKPOINTS_ENABLED ? 'true' : 'false');
 }
 
@@ -2388,20 +2389,28 @@ function renderStepImpl(ri, displayIndex) {
 }
 
 const ICONS = {
-  prev: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>',
-  next: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>',
-  pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"></rect><rect x="14" y="5" width="4" height="14" rx="1"></rect></svg>',
-  stepOver: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 10 4 15 9 20"></polyline><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg>',
-  stepOut: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>',
-  runToLine: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5l14 7-14 7V5z"></path></svg>',
-  paneLeft: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>',
-  paneRight: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>',
+  prev: 'codicon-arrow-left',
+  next: 'codicon-arrow-right',
+  continue: 'codicon-debug-continue',
+  pause: 'codicon-debug-pause',
+  restart: 'codicon-debug-restart',
+  stop: 'codicon-debug-stop',
+  stepInto: 'codicon-debug-step-into',
+  stepOver: 'codicon-debug-step-over',
+  stepOut: 'codicon-debug-step-out',
+  runToLine: 'codicon-debug-line-by-line',
+  breakpointOn: 'codicon-debug-breakpoint',
+  breakpointOff: 'codicon-debug-breakpoint-disabled',
+  eye: 'codicon-eye',
+  gear: 'codicon-gear',
+  paneLeft: 'codicon-chevron-left',
+  paneRight: 'codicon-chevron-right',
 };
 
 function setIconButton(button, icon, label) {
   if (!button) return;
   button.classList.add('icon-btn');
-  button.innerHTML = ICONS[icon] || '';
+  button.innerHTML = `<span class="codicon ${ICONS[icon] || ''}" aria-hidden="true"></span>`;
   button.title = label;
   button.setAttribute('aria-label', label);
 }
@@ -2411,11 +2420,12 @@ setIconButton(document.getElementById('stepIntoBtn'), 'next', '逐过程执行�
 setIconButton(document.getElementById('stepOverBtn'), 'stepOver', '按当前帧控制流前进，不进入被调函数');
 setIconButton(document.getElementById('nextStepBtn'), 'next', '下一个展示步');
 setIconButton(document.getElementById('stepOutBtn'), 'stepOut', '跳出当前函数并停在调用者');
+setIconButton(document.getElementById('runBtn'), 'continue', '继续回放');
 setIconButton(document.getElementById('runToLineBtn'), 'runToLine', '运行到指定代码行');
 setIconButton(document.getElementById('pauseBtn'), 'pause', '暂停自动回放');
-setIconButton(document.getElementById('restartBtn'), 'prev', '重新从第一个步骤开始回放');
-setIconButton(document.getElementById('stopBtn'), 'stepOut', '停止当前调试会话');
-setIconButton(document.getElementById('toggleBreakpointsBtn'), 'stepOver', '切换断点命中开关');
+setIconButton(document.getElementById('restartBtn'), 'restart', '重新从第一个步骤开始回放');
+setIconButton(document.getElementById('stopBtn'), 'stop', '停止当前调试会话');
+setIconButton(document.getElementById('toggleBreakpointsBtn'), 'breakpointOn', '切换断点命中开关');
 syncRunButtonLabel();
 syncBreakpointToggleButton();
 syncDebuggerControlState();

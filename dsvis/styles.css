@@ -16,20 +16,12 @@
     background:#fff;
     color:#25457a;
     font-size:12px;
+      .edge-toggle-left::before,
+      .edge-toggle-right::before {
+        content:none;
+        display:none;
+    font-size:18px;
     line-height:1;
-    padding:4px 8px;
-    border-radius:4px;
-    cursor:pointer;
-    flex:0 0 auto;
-  }
-  .icon-btn {
-    width:36px;
-    height:36px;
-    padding:0;
-    display:inline-flex;
-    align-items:center;
-    justify-content:center;
-    border-radius:10px;
   }
   .icon-btn svg {
     width:18px;
@@ -138,22 +130,9 @@
     border-radius:999px 0 0 999px;
     border-right:none;
   }
-  .edge-toggle-left::before,
-  .edge-toggle-right::before {
-    content:'';
-    display:block;
-    width:0;
-    height:0;
-    border-top:8px solid transparent;
-    border-bottom:8px solid transparent;
-  }
-  .edge-toggle-left::before {
-    border-left:10px solid currentColor;
-    margin-left:2px;
-  }
-  .edge-toggle-right::before {
-    border-right:10px solid currentColor;
-    margin-right:2px;
+  .edge-toggle .codicon {
+    font-size:18px;
+    line-height:1;
   }
   .stack-card { width:100%; max-width:100%; border:1px solid #96addc; border-radius:0; background:#fff; margin:0; }
   .stack-card + .stack-card { margin-top:0; border-top:0; }
