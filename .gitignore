@@ -96,5 +96,4 @@ demo/
 
 .scratch/
 
-CONTEXT.md
-DESIGN.md
+*.md

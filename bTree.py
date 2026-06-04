@@ -11,7 +11,7 @@ class BTreeNode:
         self.children = []                              # 子节点
         self.keys = []                                  # 存储键
 
-        dsvis.bind_fields(self, keys=("A", 1), children=("A", 1))
+        #dsvis.bind_fields(self, keys=("A", 1), children=("A", 1))
 
 
 class BTree:

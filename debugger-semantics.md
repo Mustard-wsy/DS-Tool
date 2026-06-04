@@ -81,7 +81,7 @@ Stop automatic replay at the current Raw Position without resetting the session.
 
 ### Step Into
 
-Advance to the next Raw Step.
+Advance to the next Raw Step that changes the visible source-line state.
 
 This is the smallest-granularity debugger action.
 
@@ -112,6 +112,8 @@ Terminate the current debug session and close the replay UI.
 ## 6. Presentation commands
 
 These commands operate on the Display Timeline only.
+
+The code panel's arrow and current-line highlight may point at the next executable source line derived from the current Raw Position. This is a presentation choice only and does not change Raw Timeline semantics.
 
 ### Next Display Step
 
@@ -169,3 +171,30 @@ DSVis intentionally differs from a live debugger in the following ways:
 - `Next Display Step`: move to the next Display Step
 - `Previous Display Step`: move to the previous Display Step
 - `Jump to Display Step`: jump to a chosen Display Step
+
+## 11. Node field visibility
+
+The settings panel provides per-field visibility toggles scoped globally by type and field name. This is a pure presentation feature — it does not alter the Raw Timeline or control-flow semantics.
+
+### Field key system
+
+Every row in a graph node carries a `field_key` of the form `Type::fieldName` (produced by the backend). The frontend normalises `::` to `.` for the global visibility key `Type.field`.
+
+### Cascade-hide semantics
+
+When a field is hidden:
+1. The corresponding row is removed from the owning node card.
+2. If the row is a `ref` (references another node), the outgoing edge is hidden.
+3. If the target node has no remaining incoming edges after edge filtering, it is hidden too (cascade).
+
+This applies uniformly across all instances of the same type — hiding `Parent.a` hides field `a` on every `Parent` node in the graph.
+
+Parent-field cascade: hiding a field key like `GraphNode.neighbors` also hides all sub-item keys like `GraphNode.neighbors[0]`, `GraphNode.neighbors[1]`, etc. The reverse is not true — hiding an individual item does not hide the parent field. This also applies to dict-style keys: hiding `Graph.nodes` hides `Graph.nodes['A']`, `Graph.nodes['B']`, etc.
+
+### Node-level hide (right-click → hide)
+
+Right-clicking a node and selecting "hide" removes the node and all its descendant nodes (nodes reachable via outgoing edges). This is a presentation-only operation:
+
+1. The hidden node and all transitively reachable nodes are added to `HIDDEN_NODES`.
+2. `filterHiddenNodes()` computes the transitive closure of `HIDDEN_NODES` over outgoing edges before filtering.
+3. Restoring a parent does **not** auto-restore descendants — each node is independently toggleable via the hidden-nodes panel.

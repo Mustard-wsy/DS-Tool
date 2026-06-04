@@ -84,6 +84,9 @@ class NodeStyle:
     show_subtitle: bool = False
     subtitle: str | None = None
     text_flow: str = "horizontal"  # "horizontal" | "vertical" (future)
+    row_names: list = field(default_factory=list)
+    row_kinds: list = field(default_factory=list)
+    row_field_keys: list = field(default_factory=list)
     # Vertical grid layout fields
     title_col_w: int = 0
     field_col_w: int = 0
@@ -97,6 +100,9 @@ class NodeStyle:
             "name": self.name,
             "headerHeight": self.header_height,
             "rows": self.rows,
+            "rowNames": self.row_names,
+            "rowKinds": self.row_kinds,
+            "rowFieldKeys": self.row_field_keys,
             "rowBindGroups": self.row_bind_groups,
             "rowBindBlocks": self.row_bind_blocks,
             "refRowIndices": self.ref_row_indices,
@@ -104,6 +110,7 @@ class NodeStyle:
             "sectionGap": self.section_gap,
             "ports": self.ports,
             "textFlow": self.text_flow,
+            "className": self.subtitle if self.show_subtitle and self.subtitle else "",
         }
         if self.port_layout is not None:
             d["portLayout"] = {
@@ -399,6 +406,9 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
             name=display_name,
             header_height=header_h,
             rows=display_rows,
+            row_names=[str(r.get("name", "")) for r in rows],
+            row_kinds=[str(r.get("kind", "field")) for r in rows],
+            row_field_keys=[str(r.get("field_key", "")) for r in rows],
             row_bind_groups=bind_groups,
             row_bind_blocks=bind_blocks,
             ref_row_indices=ref_row_indices,
@@ -445,11 +455,15 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
         if label and src_id in ref_index and label in ref_index[src_id]:
             ref_idx = ref_index[src_id][label]
 
+        edge_data = {"refIndex": ref_idx, "label": label}
+        fk = e.get("field_key")
+        if fk is not None:
+            edge_data["field_key"] = fk
         g6_data["edges"].append({
             "id": f"e{edge_counter}",
             "source": src_id,
             "target": dst_id,
-            "data": {"refIndex": ref_idx},
+            "data": edge_data,
             "style": {},
         })
         edge_counter += 1

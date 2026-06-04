@@ -55,7 +55,7 @@ __STYLES__
           <button id="runToLineBtn">跳转</button>
         </span>
         <button id="hiddenNodesBtn" class="icon-btn" type="button" title="隐藏节点列表"></button>
-        <button id="settingsBtn" class="icon-btn" type="button" title="样式设置"></button>
+        <button id="settingsBtn" class="icon-btn" type="button" title="节点可见性"></button>
         <span id="breakpointInfo">断点：点击代码行设置；继续和单步回放会在命中前暂停</span>
         <label id="autoFitWrap">
           <input id="autoFitToggle" type="checkbox" checked />
@@ -72,17 +72,19 @@ __STYLES__
     </div>
     <div id="settingsPanel">
       <div class="pane-header">
-        <span class="pane-title">样式设置</span>
+        <span class="pane-title">节点可见性</span>
         <button id="settingsCloseBtn" class="pane-toggle" type="button">关闭</button>
       </div>
       <div id="settingsBody">
-        <label class="settings-row">
+        <div class="settings-row">
           <span>文本方向</span>
           <select id="settingsTextFlow">
             <option value="horizontal">横向</option>
             <option value="vertical">纵向</option>
           </select>
-        </label>
+        </div>
+        <div class="settings-note">同名字段在所有同类节点中共享可见性。</div>
+        <div id="nodeTypeList"></div>
         <div class="settings-actions">
           <button id="settingsApplyBtn" type="button">应用</button>
         </div>
@@ -91,6 +93,10 @@ __STYLES__
   </div>
   <button id="stackRestoreBtn" class="edge-toggle edge-toggle-left" type="button" title="显示左侧栈面板" aria-label="显示左侧栈面板"></button>
   <button id="rightRestoreBtn" class="edge-toggle edge-toggle-right" type="button" title="显示右侧代码面板" aria-label="显示右侧代码面板"></button>
+  <div id="nodeContextMenu" style="display:none;position:fixed;z-index:10000;background:#fff;border:1px solid #ccc;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.15);padding:4px 0;min-width:160px;">
+    <div id="ctxHideSelf" style="padding:6px 14px;cursor:pointer;font-size:12px;white-space:nowrap;" onmouseover="this.style.background='#e8f0fe'" onmouseout="this.style.background='transparent'">仅隐藏自身</div>
+    <div id="ctxHideCascade" style="padding:6px 14px;cursor:pointer;font-size:12px;white-space:nowrap;" onmouseover="this.style.background='#e8f0fe'" onmouseout="this.style.background='transparent'">隐藏自身及子节点</div>
+  </div>
 </div>
 
 <script>
@@ -117,7 +123,18 @@ let selectedFrameKey = null;
 const BREAKPOINTS = new Set();
 let BREAKPOINTS_ENABLED = __BREAKPOINTS_ENABLED__;
 const HIDDEN_NODES = new Map();  // Map<nodeId, label> — hidden nodes
+const HIDDEN_NODES_CASCADE = new Set();  // nodeIds whose descendants also cascade-hide
 let hiddenPanelVisible = false;
+const NODE_TYPE_REGISTRY = new Map();  // Map<className, [{key, className, fieldName, kind}]>
+const NODE_TYPE_VISIBILITY = new Map();  // Map<className.fieldName, boolean>
+const BIND_GROUP_REGISTRY = new Map();   // Map<className, [{groupName, fields: [key]}]>
+// SUBSTITUTION_RULES: "Type.field" → { target: "Type.field" | "title", ratio: number }
+// ratio = "1 proxy element receives N hidden elements' edges" (default 1)
+const SUBSTITUTION_RULES = new Map();
+const NODE_FIELD_SUBSTITUTIONS = new Map();  // [deprecated] kept for compatibility
+const NODE_TITLE_SUBSTITUTIONS = new Map();  // [deprecated] kept for compatibility
+let nodeTypeRegistryBuilt = false;
+let settingsPanelVisible = false;
 const AUTO_RUN_INTERVAL_MS = 500;
 let autoRunTimerId = null;
 let autoRunActive = false;
@@ -255,7 +272,7 @@ function frameKey(frame, frameIndex) {
   return [frame?.filename || '', frame?.name || '', String(frameIndex ?? '')].join('|');
 }
 
-function getCurrentLine(stepIndex = current) {
+function getExecutionLine(stepIndex = current) {
   const raw = currentRaw ?? toReal(stepIndex);
   const step = STEPS[raw];
   const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
@@ -264,6 +281,21 @@ function getCurrentLine(stepIndex = current) {
   if (Number.isFinite(frameLine) && frameLine > 0) return frameLine;
   const stepLine = Number(step?.lineno);
   return Number.isFinite(stepLine) && stepLine > 0 ? stepLine : 1;
+}
+
+function getCurrentLine(stepIndex = current) {
+  const raw = currentRaw ?? toReal(stepIndex);
+  const nextRaw = raw + 1;
+  if (nextRaw < STEPS.length) {
+    const nextStep = STEPS[nextRaw];
+    const frames = Array.isArray(nextStep?.stack?.frames) ? nextStep.stack.frames : [];
+    const deepest = frames.length ? frames[frames.length - 1] : null;
+    const frameLine = Number(deepest?.lineno);
+    if (Number.isFinite(frameLine) && frameLine > 0) return frameLine;
+    const stepLine = Number(nextStep?.lineno);
+    if (Number.isFinite(stepLine) && stepLine > 0) return stepLine;
+  }
+  return getExecutionLine(stepIndex);
 }
 
 function getFocusedLine(stepIndex = current) {
@@ -335,9 +367,33 @@ function getCurrentRawIndex() {
   return currentRaw ?? toReal(current);
 }
 
+function getDisplayedLineForRaw(rawIndex) {
+  if (!STEPS.length || rawIndex < 0 || rawIndex >= STEPS.length) {
+    return 1;
+  }
+  const nextRaw = rawIndex + 1;
+  if (nextRaw < STEPS.length) {
+    const nextStep = STEPS[nextRaw];
+    const frames = Array.isArray(nextStep?.stack?.frames) ? nextStep.stack.frames : [];
+    const deepest = frames.length ? frames[frames.length - 1] : null;
+    const frameLine = Number(deepest?.lineno);
+    if (Number.isFinite(frameLine) && frameLine > 0) return frameLine;
+    const stepLine = Number(nextStep?.lineno);
+    if (Number.isFinite(stepLine) && stepLine > 0) return stepLine;
+  }
+  return getExecutionLine(rawIndex);
+}
+
 function findStepIntoRaw() {
   const raw = getCurrentRawIndex();
-  return raw + 1 < STEPS.length ? raw + 1 : -1;
+  if (raw + 1 >= STEPS.length) return -1;
+  const currentVisibleLine = getDisplayedLineForRaw(raw);
+  for (let i = raw + 1; i < STEPS.length; i++) {
+    if (getDisplayedLineForRaw(i) !== currentVisibleLine) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 function stepHasBreakpoint(step) {
@@ -563,7 +619,7 @@ function syncCodeHighlights(scrollToCurrent = false) {
   const stepTotal = document.getElementById('stepTotal');
   const lineInfo = document.getElementById('lineInfo');
   if (currentRaw != null) {
-    // In raw stepping mode — show line number, not step index
+    // In raw stepping mode — show the next executable line, not the step index
     if (stepInput) stepInput.value = '';
     if (stepTotal) stepTotal.textContent = `line ${currentLine}`;
   } else {
@@ -677,7 +733,7 @@ function findStepOverIndex(startIndex = current + 1) {
   const currentDepth = currentFrames.length;
   const currentFrame = getDeepestFrame(current);
   const currentFrameKey = currentFrame ? frameKey(currentFrame, currentDepth - 1) : null;
-  const currentLine = Number(currentFrame?.lineno) || getCurrentLine();
+  const currentLine = Number(currentFrame?.lineno) || getExecutionLine();
 
   return findStepIndex((step) => {
     const frames = Array.isArray(step?.stack?.frames) ? step.stack.frames : [];
@@ -1413,17 +1469,34 @@ function initGraph(data) {
   // Right-click on node → hide it and suppress browser context menu.
   // Right-click on empty canvas → normal browser menu (save image, etc.).
   graph.on('node:contextmenu', (evt) => {
-    // Prevent the browser's native contextmenu from appearing
     const orig = evt?.originalEvent || evt?.nativeEvent || {};
     if (typeof orig.preventDefault === 'function') orig.preventDefault();
     if (typeof orig.stopPropagation === 'function') orig.stopPropagation();
     if (typeof evt.preventDefault === 'function') evt.preventDefault();
     const nodeId = evt?.target?.id || evt?.item?.id || evt?.data?.id;
     if (!nodeId) return;
-    // Extract label from G6 node data
+    // Show custom context menu
+    const menu = document.getElementById('nodeContextMenu');
+    if (!menu) return;
     const nd = graph?.getNodeData?.(String(nodeId));
     const label = nd?.style?.name || nd?.data?.name || String(nodeId);
-    hideNode(String(nodeId), String(label));
+    menu.style.display = 'block';
+    const pos = orig.clientX !== undefined ? { x: orig.clientX, y: orig.clientY } : { x: evt.clientX, y: evt.clientY };
+    menu.style.left = pos.x + 'px';
+    menu.style.top = pos.y + 'px';
+    menu._nodeId = String(nodeId);
+    menu._nodeLabel = String(label);
+    // Close on outside click or Escape
+    const closeMenu = (e) => {
+      if (e.type === 'keydown' && e.key === 'Escape') { menu.style.display = 'none'; cleanup(); }
+      else if (e.type === 'click' && !menu.contains(e.target)) { menu.style.display = 'none'; cleanup(); }
+    };
+    const cleanup = () => {
+      document.removeEventListener('click', closeMenu);
+      document.removeEventListener('keydown', closeMenu);
+    };
+    document.addEventListener('click', closeMenu);
+    document.addEventListener('keydown', closeMenu);
   });
 
   if (typeof graph.once === 'function') {
@@ -2258,28 +2331,486 @@ function renderStackPanel(stackData, stepIndex) {
 function filterHiddenNodes(graphData) {
   if (!HIDDEN_NODES.size) return graphData;
   const hiddenSet = new Set(HIDDEN_NODES.keys());
+  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+  
+  // Cascade: only from nodes in HIDDEN_NODES_CASCADE
+  if (HIDDEN_NODES_CASCADE.size) {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const e of edges) {
+        const src = String(e.source);
+        const dst = String(e.target);
+        if (hiddenSet.has(src) && HIDDEN_NODES_CASCADE.has(src) && !hiddenSet.has(dst)) {
+          hiddenSet.add(dst);
+          changed = true;
+        }
+      }
+    }
+  }
+  
   const nodes = (Array.isArray(graphData?.nodes) ? graphData.nodes : [])
     .filter((n) => !hiddenSet.has(String(n.id)));
   const visibleIds = new Set(nodes.map((n) => String(n.id)));
-  const edges = (Array.isArray(graphData?.edges) ? graphData.edges : [])
+  const filteredEdges = edges
     .filter((e) => visibleIds.has(String(e.source)) && visibleIds.has(String(e.target)));
-  return { ...(graphData || {}), nodes, edges };
+  return { ...(graphData || {}), nodes, edges: filteredEdges };
 }
 
-function hideNode(nodeId, label) {
+const NODE_VISUAL_LAYOUT = {
+  paddingX: 10,
+  paddingY: 8,
+  rowH: 18,
+  defaultHeaderH: 22,
+  minCardW: 100,
+  maxCardW: 280,
+  charPx: 6,
+};
+
+function getNodeClassName(style) {
+  const className = style?.className || (style?.showSubtitle ? style?.subtitle : '');
+  return String(className || '').trim();
+}
+
+function parseRowFieldName(rowText, isRef) {
+  const raw = String(rowText || '').trim();
+  if (!raw) return '';
+  if (!isRef && raw.includes(' = ')) {
+    return raw.slice(0, raw.indexOf(' = ')).trim();
+  }
+  for (const sep of [' -> ', ': ', '=>', '→']) {
+    if (raw.includes(sep)) {
+      return raw.slice(0, raw.indexOf(sep)).trim();
+    }
+  }
+  if (isRef && raw.includes(' ')) {
+    return raw.split(/\s+/, 1)[0].trim();
+  }
+  return raw;
+}
+
+function wrapTextToChars(text, maxChars) {
+  const raw = String(text || '');
+  if (!maxChars || maxChars <= 0) return [raw];
+  const lines = raw.split(/\r?\n/);
+  const out = [];
+  for (const line of lines) {
+    if (!line) {
+      out.push('');
+      continue;
+    }
+    let cursor = 0;
+    while (cursor < line.length) {
+      out.push(line.slice(cursor, cursor + maxChars));
+      cursor += maxChars;
+    }
+  }
+  return out.length ? out : [''];
+}
+
+function measureHorizontalNodeSize(name, subtitleText, rows) {
+  const headerLines = String(name || '').split(/\r?\n/);
+  const candidateLengths = headerLines.map((line) => line.length);
+  if (subtitleText) candidateLengths.push(String(subtitleText).length);
+  for (const row of rows) {
+    candidateLengths.push(String(row || '').length);
+  }
+  const maxLen = candidateLengths.length ? Math.max(...candidateLengths) : 0;
+  const targetW = Math.round(NODE_VISUAL_LAYOUT.paddingX * 2 + maxLen * NODE_VISUAL_LAYOUT.charPx + 12);
+  const cardW = Math.max(NODE_VISUAL_LAYOUT.minCardW, Math.min(NODE_VISUAL_LAYOUT.maxCardW, targetW));
+  const maxChars = Math.max(10, Math.floor((cardW - NODE_VISUAL_LAYOUT.paddingX * 2 - 6) / NODE_VISUAL_LAYOUT.charPx));
+  const wrappedHeader = wrapTextToChars(name, maxChars);
+  let bodyRowCount = 0;
+  for (const row of rows) {
+    bodyRowCount += Math.max(1, wrapTextToChars(row, maxChars).length);
+  }
+  const headerH = Math.max(NODE_VISUAL_LAYOUT.defaultHeaderH, wrappedHeader.length * 16) + (subtitleText ? 14 : 0);
+  const height = NODE_VISUAL_LAYOUT.paddingY * 2 + headerH + Math.max(bodyRowCount, 1) * NODE_VISUAL_LAYOUT.rowH;
+  return { cardW, height, headerH };
+}
+
+function buildHorizontalPorts(refRowIndices, headerH, height) {
+  const ports = [
+    {
+      key: 'inL',
+      placement: [0, (NODE_VISUAL_LAYOUT.paddingY + headerH / 2) / Math.max(height, 1)],
+      r: 0,
+      fill: 'transparent',
+      stroke: 'transparent',
+    },
+    {
+      key: 'inR',
+      placement: [1, (NODE_VISUAL_LAYOUT.paddingY + headerH / 2) / Math.max(height, 1)],
+      r: 0,
+      fill: 'transparent',
+      stroke: 'transparent',
+    },
+  ];
+  const refEntries = [];
+  for (const rowIdx of refRowIndices) {
+    const y = (NODE_VISUAL_LAYOUT.paddingY + headerH + rowIdx * NODE_VISUAL_LAYOUT.rowH + NODE_VISUAL_LAYOUT.rowH / 2) / Math.max(height, 1);
+    ports.push({ key: `pl${rowIdx}`, placement: [0, y], r: 0, fill: 'transparent', stroke: 'transparent' });
+    ports.push({ key: `pr${rowIdx}`, placement: [1, y], r: 0, fill: 'transparent', stroke: 'transparent' });
+    refEntries.push({ idx: rowIdx, ports: [`pr${rowIdx}`, `pl${rowIdx}`] });
+  }
+  return {
+    ports,
+    portLayout: {
+      direction: 'LR',
+      entry: ['inL', 'inR'],
+      ref: refEntries,
+    },
+  };
+}
+
+function buildNodeTypeRegistry() {
+  if (nodeTypeRegistryBuilt) return;
+  NODE_TYPE_REGISTRY.clear();
+  for (const step of STEPS) {
+    const nodes = Array.isArray(step?.graph?.nodes) ? step.graph.nodes : [];
+    for (const node of nodes) {
+      const style = node?.style || {};
+      const className = getNodeClassName(style);
+      if (!className) continue;
+      const rows = Array.isArray(style.rows) ? style.rows : [];
+      const rowNames = Array.isArray(style.rowNames) ? style.rowNames : [];
+      const rowFieldKeys = Array.isArray(style.rowFieldKeys) ? style.rowFieldKeys : [];
+      const rowKinds = Array.isArray(style.rowKinds) ? style.rowKinds : [];
+      const refRowSet = new Set(Array.isArray(style.refRowIndices) ? style.refRowIndices : []);
+      let group = NODE_TYPE_REGISTRY.get(className);
+      if (!group) {
+        group = [];
+        NODE_TYPE_REGISTRY.set(className, group);
+      }
+      for (let i = 0; i < rows.length; i++) {
+        const kind = rowKinds[i] || (refRowSet.has(i) ? 'ref' : 'field');
+        const fieldName = String(rowNames[i] || parseRowFieldName(rows[i], kind === 'ref') || '').trim();
+        // Prefer explicit rowFieldKeys provided by backend. They are in the
+        // form `Type::field`. Convert to `Type.field` for the global key.
+        let key = '';
+        const fk = String(rowFieldKeys[i] || '').trim();
+        if (fk) {
+          const parts = fk.split('::');
+          if (parts.length === 2) key = `${parts[0]}.${parts[1]}`;
+          else key = fk.replace(/::/g, '.');
+        } else if (fieldName) {
+          key = `${className}.${fieldName}`;
+        }
+        if (!key) continue;
+        if (!group.some((entry) => entry.key === key)) {
+          group.push({ key, className, fieldName, kind });
+        }
+        if (!NODE_TYPE_VISIBILITY.has(key)) {
+          NODE_TYPE_VISIBILITY.set(key, true);
+        }
+      }
+      // Collect bind groups
+      const rowBindGroups = Array.isArray(style.rowBindGroups) ? style.rowBindGroups : [];
+      if (rowBindGroups.length) {
+        let bgList = BIND_GROUP_REGISTRY.get(className);
+        if (!bgList) { bgList = []; BIND_GROUP_REGISTRY.set(className, bgList); }
+        for (let i = 0; i < rowBindGroups.length; i++) {
+          const gname = rowBindGroups[i];
+          if (!gname) continue;
+          const fk = String(rowFieldKeys[i] || '').trim();
+          let key = '';
+          if (fk) {
+            const parts = fk.split('::');
+            key = parts.length === 2 ? `${parts[0]}.${parts[1]}` : fk.replace(/::/g, '.');
+          }
+          if (!key) continue;
+          let entry = bgList.find(e => e.groupName === gname);
+          if (!entry) { entry = { groupName: gname, fields: [] }; bgList.push(entry); }
+          if (!entry.fields.includes(key)) entry.fields.push(key);
+        }
+      }
+      // Add __title__ as a hideable pseudo-field
+      const titleKey = `${className}.__title__`;
+      if (!group.some(e => e.key === titleKey)) {
+        group.push({ key: titleKey, className, fieldName: '标题', kind: 'title' });
+      }
+      if (!NODE_TYPE_VISIBILITY.has(titleKey)) {
+        NODE_TYPE_VISIBILITY.set(titleKey, true);
+      }
+    }
+  }
+  nodeTypeRegistryBuilt = true;
+}
+
+function setNodeFieldVisible(key, visible) {
+  NODE_TYPE_VISIBILITY.set(key, Boolean(visible));
+  syncSettingsPanel();
+  renderStep(current);
+}
+
+function toggleNodeFieldVisible(key) {
+  setNodeFieldVisible(key, !(NODE_TYPE_VISIBILITY.get(key) !== false));
+}
+
+/** Toggle all fields in a bind group together. */
+function toggleBindGroup(className, groupName) {
+  const bgList = BIND_GROUP_REGISTRY.get(className);
+  if (!bgList) return;
+  const entry = bgList.find(e => e.groupName === groupName);
+  if (!entry || !entry.fields.length) return;
+  // If any field is visible, hide all; otherwise show all
+  const anyVisible = entry.fields.some(k => NODE_TYPE_VISIBILITY.get(k) !== false);
+  for (const key of entry.fields) {
+    NODE_TYPE_VISIBILITY.set(key, !anyVisible);
+  }
+  syncSettingsPanel();
+  renderStep(current);
+}
+
+/** Check whether a field key is visible, considering parent-field cascade.
+ *  Keys like "GraphNode.neighbors[0]" also check "GraphNode.neighbors". */
+function isFieldVisible(key) {
+  if (!key) return true;
+  // Check exact key first
+  if (NODE_TYPE_VISIBILITY.get(key) === false) return false;
+  // Check base key (strip [...] suffix) — parent field controls children
+  const baseMatch = key.match(/^(.+?)\[.*\]$/);
+  if (baseMatch && NODE_TYPE_VISIBILITY.get(baseMatch[1]) === false) return false;
+  return true;
+}
+
+function applyNodeTypeVisibility(graphData) {
+  buildNodeTypeRegistry();
+  let hasHidden = false;
+  for (const visible of NODE_TYPE_VISIBILITY.values()) {
+    if (!visible) {
+      hasHidden = true;
+      break;
+    }
+  }
+  if (!hasHidden) return graphData;
+
+  const working = cloneGraphData(graphData);
+  const originalNodes = Array.isArray(working.nodes) ? working.nodes : [];
+  const originalEdges = Array.isArray(working.edges) ? working.edges : [];
+  const nodeById = new Map(originalNodes.map((node) => [String(node.id), node]));
+  const originalInDegree = new Map(originalNodes.map((node) => [String(node.id), 0]));
+  for (const edge of originalEdges) {
+    const targetId = String(edge?.target ?? '');
+    if (originalInDegree.has(targetId)) {
+      originalInDegree.set(targetId, (originalInDegree.get(targetId) || 0) + 1);
+    }
+  }
+
+  const edgeMeta = [];
+  for (const edge of originalEdges) {
+    const srcId = String(edge?.source ?? '');
+    const srcNode = nodeById.get(srcId);
+    const srcStyle = srcNode?.style || {};
+    const className = getNodeClassName(srcStyle);
+    // Prefer explicit field keys on edges if provided by backend (edge.data.field_key)
+    const edgeFieldKeyRaw = String(edge?.field_key || edge?.data?.field_key || '').trim();
+    let hiddenKey = '';
+    if (edgeFieldKeyRaw) {
+      const parts = edgeFieldKeyRaw.split('::');
+      hiddenKey = parts.length === 2 ? `${parts[0]}.${parts[1]}` : edgeFieldKeyRaw.replace(/::/g, '.');
+    } else {
+      const fieldName = String(edge?.data?.label || '').trim();
+      hiddenKey = className && fieldName ? `${className}.${fieldName}` : '';
+    }
+    let effectiveKey = hiddenKey;
+    if (hiddenKey && !isFieldVisible(hiddenKey)) {
+      const rule = SUBSTITUTION_RULES.get(hiddenKey);
+      if (rule && rule.target !== 'title' && isFieldVisible(rule.target)) effectiveKey = rule.target;
+    }
+    const hidden = effectiveKey ? (!isFieldVisible(effectiveKey)) : false;
+    if (effectiveKey !== hiddenKey) {
+      const substEdge = { ...edge, data: { ...(edge?.data || {}), field_key: effectiveKey.replace(/\./g, '::'), label: effectiveKey.split('.').pop() } };
+      edgeMeta.push({ edge: substEdge, hidden, srcId });
+    } else {
+      edgeMeta.push({ edge, hidden, srcId });
+    }
+  }
+
+  const filteredEdges = edgeMeta.filter((entry) => !entry.hidden).map((entry) => entry.edge);
+  const connectedNodeIds = new Set();
+  for (const edge of filteredEdges) {
+    if (edge?.source !== undefined) connectedNodeIds.add(String(edge.source));
+    if (edge?.target !== undefined) connectedNodeIds.add(String(edge.target));
+  }
+
+  const filteredNodes = [];
+  for (const node of originalNodes) {
+    const id = String(node.id);
+    const style = node.style || {};
+    const className = getNodeClassName(style);
+    const rows = Array.isArray(style.rows) ? style.rows : [];
+    const rowNames = Array.isArray(style.rowNames) ? style.rowNames : [];
+    const rowKinds = Array.isArray(style.rowKinds) ? style.rowKinds : [];
+    const rowBindGroups = Array.isArray(style.rowBindGroups) ? style.rowBindGroups : [];
+    const rowBindBlocks = Array.isArray(style.rowBindBlocks) ? style.rowBindBlocks : [];
+    const rowDeltaTypes = Array.isArray(style.rowDeltaTypes) ? style.rowDeltaTypes : [];
+    const refRows = new Set(Array.isArray(style.refRowIndices) ? style.refRowIndices : []);
+    const keptRows = [];
+    const keptRowNames = [];
+    const keptRowKinds = [];
+    const keptRowBindGroups = [];
+    const keptRowBindBlocks = [];
+    const keptRowDeltaTypes = [];
+    const keptRefRowIndices = [];
+    const keptRefLabelMap = {};
+
+    for (let i = 0; i < rows.length; i++) {
+      const kind = rowKinds[i] || (refRows.has(i) ? 'ref' : 'field');
+      const fieldName = String(rowNames[i] || parseRowFieldName(rows[i], kind === 'ref') || '').trim();
+      // Prefer explicit rowFieldKeys when present
+      const rowFieldKeys = Array.isArray(style.rowFieldKeys) ? style.rowFieldKeys : [];
+      const fk = String(rowFieldKeys[i] || '').trim();
+      let key = '';
+      if (fk) {
+        const parts = fk.split('::');
+        key = parts.length === 2 ? `${parts[0]}.${parts[1]}` : fk.replace(/::/g, '.');
+      } else {
+        key = className && fieldName ? `${className}.${fieldName}` : '';
+      }
+      if (key && !isFieldVisible(key)) {
+        continue;
+      }
+      const nextIndex = keptRows.length;
+      keptRows.push(rows[i]);
+      keptRowNames.push(rowNames[i] || fieldName);
+      keptRowKinds.push(kind);
+      keptRowBindGroups.push(rowBindGroups[i] ?? null);
+      keptRowBindBlocks.push(rowBindBlocks[i] ?? null);
+      keptRowDeltaTypes.push(rowDeltaTypes[i] ?? null);
+      if (kind === 'ref') {
+        keptRefRowIndices.push(nextIndex);
+        if (!(rows[i] in keptRefLabelMap)) {
+          keptRefLabelMap[rows[i]] = nextIndex;
+        }
+      }
+    }
+
+    const nodeVisible = originalInDegree.get(id) === 0 || connectedNodeIds.has(id);
+    if (!nodeVisible) continue;
+
+    // ── Add substitution proxy rows to refRowIndices so edges have ports ──
+    for (const [hiddenKey, rule] of SUBSTITUTION_RULES) {
+      if (rule.target === 'title') continue;
+      // Find the proxy row in keptRows
+      const origFKs = Array.isArray(style.rowFieldKeys) ? style.rowFieldKeys : [];
+      for (let i = 0; i < keptRows.length; i++) {
+        const rowText = keptRows[i];
+        let origIdx = -1;
+        for (let oi = 0; oi < origFKs.length; oi++) {
+          if ((Array.isArray(style.rows) ? style.rows[oi] : '') === rowText) { origIdx = oi; break; }
+        }
+        if (origIdx < 0) continue;
+        const fk = String(origFKs[origIdx] || '').trim();
+        let rk = '';
+        if (fk) { const p = fk.split('::'); rk = p.length === 2 ? `${p[0]}.${p[1]}` : fk.replace(/::/g, '.'); }
+        if (rk === rule.target && !keptRefRowIndices.includes(i)) {
+          keptRefRowIndices.push(i);
+          keptRefRowIndices.sort((a, b) => a - b);
+          if (!(rowText in keptRefLabelMap)) keptRefLabelMap[rowText] = i;
+        }
+      }
+    }
+
+    // ── Title visibility ──
+    const titleKey = `${className}.__title__`;
+    const titleVisible = isFieldVisible(titleKey);
+    let effectiveName = style.name;
+    let effectiveSubtitle = style.showSubtitle ? style.subtitle : null;
+    if (!titleVisible) {
+      effectiveName = '';
+      effectiveSubtitle = null;
+    }
+
+    const nextStyle = { ...style };
+    nextStyle.rows = keptRows;
+    nextStyle.rowNames = keptRowNames;
+    nextStyle.rowKinds = keptRowKinds;
+    nextStyle.rowBindGroups = keptRowBindGroups;
+    nextStyle.rowBindBlocks = keptRowBindBlocks;
+    nextStyle.rowDeltaTypes = keptRowDeltaTypes;
+    nextStyle.refRowIndices = keptRefRowIndices;
+    nextStyle.refLabelMap = keptRefLabelMap;
+
+    nextStyle.showSubtitle = nextStyle.showSubtitle && titleVisible;
+    nextStyle.name = effectiveName;
+
+    const subtitleText = effectiveSubtitle;
+    const sizeInfo = measureHorizontalNodeSize(effectiveName, subtitleText, keptRows);
+    nextStyle.size = [sizeInfo.cardW, sizeInfo.height];
+    nextStyle.headerHeight = sizeInfo.headerH;
+    const portInfo = buildHorizontalPorts(keptRefRowIndices, sizeInfo.headerH, sizeInfo.height);
+    nextStyle.ports = portInfo.ports;
+    nextStyle.portLayout = portInfo.portLayout;
+
+    // ── Title substitution: find any field with rule target="title" ──
+    for (const [key, rule] of SUBSTITUTION_RULES) {
+      if (rule.target !== 'title') continue;
+      // Find the source field's row text
+      for (let i = 0; i < keptRows.length; i++) {
+        const origFieldKeys = Array.isArray(style.rowFieldKeys) ? style.rowFieldKeys : [];
+        const rowText = keptRows[i];
+        let origIdx = -1;
+        for (let oi = 0; oi < origFieldKeys.length; oi++) {
+          if ((Array.isArray(style.rows) ? style.rows[oi] : '') === rowText) { origIdx = oi; break; }
+        }
+        if (origIdx < 0) continue;
+        const fk = String(origFieldKeys[origIdx] || '').trim();
+        let rk = '';
+        if (fk) { const p = fk.split('::'); rk = p.length === 2 ? `${p[0]}.${p[1]}` : fk.replace(/::/g, '.'); }
+        if (rk === key) {
+          nextStyle.name = String(keptRows[i] || nextStyle.name);
+          break;
+        }
+      }
+      break; // only first title rule wins
+    }
+
+    node.style = nextStyle;
+    filteredNodes.push(node);
+  }
+
+  const visibleNodeIds = new Set(filteredNodes.map((node) => String(node.id)));
+  const visibleEdges = filteredEdges.filter((edge) => visibleNodeIds.has(String(edge.source)) && visibleNodeIds.has(String(edge.target)));
+  return { ...(working || {}), nodes: filteredNodes, edges: visibleEdges };
+}
+
+function hideNode(nodeId, label, cascade = false) {
   const id = String(nodeId);
-  // Look up label from current graph if not provided
   if (!label && graph) {
     const nd = graph.getNodeData?.(id);
     label = nd?.style?.name || nd?.data?.name || id;
   }
   HIDDEN_NODES.set(id, label || id);
+  if (cascade) {
+    HIDDEN_NODES_CASCADE.add(id);
+    // Cascade: recursively hide all descendant nodes reachable via outgoing edges
+    if (graph) {
+      const allEdges = graph.getEdgeData?.() || [];
+      const queue = [id];
+      const visited = new Set([id]);
+      while (queue.length) {
+        const cur = queue.shift();
+        for (const e of allEdges) {
+          if (String(e.source) === cur && !visited.has(String(e.target))) {
+            const childId = String(e.target);
+            visited.add(childId);
+            const nd = graph.getNodeData?.(childId);
+            const childLabel = nd?.style?.name || nd?.data?.name || childId;
+            HIDDEN_NODES.set(childId, childLabel);
+            queue.push(childId);
+          }
+        }
+      }
+    }
+  }
   syncHiddenPanel();
   renderStep(current);
 }
 
 function restoreNode(nodeId) {
   HIDDEN_NODES.delete(String(nodeId));
+  HIDDEN_NODES_CASCADE.delete(String(nodeId));
   syncHiddenPanel();
   renderStep(current);
 }
@@ -2351,7 +2882,8 @@ function renderStepImpl(ri, displayIndex) {
   hoveredFrameKey = null;
   const s = STEPS[ri];
   const rawGraph = applyStepHighlights(cloneGraphData(s.graph), ri);
-  const adaptedGraph = adaptNodesForTextFlow(rawGraph);
+  const typeFilteredGraph = applyNodeTypeVisibility(rawGraph);
+  const adaptedGraph = adaptNodesForTextFlow(typeFilteredGraph);
   const graphData = filterHiddenNodes(adaptedGraph);
   const frames = Array.isArray(s?.stack?.frames) ? s.stack.frames : [];
   if (frames.length) {
@@ -2421,7 +2953,7 @@ function setIconButton(button, icon, label) {
 }
 
 setIconButton(document.getElementById('prevStepBtn'), 'prev', '上一个展示步');
-setIconButton(document.getElementById('stepIntoBtn'), 'stepInto', '逐过程执行到下一个 Raw Step');
+setIconButton(document.getElementById('stepIntoBtn'), 'stepInto', '逐过程到下一条可见代码行');
 setIconButton(document.getElementById('stepOverBtn'), 'stepOver', '按当前帧控制流前进，不进入被调函数');
 setIconButton(document.getElementById('nextStepBtn'), 'nextDisplay', '下一个展示步');
 setIconButton(document.getElementById('stepOutBtn'), 'stepOut', '跳出当前函数并停在调用者');
@@ -2432,7 +2964,7 @@ setIconButton(document.getElementById('restartBtn'), 'restart', '重新从第一
 setIconButton(document.getElementById('stopBtn'), 'stop', '停止当前调试会话');
 setIconButton(document.getElementById('toggleBreakpointsBtn'), 'breakpointOn', '切换断点命中开关');
 setIconButton(document.getElementById('hiddenNodesBtn'), 'eye', '隐藏节点列表');
-setIconButton(document.getElementById('settingsBtn'), 'gear', '样式设置');
+setIconButton(document.getElementById('settingsBtn'), 'gear', '节点可见性');
 syncRunButtonLabel();
 syncBreakpointToggleButton();
 syncDebuggerControlState();
@@ -2660,8 +3192,6 @@ if (hiddenNodesCloseBtn) {
 syncHiddenPanel();
 
 // ── Settings panel ──
-let settingsPanelVisible = false;
-
 function toggleSettingsPanel() {
   settingsPanelVisible = !settingsPanelVisible;
   const panel = document.getElementById('settingsPanel');
@@ -2672,6 +3202,135 @@ function toggleSettingsPanel() {
 function syncSettingsPanel() {
   const sel = document.getElementById('settingsTextFlow');
   if (sel) sel.value = VIS_CONFIG.textFlow;
+  buildNodeTypeRegistry();
+  const list = document.getElementById('nodeTypeList');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!NODE_TYPE_REGISTRY.size) {
+    const empty = document.createElement('div');
+    empty.className = 'stack-empty';
+    empty.textContent = '当前脚本没有可配置的 class.field 项';
+    list.appendChild(empty);
+    return;
+  }
+  for (const [className, fields] of NODE_TYPE_REGISTRY.entries()) {
+    const group = document.createElement('div');
+    group.className = 'node-type-group';
+
+    const header = document.createElement('div');
+    header.className = 'node-type-group-header';
+    const title = document.createElement('span');
+    title.className = 'node-type-group-title';
+    title.textContent = className;
+    const subtitle = document.createElement('span');
+    subtitle.className = 'node-type-group-subtitle';
+    subtitle.textContent = `${fields.length} 个字段`;
+    header.appendChild(title);
+    header.appendChild(subtitle);
+
+    const items = document.createElement('div');
+    items.className = 'node-type-items';
+    for (const field of fields) {
+      const visible = NODE_TYPE_VISIBILITY.get(field.key) !== false;
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = `node-type-item ${visible ? 'visible' : 'hidden'}`;
+      item.textContent = field.fieldName;
+      item.title = `${visible ? '隐藏' : '显示'} ${field.key}`;
+      item.addEventListener('click', () => toggleNodeFieldVisible(field.key));
+      items.appendChild(item);
+    }
+
+    group.appendChild(header);
+    group.appendChild(items);
+    list.appendChild(group);
+
+    // ── Per-field substitution rule ──
+    const subGroup = document.createElement('div');
+    subGroup.className = 'node-type-group sub-group';
+    const subHeader = document.createElement('div');
+    subHeader.className = 'node-type-group-header';
+    const subTitle = document.createElement('span');
+    subTitle.className = 'node-type-group-title';
+    subTitle.textContent = '替代规则';
+    subHeader.appendChild(subTitle);
+    subGroup.appendChild(subHeader);
+    const subItems = document.createElement('div');
+    subItems.className = 'node-type-items sub-items';
+
+    for (const field of fields) {
+      const rule = SUBSTITUTION_RULES.get(field.key);
+      const row = document.createElement('div');
+      row.className = 'sub-rule-row';
+      row.style.display = 'flex';
+      row.style.alignItems = 'center';
+      row.style.gap = '3px';
+      row.style.fontSize = '10px';
+      row.style.margin = '2px 0';
+
+      const label = document.createElement('span');
+      label.textContent = field.fieldName + ' → ';
+      label.style.minWidth = '50px';
+      row.appendChild(label);
+
+      const sel = document.createElement('select');
+      sel.style.fontSize = '10px';
+      const noneOpt = document.createElement('option');
+      noneOpt.value = '';
+      noneOpt.textContent = '—';
+      sel.appendChild(noneOpt);
+      const titleOpt = document.createElement('option');
+      titleOpt.value = 'title';
+      titleOpt.textContent = '标题';
+      if (rule && rule.target === 'title') titleOpt.selected = true;
+      sel.appendChild(titleOpt);
+      for (const tf of fields) {
+        if (tf.key === field.key) continue; // exclude self; allow any field as target
+        const opt = document.createElement('option');
+        opt.value = tf.key;
+        opt.textContent = tf.fieldName;
+        if (rule && rule.target === tf.key) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      // Ratio input
+      const ratioInput = document.createElement('input');
+      ratioInput.type = 'number';
+      ratioInput.min = '1';
+      ratioInput.max = '99';
+      ratioInput.value = rule ? (rule.ratio || 1) : 1;
+      ratioInput.style.width = '28px';
+      ratioInput.style.fontSize = '10px';
+      ratioInput.title = 'ratio (1个代理收N条边)';
+      ratioInput.disabled = !rule;
+
+      const updateRule = () => {
+        const target = sel.value;
+        const ratio = Math.max(1, parseInt(ratioInput.value) || 1);
+        if (target) {
+          SUBSTITUTION_RULES.set(field.key, { target, ratio });
+        } else {
+          SUBSTITUTION_RULES.delete(field.key);
+        }
+        applyVisConfig();
+      };
+      sel.addEventListener('change', () => {
+        ratioInput.disabled = !sel.value;
+        updateRule();
+      });
+      ratioInput.addEventListener('change', updateRule);
+
+      row.appendChild(sel);
+      const ratioLabel = document.createElement('span');
+      ratioLabel.textContent = '1:';
+      ratioLabel.style.fontSize = '9px';
+      row.appendChild(ratioLabel);
+      row.appendChild(ratioInput);
+      subItems.appendChild(row);
+    }
+
+    subGroup.appendChild(subItems);
+    list.appendChild(subGroup);
+  }
 }
 
 function applySettings() {
@@ -2692,6 +3351,19 @@ const settingsApplyBtn = document.getElementById('settingsApplyBtn');
 if (settingsApplyBtn) {
   settingsApplyBtn.addEventListener('click', applySettings);
 }
+syncSettingsPanel();
+
+// ── Context menu handlers ──
+document.getElementById('ctxHideSelf')?.addEventListener('click', () => {
+  const menu = document.getElementById('nodeContextMenu');
+  if (menu && menu._nodeId) hideNode(menu._nodeId, menu._nodeLabel, false);
+  if (menu) menu.style.display = 'none';
+});
+document.getElementById('ctxHideCascade')?.addEventListener('click', () => {
+  const menu = document.getElementById('nodeContextMenu');
+  if (menu && menu._nodeId) hideNode(menu._nodeId, menu._nodeLabel, true);
+  if (menu) menu.style.display = 'none';
+});
 
 updateResizeHandleState();
 

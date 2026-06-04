@@ -30,8 +30,10 @@ from .field_binding import get_bound_specs, get_instance_bound_specs
 
 def _append_field(owner, item_name, item_val, *, bind_group=None, bind_block=None):
     """Append a plain (non-ref) row."""
+    field_key = f"{owner.get('type', owner.get('class_name', ''))}::{item_name}"
     row = {"name": item_name, "kind": "field",
-           "text": f"{item_name} = {short(item_val)}"}
+           "text": f"{item_name} = {short(item_val)}",
+           "field_key": field_key}
     if bind_group is not None:
         row["bind_group"] = bind_group
     if bind_block is not None:
@@ -46,14 +48,15 @@ def _append_ref_or_field(item_name, item_val, owner, obj_id, nodes, edges,
     if is_class_object(item_val):
         cid = _add_obj(item_val, format_typed_label(item_name, item_val))
         if cid:
-            row = {"name": item_name, "kind": "ref", "text": item_name}
+            field_key = f"{owner.get('type', owner.get('class_name', ''))}::{item_name}"
+            row = {"name": item_name, "kind": "ref", "text": item_name, "field_key": field_key}
             if bind_group is not None:
                 row["bind_group"] = bind_group
             if bind_block is not None:
                 row["bind_block"] = bind_block
             owner["rows"].append(row)
-            owner["refs"].append({"name": item_name})
-            edges.append({"src": obj_id, "dst": cid, "label": item_name})
+            owner["refs"].append({"name": item_name, "field_key": field_key})
+            edges.append({"src": obj_id, "dst": cid, "label": item_name, "field_key": field_key})
         else:
             _append_field(owner, item_name, item_val,
                           bind_group=bind_group, bind_block=bind_block)
@@ -137,7 +140,8 @@ def _resolve_object_fields(owner, obj, item_map, obj_id,
             items = list(iter_container_items(attr, val))
             if not items:
                 owner["rows"].append({"name": attr, "kind": "field",
-                                      "text": f"{attr} = {type(val).__name__}()"})
+                                      "text": f"{attr} = {type(val).__name__}()",
+                                      "field_key": f"{owner.get('type', owner.get('class_name',''))}::{attr}"})
                 continue
             for item_name, item_val in items:
                 _append_ref_or_field(item_name, item_val, owner, obj_id,
@@ -179,7 +183,7 @@ def walk_graph(
             "id": node_id,
             "label": f"{pointer_name} -> {container_name}",
             "type": "Pointer",
-            "rows": [{"name": "value", "kind": "field", "text": text}],
+            "rows": [{"name": "value", "kind": "field", "text": text, "field_key": f"Pointer::value"}],
             "refs": [],
             "class_name": "Pointer",
             "is_class_object": False,
@@ -189,6 +193,7 @@ def walk_graph(
                 "name": "index",
                 "kind": "field",
                 "text": f"index = {short(pointer_value)}",
+                "field_key": f"Pointer::index",
             })
         nodes.append(n)
 
@@ -214,7 +219,7 @@ def walk_graph(
             "is_class_object": is_class_object(obj),
         }
         if value_text is not None:
-            n["rows"].append({"name": "value", "kind": "field", "text": value_text})
+            n["rows"].append({"name": "value", "kind": "field", "text": value_text, "field_key": f"{n.get('type', n.get('class_name',''))}::value"})
         nodes.append(n)
         node_index[obj_id] = n
 
@@ -224,6 +229,7 @@ def walk_graph(
                 "name": "summary",
                 "kind": "field",
                 "text": f"size = {len(items)}",
+                "field_key": f"{n.get('type', n.get('class_name',''))}::summary",
             })
             for item_name, item_val in items[:12]:
                 if is_primitive(item_val):
@@ -231,17 +237,20 @@ def walk_graph(
                         "name": item_name,
                         "kind": "field",
                         "text": f"{item_name} = {short(item_val)}",
+                        "field_key": f"{n.get('type', n.get('class_name',''))}::{item_name}",
                     })
                 elif is_class_object(item_val):
                     cid = _add_obj(item_val, format_typed_label(item_name, item_val))
                     if cid:
+                        field_key = f"{n.get('type', n.get('class_name',''))}::{item_name}"
                         n["rows"].append({
                             "name": item_name,
                             "kind": "ref",
                             "text": item_name,
+                            "field_key": field_key,
                         })
-                        n["refs"].append({"name": item_name})
-                        edges.append({"src": obj_id, "dst": cid, "label": item_name})
+                        n["refs"].append({"name": item_name, "field_key": field_key})
+                        edges.append({"src": obj_id, "dst": cid, "label": item_name, "field_key": field_key})
         q.append(obj)
         return obj_id
 
