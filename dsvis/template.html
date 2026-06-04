@@ -128,11 +128,9 @@ let hiddenPanelVisible = false;
 const NODE_TYPE_REGISTRY = new Map();  // Map<className, [{key, className, fieldName, kind}]>
 const NODE_TYPE_VISIBILITY = new Map();  // Map<className.fieldName, boolean>
 const BIND_GROUP_REGISTRY = new Map();   // Map<className, [{groupName, fields: [key]}]>
-// SUBSTITUTION_RULES: "Type.field" → { target: "Type.field" | "title", ratio: number }
-// ratio = "1 proxy element receives N hidden elements' edges" (default 1)
-const SUBSTITUTION_RULES = new Map();
-const NODE_FIELD_SUBSTITUTIONS = new Map();  // [deprecated] kept for compatibility
-const NODE_TITLE_SUBSTITUTIONS = new Map();  // [deprecated] kept for compatibility
+// EDGE_PROXY: "Type.refField" → { proxy: "Type.valueField", ratio: number }
+const EDGE_PROXY = new Map();
+let TITLE_FIELD = null;  // { className, key } — which field's value replaces the title
 let nodeTypeRegistryBuilt = false;
 let settingsPanelVisible = false;
 const AUTO_RUN_INTERVAL_MS = 500;
@@ -177,14 +175,22 @@ function saveVisConfig(config) {
  */
 function applyVisConfig() {
   saveVisConfig(VIS_CONFIG);
-  // Text-flow switching changes node geometry/ports/shape composition deeply.
-  // Force a full graph remount to avoid stale G6 shape caches across modes.
   resetGraphInstance();
   if (currentRaw != null) {
     renderStepRaw(currentRaw);
   } else {
     renderStep(current);
   }
+}
+
+/** Re-render current step without destroying the graph (for settings changes). */
+function reapplyStep() {
+  if (currentRaw != null) {
+    renderStepRaw(currentRaw);
+  } else {
+    renderStep(current);
+  }
+  if (settingsPanelVisible) syncSettingsPanel();
 }
 
 function resetGraphInstance() {
@@ -2615,8 +2621,18 @@ function applyNodeTypeVisibility(graphData) {
     }
     let effectiveKey = hiddenKey;
     if (hiddenKey && !isFieldVisible(hiddenKey)) {
-      const rule = SUBSTITUTION_RULES.get(hiddenKey);
-      if (rule && rule.target !== 'title' && isFieldVisible(rule.target)) effectiveKey = rule.target;
+      // Look up EDGE_PROXY by parent field (strip [...] suffix)
+      const baseMatch = hiddenKey.match(/^(.+?)(\[.*\])?$/);
+      const parentKey = baseMatch ? baseMatch[1] : hiddenKey;
+      const rule = EDGE_PROXY.get(parentKey);
+      if (rule && isFieldVisible(rule.proxy)) {
+        // Map hidden item index to proxy item index via ratio
+        // Extract index from hiddenKey (e.g., "BTreeNode.children[0]" → 0)
+        const idxMatch = hiddenKey.match(/\[(\d+)\]$/);
+        const hiddenIdx = idxMatch ? parseInt(idxMatch[1]) : 0;
+        const proxyIdx = Math.floor(hiddenIdx / (rule.ratio || 1));
+        effectiveKey = `${rule.proxy}[${proxyIdx}]`;
+      }
     }
     const hidden = effectiveKey ? (!isFieldVisible(effectiveKey)) : false;
     if (effectiveKey !== hiddenKey) {
@@ -2689,11 +2705,11 @@ function applyNodeTypeVisibility(graphData) {
     const nodeVisible = originalInDegree.get(id) === 0 || connectedNodeIds.has(id);
     if (!nodeVisible) continue;
 
-    // ── Add substitution proxy rows to refRowIndices so edges have ports ──
-    for (const [hiddenKey, rule] of SUBSTITUTION_RULES) {
-      if (rule.target === 'title') continue;
-      // Find the proxy row in keptRows
+    // ── Add proxy rows to refRowIndices so redirected edges have ports ──
+    for (const [targetKey, rule] of EDGE_PROXY) {
+      if (!targetKey.startsWith(className + '.')) continue;
       const origFKs = Array.isArray(style.rowFieldKeys) ? style.rowFieldKeys : [];
+      // Find proxy field's row in keptRows
       for (let i = 0; i < keptRows.length; i++) {
         const rowText = keptRows[i];
         let origIdx = -1;
@@ -2704,7 +2720,7 @@ function applyNodeTypeVisibility(graphData) {
         const fk = String(origFKs[origIdx] || '').trim();
         let rk = '';
         if (fk) { const p = fk.split('::'); rk = p.length === 2 ? `${p[0]}.${p[1]}` : fk.replace(/::/g, '.'); }
-        if (rk === rule.target && !keptRefRowIndices.includes(i)) {
+        if (rk === rule.proxy && !keptRefRowIndices.includes(i)) {
           keptRefRowIndices.push(i);
           keptRefRowIndices.sort((a, b) => a - b);
           if (!(rowText in keptRefLabelMap)) keptRefLabelMap[rowText] = i;
@@ -2743,10 +2759,8 @@ function applyNodeTypeVisibility(graphData) {
     nextStyle.ports = portInfo.ports;
     nextStyle.portLayout = portInfo.portLayout;
 
-    // ── Title substitution: find any field with rule target="title" ──
-    for (const [key, rule] of SUBSTITUTION_RULES) {
-      if (rule.target !== 'title') continue;
-      // Find the source field's row text
+    // ── Title substitution ──
+    if (TITLE_FIELD && TITLE_FIELD.className === className) {
       for (let i = 0; i < keptRows.length; i++) {
         const origFieldKeys = Array.isArray(style.rowFieldKeys) ? style.rowFieldKeys : [];
         const rowText = keptRows[i];
@@ -2758,12 +2772,11 @@ function applyNodeTypeVisibility(graphData) {
         const fk = String(origFieldKeys[origIdx] || '').trim();
         let rk = '';
         if (fk) { const p = fk.split('::'); rk = p.length === 2 ? `${p[0]}.${p[1]}` : fk.replace(/::/g, '.'); }
-        if (rk === key) {
+        if (rk === TITLE_FIELD.key) {
           nextStyle.name = String(keptRows[i] || nextStyle.name);
           break;
         }
       }
-      break; // only first title rule wins
     }
 
     node.style = nextStyle;
@@ -3245,91 +3258,175 @@ function syncSettingsPanel() {
     group.appendChild(items);
     list.appendChild(group);
 
-    // ── Per-field substitution rule ──
-    const subGroup = document.createElement('div');
-    subGroup.className = 'node-type-group sub-group';
-    const subHeader = document.createElement('div');
-    subHeader.className = 'node-type-group-header';
-    const subTitle = document.createElement('span');
-    subTitle.className = 'node-type-group-title';
-    subTitle.textContent = '替代规则';
-    subHeader.appendChild(subTitle);
-    subGroup.appendChild(subHeader);
-    const subItems = document.createElement('div');
-    subItems.className = 'node-type-items sub-items';
+    // ── Edge proxy config ──
+    const nonRefFields = fields.filter(f => f.kind !== 'ref' && f.kind !== 'title');
+    // Container fields that have ref children (e.g., "children" → "children[0]")
+    const containerFields = fields.filter(f =>
+      f.kind !== 'ref' && f.kind !== 'title' &&
+      refFields.some(rf => rf.key.startsWith(f.key + '['))
+    );
+    const allTargetRefs = [...refFields, ...containerFields];
+    const refFields = fields.filter(f => f.kind === 'ref');
 
-    for (const field of fields) {
-      const rule = SUBSTITUTION_RULES.get(field.key);
-      const row = document.createElement('div');
-      row.className = 'sub-rule-row';
-      row.style.display = 'flex';
-      row.style.alignItems = 'center';
-      row.style.gap = '3px';
-      row.style.fontSize = '10px';
-      row.style.margin = '2px 0';
+    if (allTargetRefs.length > 0) {
+      const proxyGroup = document.createElement('div');
+      proxyGroup.className = 'node-type-group proxy-group';
 
-      const label = document.createElement('span');
-      label.textContent = field.fieldName + ' → ';
-      label.style.minWidth = '50px';
-      row.appendChild(label);
+      const proxyHeader = document.createElement('div');
+      proxyHeader.className = 'node-type-group-header';
+      const proxyTitle = document.createElement('span');
+      proxyTitle.className = 'node-type-group-title';
+      proxyTitle.textContent = '边代理';
+      proxyHeader.appendChild(proxyTitle);
+      proxyGroup.appendChild(proxyHeader);
 
-      const sel = document.createElement('select');
-      sel.style.fontSize = '10px';
-      const noneOpt = document.createElement('option');
-      noneOpt.value = '';
-      noneOpt.textContent = '—';
-      sel.appendChild(noneOpt);
-      const titleOpt = document.createElement('option');
-      titleOpt.value = 'title';
-      titleOpt.textContent = '标题';
-      if (rule && rule.target === 'title') titleOpt.selected = true;
-      sel.appendChild(titleOpt);
-      for (const tf of fields) {
-        if (tf.key === field.key) continue; // exclude self; allow any field as target
-        const opt = document.createElement('option');
-        opt.value = tf.key;
-        opt.textContent = tf.fieldName;
-        if (rule && rule.target === tf.key) opt.selected = true;
-        sel.appendChild(opt);
-      }
-      // Ratio input
-      const ratioInput = document.createElement('input');
-      ratioInput.type = 'number';
-      ratioInput.min = '1';
-      ratioInput.max = '99';
-      ratioInput.value = rule ? (rule.ratio || 1) : 1;
-      ratioInput.style.width = '28px';
-      ratioInput.style.fontSize = '10px';
-      ratioInput.title = 'ratio (1个代理收N条边)';
-      ratioInput.disabled = !rule;
+      const proxyItems = document.createElement('div');
+      proxyItems.className = 'node-type-items proxy-items';
 
-      const updateRule = () => {
-        const target = sel.value;
-        const ratio = Math.max(1, parseInt(ratioInput.value) || 1);
-        if (target) {
-          SUBSTITUTION_RULES.set(field.key, { target, ratio });
-        } else {
-          SUBSTITUTION_RULES.delete(field.key);
+      // List existing rules
+      const renderProxyRules = () => {
+        proxyItems.innerHTML = '';
+        for (const [targetKey, rule] of EDGE_PROXY) {
+          if (!targetKey.startsWith(className + '.')) continue;
+          const row = document.createElement('div');
+          row.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:10px;margin:2px 0';
+
+          const pSel = document.createElement('select');
+          pSel.style.fontSize = '10px';
+          for (const f of nonRefFields) {
+            const o = document.createElement('option');
+            o.value = f.key; o.textContent = f.fieldName;
+            if (f.key === rule.proxy) o.selected = true;
+            pSel.appendChild(o);
+          }
+          pSel.addEventListener('change', () => {
+            if (pSel.value) {
+              EDGE_PROXY.set(targetKey, { proxy: pSel.value, ratio: rule.ratio });
+            }
+            reapplyStep();
+          });
+
+          const arrow = document.createElement('span');
+          arrow.textContent = '→';
+
+          const tSel = document.createElement('select');
+          tSel.style.fontSize = '10px';
+          for (const f of allTargetRefs) {
+            const o = document.createElement('option');
+            o.value = f.key; o.textContent = f.fieldName;
+            if (f.key === targetKey) o.selected = true;
+            tSel.appendChild(o);
+          }
+
+          const ratioLabel = document.createElement('span');
+          ratioLabel.textContent = '1:';
+          ratioLabel.style.fontSize = '9px';
+          const ratioInput = document.createElement('input');
+          ratioInput.type = 'number'; ratioInput.min = '1'; ratioInput.max = '99';
+          ratioInput.value = rule.ratio || 1;
+          ratioInput.style.cssText = 'width:28px;font-size:10px';
+          ratioInput.addEventListener('change', () => {
+            const r = Math.max(1, parseInt(ratioInput.value) || 1);
+            const nt = tSel.value;
+            if (nt) EDGE_PROXY.set(nt, { proxy: pSel.value, ratio: r });
+            reapplyStep();
+          });
+
+          const delBtn = document.createElement('button');
+          delBtn.textContent = '✕'; delBtn.type = 'button';
+          delBtn.style.cssText = 'font-size:9px;padding:0 4px;cursor:pointer;border:1px solid #ccc;background:#fff;border-radius:3px';
+          delBtn.addEventListener('click', () => {
+            EDGE_PROXY.delete(targetKey);
+            reapplyStep();
+          });
+
+          // Update target key when dropdown changes
+          const oldTargetKey = targetKey;
+          tSel.addEventListener('change', () => {
+            const nt = tSel.value;
+            if (nt && nt !== oldTargetKey) {
+              EDGE_PROXY.delete(oldTargetKey);
+              EDGE_PROXY.set(nt, { proxy: pSel.value, ratio: rule.ratio });
+            }
+            reapplyStep();
+          });
+
+          row.appendChild(pSel);
+          row.appendChild(arrow);
+          row.appendChild(tSel);
+          row.appendChild(ratioLabel);
+          row.appendChild(ratioInput);
+          row.appendChild(delBtn);
+          proxyItems.appendChild(row);
         }
-        applyVisConfig();
-      };
-      sel.addEventListener('change', () => {
-        ratioInput.disabled = !sel.value;
-        updateRule();
-      });
-      ratioInput.addEventListener('change', updateRule);
 
-      row.appendChild(sel);
-      const ratioLabel = document.createElement('span');
-      ratioLabel.textContent = '1:';
-      ratioLabel.style.fontSize = '9px';
-      row.appendChild(ratioLabel);
-      row.appendChild(ratioInput);
-      subItems.appendChild(row);
+        // Add-new button
+        const addRow = document.createElement('div');
+        addRow.style.cssText = 'margin-top:4px';
+        const addBtn = document.createElement('button');
+        addBtn.textContent = '+ 新增边代理'; addBtn.type = 'button';
+        addBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px dashed #aaa;background:#fafafa;border-radius:3px';
+        addBtn.addEventListener('click', () => {
+          if (allTargetRefs.length > 0 && nonRefFields.length > 0) {
+            const parentRefs = containerFields.length ? containerFields : allTargetRefs;
+            const defaultTarget = parentRefs[0].key;
+            const keysField = nonRefFields.find(f => f.fieldName === 'keys') || nonRefFields[0];
+            const defaultProxy = keysField.key;
+            if (!EDGE_PROXY.has(defaultTarget)) {
+              EDGE_PROXY.set(defaultTarget, { proxy: defaultProxy, ratio: 1 });
+              reapplyStep();
+            }
+          }
+        });
+        addRow.appendChild(addBtn);
+        proxyItems.appendChild(addRow);
+      };
+
+      renderProxyRules();
+      proxyGroup.appendChild(proxyItems);
+      list.appendChild(proxyGroup);
     }
 
-    subGroup.appendChild(subItems);
-    list.appendChild(subGroup);
+    // ── Title substitution: keep simple per-field dropdown ──
+    const titleGroup = document.createElement('div');
+    titleGroup.className = 'node-type-group title-group';
+    const titleHeader = document.createElement('div');
+    titleHeader.className = 'node-type-group-header';
+    const thTitle = document.createElement('span');
+    thTitle.className = 'node-type-group-title';
+    thTitle.textContent = '标题替换';
+    titleHeader.appendChild(thTitle);
+    titleGroup.appendChild(titleHeader);
+    const titleItems = document.createElement('div');
+    titleItems.className = 'node-type-items';
+    const titleRow = document.createElement('div');
+    titleRow.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:10px';
+    const titleLabel = document.createElement('span');
+    titleLabel.textContent = '显示为:';
+    const titleSel = document.createElement('select');
+    titleSel.style.fontSize = '10px';
+    const noneOpt = document.createElement('option');
+    noneOpt.value = ''; noneOpt.textContent = '默认标题';
+    titleSel.appendChild(noneOpt);
+    for (const f of fields) {
+      const o = document.createElement('option');
+      o.value = f.key; o.textContent = f.fieldName;
+      if (TITLE_FIELD && TITLE_FIELD.key === f.key) o.selected = true;
+      titleSel.appendChild(o);
+    }
+    titleSel.addEventListener('change', () => {
+      if (titleSel.value) {
+        TITLE_FIELD = { className, key: titleSel.value };
+      } else {
+        TITLE_FIELD = null;
+      }
+      reapplyStep();
+    });
+    titleRow.appendChild(titleLabel);
+    titleRow.appendChild(titleSel);
+    titleItems.appendChild(titleRow);
+    titleGroup.appendChild(titleItems);
+    list.appendChild(titleGroup);
   }
 }
 
