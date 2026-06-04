@@ -2507,7 +2507,7 @@ function buildNodeTypeRegistry() {
           group.push({ key, className, fieldName, kind });
         }
         if (!NODE_TYPE_VISIBILITY.has(key)) {
-          NODE_TYPE_VISIBILITY.set(key, true);
+          NODE_TYPE_VISIBILITY.set(key, 'visible');
         }
       }
       // Collect bind groups
@@ -2536,21 +2536,32 @@ function buildNodeTypeRegistry() {
         group.push({ key: titleKey, className, fieldName: '标题', kind: 'title' });
       }
       if (!NODE_TYPE_VISIBILITY.has(titleKey)) {
-        NODE_TYPE_VISIBILITY.set(titleKey, true);
+        NODE_TYPE_VISIBILITY.set(titleKey, 'visible');
       }
     }
   }
   nodeTypeRegistryBuilt = true;
 }
 
-function setNodeFieldVisible(key, visible) {
-  NODE_TYPE_VISIBILITY.set(key, Boolean(visible));
+function setNodeFieldVisible(key, state) {
+  NODE_TYPE_VISIBILITY.set(key, state || 'visible');
   syncSettingsPanel();
   renderStep(current);
 }
 
+/** Left-click cycle: visible → self → cascade → visible */
 function toggleNodeFieldVisible(key) {
-  setNodeFieldVisible(key, !(NODE_TYPE_VISIBILITY.get(key) !== false));
+  const cur = NODE_TYPE_VISIBILITY.get(key);
+  if (cur === 'self') {
+    // If currently self-hidden, check if any child fields exist → offer cascade
+    NODE_TYPE_VISIBILITY.set(key, 'cascade');
+  } else if (cur === 'cascade' || cur === false) {
+    NODE_TYPE_VISIBILITY.set(key, 'visible');
+  } else {
+    NODE_TYPE_VISIBILITY.set(key, 'self');
+  }
+  syncSettingsPanel();
+  renderStep(current);
 }
 
 /** Toggle all fields in a bind group together. */
@@ -2559,32 +2570,40 @@ function toggleBindGroup(className, groupName) {
   if (!bgList) return;
   const entry = bgList.find(e => e.groupName === groupName);
   if (!entry || !entry.fields.length) return;
-  // If any field is visible, hide all; otherwise show all
-  const anyVisible = entry.fields.some(k => NODE_TYPE_VISIBILITY.get(k) !== false);
+  // If any field is visible, hide all (self); otherwise show all
+  const anyVisible = entry.fields.some(k => {
+    const s = NODE_TYPE_VISIBILITY.get(k);
+    return s === 'visible' || s === true || s === undefined;
+  });
+  const newState = anyVisible ? 'self' : 'visible';
   for (const key of entry.fields) {
-    NODE_TYPE_VISIBILITY.set(key, !anyVisible);
+    NODE_TYPE_VISIBILITY.set(key, newState);
   }
   syncSettingsPanel();
   renderStep(current);
 }
 
 /** Check whether a field key is visible, considering parent-field cascade.
+ *  NODE_TYPE_VISIBILITY values: true/'visible' | 'self' (hidden only) | 'cascade' (hidden + children)
  *  Keys like "GraphNode.neighbors[0]" also check "GraphNode.neighbors". */
 function isFieldVisible(key) {
   if (!key) return true;
-  // Check exact key first
-  if (NODE_TYPE_VISIBILITY.get(key) === false) return false;
-  // Check base key (strip [...] suffix) — parent field controls children
+  const state = NODE_TYPE_VISIBILITY.get(key);
+  if (state === 'self' || state === 'cascade' || state === false) return false;
+  // Check base key (strip [...] suffix) — only cascade hides children
   const baseMatch = key.match(/^(.+?)\[.*\]$/);
-  if (baseMatch && NODE_TYPE_VISIBILITY.get(baseMatch[1]) === false) return false;
+  if (baseMatch) {
+    const baseState = NODE_TYPE_VISIBILITY.get(baseMatch[1]);
+    if (baseState === 'cascade' || baseState === false) return false;
+  }
   return true;
 }
 
 function applyNodeTypeVisibility(graphData) {
   buildNodeTypeRegistry();
   let hasHidden = false;
-  for (const visible of NODE_TYPE_VISIBILITY.values()) {
-    if (!visible) {
+  for (const state of NODE_TYPE_VISIBILITY.values()) {
+    if (state !== 'visible' && state !== true && state !== undefined) {
       hasHidden = true;
       break;
     }
@@ -2620,23 +2639,29 @@ function applyNodeTypeVisibility(graphData) {
       hiddenKey = className && fieldName ? `${className}.${fieldName}` : '';
     }
     let effectiveKey = hiddenKey;
+    let forceVisible = false;  // self-mode: hide row but keep edge
     if (hiddenKey && !isFieldVisible(hiddenKey)) {
-      // Look up EDGE_PROXY by parent field (strip [...] suffix)
-      const baseMatch = hiddenKey.match(/^(.+?)(\[.*\])?$/);
-      const parentKey = baseMatch ? baseMatch[1] : hiddenKey;
-      const rule = EDGE_PROXY.get(parentKey);
-      if (rule && isFieldVisible(rule.proxy)) {
-        // Map hidden item index to proxy item index via ratio
-        // Extract index from hiddenKey (e.g., "BTreeNode.children[0]" → 0)
-        const idxMatch = hiddenKey.match(/\[(\d+)\]$/);
-        const hiddenIdx = idxMatch ? parseInt(idxMatch[1]) : 0;
-        const proxyIdx = Math.floor(hiddenIdx / (rule.ratio || 1));
-        effectiveKey = `${rule.proxy}[${proxyIdx}]`;
+      const state = NODE_TYPE_VISIBILITY.get(hiddenKey);
+      const baseMatch = hiddenKey.match(/^(.+?)\[.*\]$/);
+      const baseState = baseMatch ? NODE_TYPE_VISIBILITY.get(baseMatch[1]) : null;
+      const isCascade = (state === 'cascade' || state === false) ||
+                        (baseState === 'cascade' || baseState === false);
+      if (!isCascade) {
+        forceVisible = true;  // self-mode: edge survives
+      } else {
+        const parentKey = baseMatch ? baseMatch[1] : hiddenKey;
+        const rule = EDGE_PROXY.get(parentKey);
+        if (rule && isFieldVisible(rule.proxy)) {
+          const idxMatch = hiddenKey.match(/\[(\d+)\]$/);
+          const hiddenIdx = idxMatch ? parseInt(idxMatch[1]) : 0;
+          const proxyIdx = Math.floor(hiddenIdx / (rule.ratio || 1));
+          effectiveKey = `${rule.proxy}[${proxyIdx}]`;
+        }
       }
     }
-    const hidden = effectiveKey ? (!isFieldVisible(effectiveKey)) : false;
+    const hidden = forceVisible ? false : (effectiveKey ? (!isFieldVisible(effectiveKey)) : false);
     if (effectiveKey !== hiddenKey) {
-      const substEdge = { ...edge, data: { ...(edge?.data || {}), field_key: effectiveKey.replace(/\./g, '::'), label: effectiveKey.split('.').pop() } };
+      const substEdge = { ...edge, data: { ...(edge?.data || {}), field_key: effectiveKey.replace(/\./g, '::'), label: effectiveKey.split('.').pop(), _proxyKey: effectiveKey } };
       edgeMeta.push({ edge: substEdge, hidden, srcId });
     } else {
       edgeMeta.push({ edge, hidden, srcId });
@@ -2720,7 +2745,7 @@ function applyNodeTypeVisibility(graphData) {
         const fk = String(origFKs[origIdx] || '').trim();
         let rk = '';
         if (fk) { const p = fk.split('::'); rk = p.length === 2 ? `${p[0]}.${p[1]}` : fk.replace(/::/g, '.'); }
-        if (rk === rule.proxy && !keptRefRowIndices.includes(i)) {
+        if ((rk === rule.proxy || rk.startsWith(rule.proxy + '[')) && !keptRefRowIndices.includes(i)) {
           keptRefRowIndices.push(i);
           keptRefRowIndices.sort((a, b) => a - b);
           if (!(rowText in keptRefLabelMap)) keptRefLabelMap[rowText] = i;
@@ -2781,6 +2806,27 @@ function applyNodeTypeVisibility(graphData) {
 
     node.style = nextStyle;
     filteredNodes.push(node);
+  }
+
+  // ── Post-process proxy edges: update refIndex to match proxy row position ──
+  const nodeByFilteredId = new Map(filteredNodes.map(n => [String(n.id), n]));
+  for (const entry of edgeMeta) {
+    const proxyKey = entry.edge?.data?._proxyKey;
+    if (!proxyKey) continue;
+    const srcNode = nodeByFilteredId.get(entry.srcId);
+    if (!srcNode) continue;
+    const sn = srcNode.style || {};
+    const rows = sn.rows || [];
+    const rowFKs = sn.rowFieldKeys || [];
+    for (let i = 0; i < rows.length; i++) {
+      const fk = String(rowFKs[i] || '').trim();
+      let rk = '';
+      if (fk) { const p = fk.split('::'); rk = p.length === 2 ? `${p[0]}.${p[1]}` : fk.replace(/::/g, '.'); }
+      if (rk === proxyKey) {
+        entry.edge.data.refIndex = i;
+        break;
+      }
+    }
   }
 
   const visibleNodeIds = new Set(filteredNodes.map((node) => String(node.id)));
@@ -3244,13 +3290,44 @@ function syncSettingsPanel() {
     const items = document.createElement('div');
     items.className = 'node-type-items';
     for (const field of fields) {
-      const visible = NODE_TYPE_VISIBILITY.get(field.key) !== false;
+      const state = NODE_TYPE_VISIBILITY.get(field.key);
+      const isVisible = state === 'visible' || state === true || state === undefined;
+      const isSelf = state === 'self';
+      const isCascade = state === 'cascade' || state === false;
+      const cssClass = isVisible ? 'visible' : (isSelf ? 'self-hidden' : 'cascade-hidden');
+      const stateLabel = isVisible ? '显示' : (isSelf ? '仅自身隐藏' : '隐藏+子项');
+      
       const item = document.createElement('button');
       item.type = 'button';
-      item.className = `node-type-item ${visible ? 'visible' : 'hidden'}`;
+      item.className = `node-type-item ${cssClass}`;
       item.textContent = field.fieldName;
-      item.title = `${visible ? '隐藏' : '显示'} ${field.key}`;
+      item.title = `左键切换 | ${stateLabel} | ${field.key}`;
+      
+      // Left-click: cycle visible → self → cascade → visible
       item.addEventListener('click', () => toggleNodeFieldVisible(field.key));
+      
+      // Right-click: context menu
+      item.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const menu = document.getElementById('nodeContextMenu');
+        if (!menu) return;
+        menu.style.display = 'block';
+        menu.style.left = e.clientX + 'px';
+        menu.style.top = e.clientY + 'px';
+        menu._fieldKey = field.key;
+        menu._fieldLabel = field.fieldName;
+        const closeMenu = (ev) => {
+          if (ev.type === 'keydown' && ev.key === 'Escape') { menu.style.display = 'none'; cleanup(); }
+          else if (ev.type === 'click' && !menu.contains(ev.target)) { menu.style.display = 'none'; cleanup(); }
+        };
+        const cleanup = () => {
+          document.removeEventListener('click', closeMenu);
+          document.removeEventListener('keydown', closeMenu);
+        };
+        document.addEventListener('click', closeMenu);
+        document.addEventListener('keydown', closeMenu);
+      });
+      
       items.appendChild(item);
     }
 
@@ -3260,13 +3337,13 @@ function syncSettingsPanel() {
 
     // ── Edge proxy config ──
     const nonRefFields = fields.filter(f => f.kind !== 'ref' && f.kind !== 'title');
+    const refFields = fields.filter(f => f.kind === 'ref');
     // Container fields that have ref children (e.g., "children" → "children[0]")
     const containerFields = fields.filter(f =>
       f.kind !== 'ref' && f.kind !== 'title' &&
       refFields.some(rf => rf.key.startsWith(f.key + '['))
     );
     const allTargetRefs = [...refFields, ...containerFields];
-    const refFields = fields.filter(f => f.kind === 'ref');
 
     if (allTargetRefs.length > 0) {
       const proxyGroup = document.createElement('div');
@@ -3450,17 +3527,19 @@ if (settingsApplyBtn) {
 }
 syncSettingsPanel();
 
-// ── Context menu handlers ──
-document.getElementById('ctxHideSelf')?.addEventListener('click', () => {
+// ── Context menu handlers (works for both graph nodes and field items) ──
+function hideViaContextMenu(cascade) {
   const menu = document.getElementById('nodeContextMenu');
-  if (menu && menu._nodeId) hideNode(menu._nodeId, menu._nodeLabel, false);
-  if (menu) menu.style.display = 'none';
-});
-document.getElementById('ctxHideCascade')?.addEventListener('click', () => {
-  const menu = document.getElementById('nodeContextMenu');
-  if (menu && menu._nodeId) hideNode(menu._nodeId, menu._nodeLabel, true);
-  if (menu) menu.style.display = 'none';
-});
+  if (!menu) return;
+  if (menu._fieldKey) {
+    setNodeFieldVisible(menu._fieldKey, cascade ? 'cascade' : 'self');
+  } else if (menu._nodeId) {
+    hideNode(menu._nodeId, menu._nodeLabel, cascade);
+  }
+  menu.style.display = 'none';
+}
+document.getElementById('ctxHideSelf')?.addEventListener('click', () => hideViaContextMenu(false));
+document.getElementById('ctxHideCascade')?.addEventListener('click', () => hideViaContextMenu(true));
 
 updateResizeHandleState();
 

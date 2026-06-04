@@ -492,6 +492,17 @@
     color:#8b8b8b;
     text-decoration:line-through;
   }
+  .node-type-item.self-hidden {
+    background:#fff3e0;
+    border-color:#f4b860;
+    color:#8b6914;
+  }
+  .node-type-item.cascade-hidden {
+    background:#fce4ec;
+    border-color:#e57373;
+    color:#a31515;
+    text-decoration:line-through;
+  }
   .node-type-item:hover {
     border-color:#94add7;
     box-shadow:0 0 0 3px rgba(91, 143, 249, 0.08);
