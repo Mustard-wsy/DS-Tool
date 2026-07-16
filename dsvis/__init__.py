@@ -10,6 +10,8 @@ from .dsvis import (
     watch_vars,
     bind_fields,
     set_mode,
+    set_layout,
+    set_text_flow,
     enable_breakpoints,
     disable_breakpoints,
 )
@@ -21,6 +23,8 @@ __all__ = [
     "watch_vars",
     "bind_fields",
     "set_mode",
+    "set_layout",
+    "set_text_flow",
     "enable_breakpoints",
     "disable_breakpoints",
 ]
