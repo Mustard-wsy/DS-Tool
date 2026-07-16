@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"/><title>DSVis Preset Tests</title></head>
+<body>
+<h1>DSVis Preset System Tests</h1>
+<div id="results"></div>
+<script>
+// ── Copy of core data structures (mirrors template.html) ──
+const HIDDEN_NODES = new Map();
+const HIDDEN_NODES_CASCADE = new Set();
+const NODE_TYPE_VISIBILITY = new Map();
+const EDGE_PROXY = new Map();
+let TITLE_FIELD = null;
+let LAYER_EDGES = new Set();
+
+const BUILTIN_PRESETS = [
+  { id: 'btree', name: 'B-Tree', builtin: true,
+    edgeProxy: { 'BTreeNode.children': { proxy: 'BTreeNode.keys', ratio: 'auto', includeEnds: true } },
+    visibility: { 'BTreeNode.children': 'cascade' },
+    titleField: { 'BTreeNode': 'BTreeNode.keys' },
+    layerEdges: ['children'], layout: { rankdir: 'TB' } },
+  { id: 'bplustree', name: 'B+ Tree', builtin: true,
+    edgeProxy: { 'BPlusNode.children': { proxy: 'BPlusNode.keys', ratio: 'auto', includeEnds: true } },
+    visibility: { 'BPlusNode.children': 'cascade' },
+    titleField: { 'BPlusNode': 'BPlusNode.keys' },
+    layerEdges: ['children'], layout: { rankdir: 'TB' } },
+  { id: 'binarytree', name: '二叉树', builtin: true,
+    edgeProxy: {}, visibility: {},
+    titleField: { 'Node': 'Node.val' },
+    layerEdges: ['left', 'right'], layout: { rankdir: 'TB' } },
+  { id: 'heap', name: '堆', builtin: true,
+    edgeProxy: {}, visibility: {}, titleField: {},
+    layerEdges: [], layout: { rankdir: 'TB' } },
+];
+
+// ── Core functions (mirrors template.html) ──
+function isFieldVisible(key) {
+  if (!key) return true;
+  const state = NODE_TYPE_VISIBILITY.get(key);
+  if (state === 'self' || state === 'cascade' || state === false) return false;
+  const baseMatch = key.match(/^(.+?)\[.*\]$/);
+  if (baseMatch) {
+    const baseState = NODE_TYPE_VISIBILITY.get(baseMatch[1]);
+    if (baseState === 'cascade' || baseState === false) return false;
+  }
+  return true;
+}
+
+function getAllPresets() { return [...BUILTIN_PRESETS]; }
+
+function applyPreset(preset) {
+  EDGE_PROXY.clear();
+  if (preset.edgeProxy) {
+    for (const [k, v] of Object.entries(preset.edgeProxy)) EDGE_PROXY.set(k, v);
+  }
+  for (const [key] of NODE_TYPE_VISIBILITY) {
+    if (preset.visibility && preset.visibility[key] !== undefined) {
+      NODE_TYPE_VISIBILITY.set(key, preset.visibility[key]);
+    }
+  }
+  TITLE_FIELD = preset.titleField && Object.keys(preset.titleField).length
+    ? { className: Object.keys(preset.titleField)[0], key: Object.values(preset.titleField)[0] } : null;
+  LAYER_EDGES.clear();
+  if (Array.isArray(preset.layerEdges)) {
+    for (const le of preset.layerEdges) LAYER_EDGES.add(le);
+  }
+}
+
+// ── Edge proxy logic (mirrors template.html) ──
+function computeProxyKey(hiddenKey, srcRowFieldKeys) {
+  if (!hiddenKey) return null;
+  const baseMatch = hiddenKey.match(/^(.+?)\[.*\]$/);
+  const parentKey = baseMatch ? baseMatch[1] : hiddenKey;
+  const rule = EDGE_PROXY.get(parentKey);
+  if (!rule || !isFieldVisible(rule.proxy)) return null;
+  const idxMatch = hiddenKey.match(/\[(\d+)\]$/);
+  const hiddenIdx = idxMatch ? parseInt(idxMatch[1]) : 0;
+  if (rule.ratio === 'auto') {
+    let proxyCount = (srcRowFieldKeys || []).filter(k => {
+      const nk = k.replace(/^.*::/, '').replace(/^.*\./, '');
+      return nk.startsWith(rule.proxy.split('.').pop() + '[');
+    }).length || 1;
+    let targetCount = (srcRowFieldKeys || []).filter(k => {
+      const nk = k.replace(/^.*::/, '').replace(/^.*\./, '');
+      return nk.startsWith(parentKey.split('.').pop() + '[');
+    }).length || 1;
+    const slots = rule.includeEnds !== false ? proxyCount + 1 : proxyCount;
+    const slotIdx = Math.floor(hiddenIdx * slots / targetCount);
+    const proxyIdx = Math.min(slotIdx, proxyCount - 1);
+    return `${rule.proxy}[${proxyIdx}]`;
+  } else {
+    const proxyIdx = Math.floor(hiddenIdx / (rule.ratio || 1));
+    return `${rule.proxy}[${proxyIdx}]`;
+  }
+}
+
+// ── Tests ──
+const results = [];
+function test(name, fn) {
+  try { fn(); results.push({ name, status: 'PASS' }); }
+  catch(e) { results.push({ name, status: 'FAIL', error: e.message }); }
+}
+function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
+function assertEquals(a, b, msg) { if (a !== b) throw new Error(msg || `expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`); }
+function assertDeepEqual(a, b, msg) { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(msg || `expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`); }
+
+// Test 1: B-Tree preset application
+NODE_TYPE_VISIBILITY.set('BTreeNode.children', 'visible');
+NODE_TYPE_VISIBILITY.set('BTreeNode.keys', 'visible');
+test('B-Tree preset sets edge proxy', () => {
+  const bt = BUILTIN_PRESETS[0];
+  applyPreset(bt);
+  assert(EDGE_PROXY.has('BTreeNode.children'), 'EDGE_PROXY should have BTreeNode.children');
+  assertEquals(EDGE_PROXY.get('BTreeNode.children').proxy, 'BTreeNode.keys');
+  assertEquals(EDGE_PROXY.get('BTreeNode.children').ratio, 'auto');
+  assertEquals(EDGE_PROXY.get('BTreeNode.children').includeEnds, true);
+});
+
+test('B-Tree preset sets visibility', () => {
+  assertEquals(NODE_TYPE_VISIBILITY.get('BTreeNode.children'), 'cascade');
+});
+
+test('B-Tree preset sets title field', () => {
+  assert(TITLE_FIELD !== null, 'TITLE_FIELD should not be null');
+  assertEquals(TITLE_FIELD.className, 'BTreeNode');
+  assertEquals(TITLE_FIELD.key, 'BTreeNode.keys');
+});
+
+test('B-Tree preset sets layer edges', () => {
+  assert(LAYER_EDGES.has('children'), 'LAYER_EDGES should contain children');
+});
+
+// Test 2: isFieldVisible with cascade modes
+test('isFieldVisible cascade mode', () => {
+  NODE_TYPE_VISIBILITY.set('Test.c', 'cascade');
+  assertEquals(isFieldVisible('Test.c'), false);
+  assertEquals(isFieldVisible('Test.c[0]'), false); // child cascaded
+});
+
+test('isFieldVisible self mode', () => {
+  NODE_TYPE_VISIBILITY.set('Test.d', 'self');
+  assertEquals(isFieldVisible('Test.d'), false);
+  assertEquals(isFieldVisible('Test.d[0]'), true); // child NOT cascaded
+});
+
+// Test 3: Edge proxy ratio auto-detection (3 keys, 4 children, includeEnds)
+const rowFKs = [
+  'BTreeNode::keys[0]', 'BTreeNode::keys[1]', 'BTreeNode::keys[2]',
+  'BTreeNode::children[0]', 'BTreeNode::children[1]', 'BTreeNode::children[2]', 'BTreeNode::children[3]'
+];
+test('Edge proxy 3:4 includeEnds', () => {
+  NODE_TYPE_VISIBILITY.set('BTreeNode.children', 'cascade');
+  assertEquals(computeProxyKey('BTreeNode.children[0]', rowFKs), 'BTreeNode.keys[0]'); // slot 0
+  assertEquals(computeProxyKey('BTreeNode.children[1]', rowFKs), 'BTreeNode.keys[1]'); // slot 1
+  assertEquals(computeProxyKey('BTreeNode.children[2]', rowFKs), 'BTreeNode.keys[2]'); // slot 2
+  assertEquals(computeProxyKey('BTreeNode.children[3]', rowFKs), 'BTreeNode.keys[2]'); // slot 3→clamp
+});
+
+// Test 4: Edge proxy ratio auto-detection (2 keys, 3 children, includeEnds)  
+test('Edge proxy 2:3 includeEnds', () => {
+  const fks = ['BTreeNode::keys[0]', 'BTreeNode::keys[1]', 'BTreeNode::children[0]', 'BTreeNode::children[1]', 'BTreeNode::children[2]'];
+  assertEquals(computeProxyKey('BTreeNode.children[0]', fks), 'BTreeNode.keys[0]'); // slot 0
+  assertEquals(computeProxyKey('BTreeNode.children[1]', fks), 'BTreeNode.keys[1]'); // slot 1
+  assertEquals(computeProxyKey('BTreeNode.children[2]', fks), 'BTreeNode.keys[1]'); // slot 2→clamp
+});
+
+// Test 5: Manual ratio (1:2) — old formula: floor(hiddenIdx / ratio)
+test('Edge proxy manual ratio 1:2', () => {
+  EDGE_PROXY.set('BTreeNode.children', { proxy: 'BTreeNode.keys', ratio: 2 });
+  assertEquals(computeProxyKey('BTreeNode.children[0]', rowFKs), 'BTreeNode.keys[0]'); // 0/2=0
+  assertEquals(computeProxyKey('BTreeNode.children[1]', rowFKs), 'BTreeNode.keys[0]'); // 1/2=0
+  assertEquals(computeProxyKey('BTreeNode.children[2]', rowFKs), 'BTreeNode.keys[1]'); // 2/2=1
+  assertEquals(computeProxyKey('BTreeNode.children[3]', rowFKs), 'BTreeNode.keys[1]'); // 3/2=1
+});
+
+// Test 6: Preset selection
+test('getAllPresets returns 4 built-in', () => {
+  assertEquals(getAllPresets().length, 4);
+  assertEquals(getAllPresets()[0].id, 'btree');
+  assertEquals(getAllPresets()[3].id, 'heap');
+});
+
+// Test 7: B+Tree preset
+test('B+Tree preset', () => {
+  const bp = BUILTIN_PRESETS[1];
+  applyPreset(bp);
+  assert(EDGE_PROXY.has('BPlusNode.children'), 'BPlusNode children proxy should be set');
+  assertEquals(EDGE_PROXY.get('BPlusNode.children').proxy, 'BPlusNode.keys');
+});
+
+// Test 8: Export config
+test('Export config structure', () => {
+  const bt = BUILTIN_PRESETS[0];
+  applyPreset(bt);
+  const proxyObj = Object.fromEntries(EDGE_PROXY);
+  const visObj = Object.fromEntries(NODE_TYPE_VISIBILITY);
+  const tf = TITLE_FIELD ? { [TITLE_FIELD.className]: TITLE_FIELD.key } : {};
+  const exported = { id: 'test', name: 'Test', builtin: false, edgeProxy: proxyObj, visibility: visObj, titleField: tf, layerEdges: Array.from(LAYER_EDGES), layout: { rankdir: 'TB' } };
+  assert(exported.edgeProxy['BTreeNode.children'], 'exported should have edgeProxy');
+  assertEquals(exported.edgeProxy['BTreeNode.children'].proxy, 'BTreeNode.keys');
+  assertEquals(exported.visibility['BTreeNode.children'], 'cascade');
+  assertDeepEqual(exported.layerEdges, ['children']);
+});
+
+// Display results
+const passCount = results.filter(r => r.status === 'PASS').length;
+const failCount = results.filter(r => r.status === 'FAIL').length;
+document.getElementById('results').innerHTML = 
+  `<h2>Results: ${passCount}/${results.length} passed</h2>` +
+  results.map(r => `<div style="color:${r.status==='PASS'?'green':'red'};margin:4px 0">
+    ${r.status==='PASS'?'✓':'✗'} ${r.name}${r.error ? ' — '+r.error : ''}
+  </div>`).join('');
+</script>
+</body></html>

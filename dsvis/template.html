@@ -128,9 +128,11 @@ let hiddenPanelVisible = false;
 const NODE_TYPE_REGISTRY = new Map();  // Map<className, [{key, className, fieldName, kind}]>
 const NODE_TYPE_VISIBILITY = new Map();  // Map<className.fieldName, boolean>
 const BIND_GROUP_REGISTRY = new Map();   // Map<className, [{groupName, fields: [key]}]>
-// EDGE_PROXY: "Type.refField" → { proxy: "Type.valueField", ratio: number }
+// EDGE_PROXY: "Type.refField" → { proxy: "Type.valueField", ratio: number|'auto', includeEnds: boolean }
 const EDGE_PROXY = new Map();
 let TITLE_FIELD = null;  // { className, key } — which field's value replaces the title
+// LAYER_EDGES: Set of "ClassName.fieldName" — edges with these labels participate in dagre layering
+let LAYER_EDGES = new Set();
 let nodeTypeRegistryBuilt = false;
 let settingsPanelVisible = false;
 const AUTO_RUN_INTERVAL_MS = 500;
@@ -138,6 +140,136 @@ let autoRunTimerId = null;
 let autoRunActive = false;
 let autoRunPauseLine = null;
 let debugSessionStopped = false;
+
+// ── Presets ──
+const PRESETS_STORAGE_KEY = 'dsvis:presets';
+const ACTIVE_PRESET_KEY = 'dsvis:activePreset';
+const PROXY_STORAGE_KEY = 'dsvis:edgeProxy';
+const VISIBILITY_STORAGE_KEY = 'dsvis:visibility';
+
+const BUILTIN_PRESETS = [
+  {
+    id: 'btree',
+    name: 'B-Tree',
+    builtin: true,
+    description: 'keys 代理 children，含端点，TB 分层',
+    edgeProxy: { 'BTreeNode.children': { proxy: 'BTreeNode.keys', ratio: 'auto', includeEnds: true } },
+    visibility: { 'BTreeNode.children': 'self' },
+    titleField: { 'BTreeNode': 'BTreeNode.keys' },
+    layerEdges: ['children'],
+    layout: { rankdir: 'TB' },
+    showSubtitle: false
+  },
+  {
+    id: 'bplustree',
+    name: 'B+ Tree',
+    builtin: true,
+    description: 'keys 代理 children，含端点，TB 分层',
+    edgeProxy: { 'BPlusNode.children': { proxy: 'BPlusNode.keys', ratio: 'auto', includeEnds: true } },
+    visibility: { 'BPlusNode.children': 'self' },
+    titleField: { 'BPlusNode': 'BPlusNode.keys' },
+    layerEdges: ['children'],
+    layout: { rankdir: 'TB' },
+    showSubtitle: false
+  },
+  {
+    id: 'binarytree',
+    name: '二叉树',
+    builtin: true,
+    description: 'left/right 指针分层，value 显示为标题',
+    edgeProxy: {},
+    visibility: {},
+    titleField: { 'Node': 'Node.val' },
+    layerEdges: ['left', 'right'],
+    layout: { rankdir: 'TB' }
+  },
+  {
+    id: 'heap',
+    name: '堆',
+    builtin: true,
+    description: '数组展示，不隐藏字段',
+    edgeProxy: {},
+    visibility: {},
+    titleField: {},
+    layerEdges: [],
+    layout: { rankdir: 'TB' }
+  },
+];
+
+// ── Persistence helpers ──
+function persistProxy() {
+  try { localStorage.setItem(PROXY_STORAGE_KEY, JSON.stringify([...EDGE_PROXY])); } catch(_) {}
+}
+function loadProxy() {
+  try {
+    const raw = localStorage.getItem(PROXY_STORAGE_KEY);
+    if (raw) { const arr = JSON.parse(raw); for (const [k, v] of arr) EDGE_PROXY.set(k, v); }
+  } catch(_) {}
+}
+function persistVisibility() {
+  try { localStorage.setItem(VISIBILITY_STORAGE_KEY, JSON.stringify([...NODE_TYPE_VISIBILITY])); } catch(_) {}
+}
+function loadVisibility() {
+  try {
+    const raw = localStorage.getItem(VISIBILITY_STORAGE_KEY);
+    if (raw) { const arr = JSON.parse(raw); for (const [k, v] of arr) NODE_TYPE_VISIBILITY.set(k, v); }
+  } catch(_) {}
+}
+function persistPresets() {
+  const userPresets = JSON.parse(localStorage.getItem(PRESETS_STORAGE_KEY) || '[]').filter(p => !p.builtin);
+  try { localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(userPresets)); } catch(_) {}
+}
+function loadUserPresets() {
+  try { return JSON.parse(localStorage.getItem(PRESETS_STORAGE_KEY) || '[]'); } catch(_) { return []; }
+}
+function getAllPresets() {
+  return [...BUILTIN_PRESETS, ...loadUserPresets()];
+}
+function getActivePresetId() {
+  try { return localStorage.getItem(ACTIVE_PRESET_KEY) || ''; } catch(_) { return ''; }
+}
+function setActivePresetId(id) {
+  try { localStorage.setItem(ACTIVE_PRESET_KEY, id); } catch(_) {}
+}
+
+/** Apply a preset: set EDGE_PROXY, NODE_TYPE_VISIBILITY, TITLE_FIELD, and layout */
+function applyPreset(preset) {
+  EDGE_PROXY.clear();
+  if (preset.edgeProxy) {
+    for (const [k, v] of Object.entries(preset.edgeProxy)) EDGE_PROXY.set(k, v);
+  }
+  for (const [key] of NODE_TYPE_VISIBILITY) {
+    if (preset.visibility && preset.visibility[key] !== undefined) {
+      NODE_TYPE_VISIBILITY.set(key, preset.visibility[key]);
+    }
+  }
+  TITLE_FIELD = preset.titleField && Object.keys(preset.titleField).length
+    ? { className: Object.keys(preset.titleField)[0], key: Object.values(preset.titleField)[0] }
+    : null;
+  if (preset.layout) {
+    if (preset.layout.rankdir) VIS_CONFIG.textFlow = preset.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
+  }
+  if (preset.showSubtitle !== undefined) VIS_CONFIG.showSubtitle = preset.showSubtitle;
+  LAYER_EDGES.clear();
+  if (Array.isArray(preset.layerEdges)) {
+    for (const le of preset.layerEdges) LAYER_EDGES.add(le);
+  }
+  setActivePresetId(preset.id);
+  persistProxy();
+  persistVisibility();
+  try { localStorage.setItem('dsvis:layerEdges', JSON.stringify(Array.from(LAYER_EDGES))); } catch(_) {}
+  try { localStorage.setItem('dsvis:titleField', JSON.stringify(TITLE_FIELD)); } catch(_) {}
+  applyVisConfig();
+  if (settingsPanelVisible) syncSettingsPanel();
+}
+
+/** Export current config as a preset JSON */
+function exportConfigAsPreset() {
+  const proxyObj = Object.fromEntries(EDGE_PROXY);
+  const visObj = Object.fromEntries(NODE_TYPE_VISIBILITY);
+  const tf = TITLE_FIELD ? { [TITLE_FIELD.className]: TITLE_FIELD.key } : {};
+  return { id: 'exported', name: '我的配置', builtin: false, edgeProxy: proxyObj, visibility: visObj, titleField: tf, layerEdges: Array.from(LAYER_EDGES), layout: { rankdir: VIS_CONFIG.textFlow === 'vertical' ? 'TB' : 'LR' } };
+}
 
 // ── Visualisation configuration ──
 const VIS_CONFIG_STORAGE_KEY = 'dsvis:config';
@@ -185,6 +317,8 @@ function applyVisConfig() {
 
 /** Re-render current step without destroying the graph (for settings changes). */
 function reapplyStep() {
+  persistProxy();
+  persistVisibility();
   if (currentRaw != null) {
     renderStepRaw(currentRaw);
   } else {
@@ -1023,14 +1157,32 @@ function applyPresetLayout(graphData, presetType, viewport = null) {
 }
 
 function prepareGraphForLayout(graphData, viewport = null) {
-  const metrics = analyzeLayoutMetrics(graphData, viewport || getGraphSize());
-  if (!metrics.treeLike) {
-    return applyCompactGridLayout(graphData, viewport || getGraphSize());
+  // If LAYER_EDGES is set, use only layer-edges for layout calculation
+  let layoutData = graphData;
+  if (LAYER_EDGES.size > 0) {
+    const allEdges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+    const layerEdges = allEdges.filter(e => {
+      const label = String(e?.data?.label || '').trim();
+      return LAYER_EDGES.has(label) || LAYER_EDGES.has(e?.data?.field_key || '');
+    });
+    const layerNodeIds = new Set();
+    for (const e of layerEdges) {
+      if (e.source) layerNodeIds.add(String(e.source));
+      if (e.target) layerNodeIds.add(String(e.target));
+    }
+    const layerNodes = (Array.isArray(graphData?.nodes) ? graphData.nodes : [])
+      .filter(n => layerNodeIds.has(String(n.id)));
+    layoutData = { edges: layerEdges, nodes: layerNodes };
   }
-  return {
-    data: graphData,
-    layout: computeAdaptiveLayout(graphData, viewport),
-  };
+  const metrics = analyzeLayoutMetrics(layoutData, viewport || getGraphSize());
+  if (!metrics.treeLike) {
+    // Use original graphData for rendering, layoutData only for metrics
+    const compactLayout = applyCompactGridLayout(LAYER_EDGES.size > 0 ? graphData : layoutData, viewport || getGraphSize());
+    return compactLayout;
+  }
+  const layout = computeAdaptiveLayout(layoutData, viewport);
+  // Use original graphData (all edges) with the computed layout
+  return { data: graphData, layout };
 }
 
 function getGraphSize() {
@@ -2545,6 +2697,7 @@ function buildNodeTypeRegistry() {
 
 function setNodeFieldVisible(key, state) {
   NODE_TYPE_VISIBILITY.set(key, state || 'visible');
+  persistVisibility();
   syncSettingsPanel();
   renderStep(current);
 }
@@ -2590,11 +2743,11 @@ function isFieldVisible(key) {
   if (!key) return true;
   const state = NODE_TYPE_VISIBILITY.get(key);
   if (state === 'self' || state === 'cascade' || state === false) return false;
-  // Check base key (strip [...] suffix) — only cascade hides children
+  // Check base key — both self and cascade hide children
   const baseMatch = key.match(/^(.+?)\[.*\]$/);
   if (baseMatch) {
     const baseState = NODE_TYPE_VISIBILITY.get(baseMatch[1]);
-    if (baseState === 'cascade' || baseState === false) return false;
+    if (baseState === 'self' || baseState === 'cascade' || baseState === false) return false;
   }
   return true;
 }
@@ -2639,24 +2792,39 @@ function applyNodeTypeVisibility(graphData) {
       hiddenKey = className && fieldName ? `${className}.${fieldName}` : '';
     }
     let effectiveKey = hiddenKey;
-    let forceVisible = false;  // self-mode: hide row but keep edge
+    let forceVisible = false;
     if (hiddenKey && !isFieldVisible(hiddenKey)) {
       const state = NODE_TYPE_VISIBILITY.get(hiddenKey);
       const baseMatch = hiddenKey.match(/^(.+?)\[.*\]$/);
       const baseState = baseMatch ? NODE_TYPE_VISIBILITY.get(baseMatch[1]) : null;
       const isCascade = (state === 'cascade' || state === false) ||
                         (baseState === 'cascade' || baseState === false);
-      if (!isCascade) {
-        forceVisible = true;  // self-mode: edge survives
-      } else {
-        const parentKey = baseMatch ? baseMatch[1] : hiddenKey;
-        const rule = EDGE_PROXY.get(parentKey);
-        if (rule && isFieldVisible(rule.proxy)) {
-          const idxMatch = hiddenKey.match(/\[(\d+)\]$/);
-          const hiddenIdx = idxMatch ? parseInt(idxMatch[1]) : 0;
+      // Check EDGE_PROXY: redirect in cascade mode, keep alive in self mode
+      const parentKey = baseMatch ? baseMatch[1] : hiddenKey;
+      const rule = EDGE_PROXY.get(parentKey);
+      if (isCascade && rule && isFieldVisible(rule.proxy)) {
+        const idxMatch = hiddenKey.match(/\[(\d+)\]$/);
+        const hiddenIdx = idxMatch ? parseInt(idxMatch[1]) : 0;
+        if (rule.ratio === 'auto') {
+          const fks = Array.isArray(srcStyle.rowFieldKeys) ? srcStyle.rowFieldKeys : [];
+          let proxyCount = fks.filter(k => {
+            const nk = k.replace(/^.*::/, '').replace(/^.*\./, '');
+            return nk.startsWith(rule.proxy.split('.').pop() + '[');
+          }).length || 1;
+          let targetCount = fks.filter(k => {
+            const nk = k.replace(/^.*::/, '').replace(/^.*\./, '');
+            return nk.startsWith(parentKey.split('.').pop() + '[');
+          }).length || 1;
+          const slots = rule.includeEnds !== false ? proxyCount + 1 : proxyCount;
+          const slotIdx = Math.floor(hiddenIdx * slots / targetCount);
+          const proxyIdx = Math.min(slotIdx, proxyCount - 1);
+          effectiveKey = `${rule.proxy}[${proxyIdx}]`;
+        } else {
           const proxyIdx = Math.floor(hiddenIdx / (rule.ratio || 1));
           effectiveKey = `${rule.proxy}[${proxyIdx}]`;
         }
+      } else if (!isCascade) {
+        forceVisible = true;  // self-mode: edge survives with original key (spacer rows handle it)
       }
     }
     const hidden = forceVisible ? false : (effectiveKey ? (!isFieldVisible(effectiveKey)) : false);
@@ -2688,6 +2856,7 @@ function applyNodeTypeVisibility(graphData) {
     const rowDeltaTypes = Array.isArray(style.rowDeltaTypes) ? style.rowDeltaTypes : [];
     const refRows = new Set(Array.isArray(style.refRowIndices) ? style.refRowIndices : []);
     const keptRows = [];
+    const keptChildRows = []; // target rows kept as spacers
     const keptRowNames = [];
     const keptRowKinds = [];
     const keptRowBindGroups = [];
@@ -2710,6 +2879,22 @@ function applyNodeTypeVisibility(graphData) {
         key = className && fieldName ? `${className}.${fieldName}` : '';
       }
       if (key && !isFieldVisible(key)) {
+        // Self-mode + edge proxy target ref → keep as invisible spacer with port
+        const state = NODE_TYPE_VISIBILITY.get(key);
+        const baseM = key.match(/^(.+?)(\[.*\])?$/);
+        const baseKey = baseM ? baseM[1] : key;
+        const baseState = baseM ? NODE_TYPE_VISIBILITY.get(baseKey) : null;
+        const isSelf = (state === 'self') || (baseState === 'self');
+        if (isSelf && kind === 'ref' && EDGE_PROXY.has(baseKey)) {
+          const si = keptRows.length;
+          keptRows.push('');  // invisible spacer
+          keptRowNames.push(rowNames[i] || fieldName);
+          keptRowKinds.push('ref');  // keep as ref so edge has port
+          keptRowBindGroups.push(rowBindGroups[i] ?? null);
+          keptRowBindBlocks.push(rowBindBlocks[i] ?? null);
+          keptRowDeltaTypes.push(rowDeltaTypes[i] ?? null);
+          keptRefRowIndices.push(si);
+        }
         continue;
       }
       const nextIndex = keptRows.length;
@@ -2730,11 +2915,10 @@ function applyNodeTypeVisibility(graphData) {
     const nodeVisible = originalInDegree.get(id) === 0 || connectedNodeIds.has(id);
     if (!nodeVisible) continue;
 
-    // ── Add proxy rows to refRowIndices so redirected edges have ports ──
+    // ── Add all proxy rows (including array items) to refRowIndices ──
     for (const [targetKey, rule] of EDGE_PROXY) {
       if (!targetKey.startsWith(className + '.')) continue;
       const origFKs = Array.isArray(style.rowFieldKeys) ? style.rowFieldKeys : [];
-      // Find proxy field's row in keptRows
       for (let i = 0; i < keptRows.length; i++) {
         const rowText = keptRows[i];
         let origIdx = -1;
@@ -2745,12 +2929,60 @@ function applyNodeTypeVisibility(graphData) {
         const fk = String(origFKs[origIdx] || '').trim();
         let rk = '';
         if (fk) { const p = fk.split('::'); rk = p.length === 2 ? `${p[0]}.${p[1]}` : fk.replace(/::/g, '.'); }
-        if ((rk === rule.proxy || rk.startsWith(rule.proxy + '[')) && !keptRefRowIndices.includes(i)) {
+        // Match proxy or proxy items (e.g., "keys" or "keys[0]")
+        const proxyBase = rule.proxy;
+        if ((rk === proxyBase || rk.startsWith(proxyBase + '[')) && !keptRefRowIndices.includes(i)) {
           keptRefRowIndices.push(i);
           keptRefRowIndices.sort((a, b) => a - b);
           if (!(rowText in keptRefLabelMap)) keptRefLabelMap[rowText] = i;
         }
       }
+    }
+
+    // ── Interleave proxy spacers between proxy rows (runs after all row modifications) ──
+    const hasSpacers = keptRows.some((r, i) => r === '' && keptRowKinds[i] === 'ref');
+    if (hasSpacers) {
+      const proxyBases = [];
+      for (const [tk, rule] of EDGE_PROXY) {
+        if (tk.startsWith(className + '.')) proxyBases.push(rule.proxy);
+      }
+      const indexed = keptRows.map((r, i) => ({
+        row: r, name: keptRowNames[i], kind: keptRowKinds[i],
+        bindG: keptRowBindGroups[i], bindB: keptRowBindBlocks[i],
+        delta: keptRowDeltaTypes[i],
+        isSpacer: r === '' && keptRowKinds[i] === 'ref',
+        proxyIndex: -1, spacerIndex: -1
+      }));
+      let pi = 0, si = 0;
+      for (const it of indexed) {
+        if (it.isSpacer) { it.spacerIndex = si++; }
+        else {
+          const rk = (it.name || '').trim();
+          const isProxy = proxyBases.some(pb => rk === pb.split('.').pop() || rk.startsWith(pb.split('.').pop() + '['));
+          if (isProxy) { it.proxyIndex = pi++; }
+        }
+      }
+      indexed.sort((a, b) => {
+        const ap = a.isSpacer ? a.spacerIndex * 2 + 1 : (a.proxyIndex >= 0 ? a.proxyIndex * 2 : 9999);
+        const bp = b.isSpacer ? b.spacerIndex * 2 + 1 : (b.proxyIndex >= 0 ? b.proxyIndex * 2 : 9999);
+        return ap - bp;
+      });
+      keptRows.length = 0; keptRows.push(...indexed.map(it => it.row));
+      keptRowNames.length = 0; keptRowNames.push(...indexed.map(it => it.name));
+      keptRowKinds.length = 0; keptRowKinds.push(...indexed.map(it => it.kind));
+      keptRowBindGroups.length = 0; keptRowBindGroups.push(...indexed.map(it => it.bindG));
+      keptRowBindBlocks.length = 0; keptRowBindBlocks.push(...indexed.map(it => it.bindB));
+      keptRowDeltaTypes.length = 0; keptRowDeltaTypes.push(...indexed.map(it => it.delta));
+      const newRefs = [], newRefMap = {};
+      for (let i = 0; i < keptRows.length; i++) {
+        if (keptRowKinds[i] === 'ref') {
+          newRefs.push(i);
+          if (!(keptRows[i] in newRefMap)) newRefMap[keptRows[i]] = i;
+        }
+      }
+      keptRefRowIndices.length = 0; keptRefRowIndices.push(...newRefs);
+      for (const k of Object.keys(keptRefLabelMap)) delete keptRefLabelMap[k];
+      Object.assign(keptRefLabelMap, newRefMap);
     }
 
     // ── Title visibility ──
@@ -2773,7 +3005,7 @@ function applyNodeTypeVisibility(graphData) {
     nextStyle.refRowIndices = keptRefRowIndices;
     nextStyle.refLabelMap = keptRefLabelMap;
 
-    nextStyle.showSubtitle = nextStyle.showSubtitle && titleVisible;
+    nextStyle.showSubtitle = nextStyle.showSubtitle && titleVisible && VIS_CONFIG.showSubtitle;
     nextStyle.name = effectiveName;
 
     const subtitleText = effectiveSubtitle;
@@ -3265,6 +3497,106 @@ function syncSettingsPanel() {
   const list = document.getElementById('nodeTypeList');
   if (!list) return;
   list.innerHTML = '';
+
+  // ── Preset section ──
+  const presetGroup = document.createElement('div');
+  presetGroup.className = 'node-type-group preset-group';
+  const presetHeader = document.createElement('div');
+  presetHeader.className = 'node-type-group-header';
+  const presetTitle = document.createElement('span');
+  presetTitle.className = 'node-type-group-title';
+  presetTitle.textContent = '预设样式';
+  presetHeader.appendChild(presetTitle);
+  presetGroup.appendChild(presetHeader);
+
+  const presetItems = document.createElement('div');
+  presetItems.className = 'node-type-items preset-items';
+  presetItems.style.cssText = 'flex-wrap:wrap;gap:6px;align-items:center';
+
+  const allPresets = getAllPresets();
+  const activeId = getActivePresetId();
+
+  const presetSel = document.createElement('select');
+  presetSel.style.cssText = 'font-size:11px;min-width:100px';
+  const customOpt = document.createElement('option');
+  customOpt.value = ''; customOpt.textContent = '自定义';
+  if (!activeId) customOpt.selected = true;
+  presetSel.appendChild(customOpt);
+  const defaultOpt = document.createElement('option');
+  defaultOpt.value = '__default__'; defaultOpt.textContent = '↺ 默认';
+  presetSel.appendChild(defaultOpt);
+  for (const p of allPresets) {
+    const o = document.createElement('option');
+    o.value = p.id; o.textContent = (p.builtin ? '📦 ' : '💾 ') + p.name;
+    if (p.id === activeId) o.selected = true;
+    presetSel.appendChild(o);
+  }
+
+  const applyBtn = document.createElement('button');
+  applyBtn.textContent = '应用'; applyBtn.type = 'button';
+  applyBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #5b8ff9;background:#e8f0fe;border-radius:3px';
+  applyBtn.addEventListener('click', () => {
+    const pid = presetSel.value;
+    if (pid === '__default__') {
+      // Reset to factory defaults
+      EDGE_PROXY.clear();
+      LAYER_EDGES.clear();
+      TITLE_FIELD = null;
+      for (const [key] of NODE_TYPE_VISIBILITY) NODE_TYPE_VISIBILITY.set(key, 'visible');
+      VIS_CONFIG.textFlow = 'horizontal';
+      VIS_CONFIG.showSubtitle = true;
+      setActivePresetId('');
+      persistProxy(); persistVisibility();
+      try { localStorage.removeItem('dsvis:layerEdges'); } catch(_) {}
+      try { localStorage.removeItem('dsvis:titleField'); } catch(_) {}
+      applyVisConfig();
+      return;
+    }
+    if (!pid) {
+      // "自定义" — just mark as no active preset
+      setActivePresetId('');
+      return;
+    }
+    const preset = allPresets.find(p => p.id === pid);
+    if (preset) applyPreset(preset);
+  });
+
+  const exportBtn = document.createElement('button');
+  exportBtn.textContent = '导出'; exportBtn.type = 'button';
+  exportBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #aaa;background:#fafafa;border-radius:3px';
+  exportBtn.addEventListener('click', () => {
+    const data = exportConfigAsPreset();
+    const json = JSON.stringify(data, null, 2);
+    navigator.clipboard.writeText(json).then(() => alert('配置已复制到剪贴板')).catch(() => alert('复制失败:\n' + json));
+  });
+
+  const importBtn = document.createElement('button');
+  importBtn.textContent = '导入'; importBtn.type = 'button';
+  importBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #aaa;background:#fafafa;border-radius:3px';
+  importBtn.addEventListener('click', () => {
+    const text = prompt('粘贴预设 JSON:');
+    if (!text) return;
+    try {
+      const preset = JSON.parse(text);
+      if (!preset.id || !preset.name) throw new Error('缺少 id 或 name');
+      preset.builtin = false;
+      const userPresets = loadUserPresets().filter(p => p.id !== preset.id);
+      userPresets.push(preset);
+      localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(userPresets));
+      applyPreset(preset);
+      syncSettingsPanel();
+    } catch(e) {
+      alert('无效的 JSON: ' + e.message);
+    }
+  });
+
+  presetItems.appendChild(presetSel);
+  presetItems.appendChild(applyBtn);
+  presetItems.appendChild(exportBtn);
+  presetItems.appendChild(importBtn);
+  presetGroup.appendChild(presetItems);
+  list.appendChild(presetGroup);
+
   if (!NODE_TYPE_REGISTRY.size) {
     const empty = document.createElement('div');
     empty.className = 'stack-empty';
@@ -3338,12 +3670,14 @@ function syncSettingsPanel() {
     // ── Edge proxy config ──
     const nonRefFields = fields.filter(f => f.kind !== 'ref' && f.kind !== 'title');
     const refFields = fields.filter(f => f.kind === 'ref');
-    // Container fields that have ref children (e.g., "children" → "children[0]")
-    const containerFields = fields.filter(f =>
-      f.kind !== 'ref' && f.kind !== 'title' &&
-      refFields.some(rf => rf.key.startsWith(f.key + '['))
-    );
-    const allTargetRefs = [...refFields, ...containerFields];
+    const allTargetRefs = [...refFields];
+    // Include container parents of ref items (e.g., "children" is parent of "children[0]")
+    for (const f of fields) {
+      if (f.kind === 'ref' || f.kind === 'title') continue;
+      if (refFields.some(rf => rf.key.startsWith(f.key + '['))) {
+        if (!allTargetRefs.some(t => t.key === f.key)) allTargetRefs.push(f);
+      }
+    }
 
     if (allTargetRefs.length > 0) {
       const proxyGroup = document.createElement('div');
@@ -3400,12 +3734,39 @@ function syncSettingsPanel() {
           ratioLabel.style.fontSize = '9px';
           const ratioInput = document.createElement('input');
           ratioInput.type = 'number'; ratioInput.min = '1'; ratioInput.max = '99';
-          ratioInput.value = rule.ratio || 1;
+          ratioInput.value = rule.ratio === 'auto' ? '' : (rule.ratio || 1);
           ratioInput.style.cssText = 'width:28px;font-size:10px';
+          ratioInput.disabled = rule.ratio === 'auto';
+          const autoCb = document.createElement('input');
+          autoCb.type = 'checkbox'; autoCb.checked = rule.ratio === 'auto';
+          autoCb.style.cssText = 'width:12px;height:12px;margin-left:2px';
+          autoCb.title = '自动检测比例';
+          autoCb.addEventListener('change', () => {
+            const nt = tSel.value;
+            if (autoCb.checked) {
+              ratioInput.disabled = true;
+              ratioInput.value = '';
+              if (nt) EDGE_PROXY.set(nt, { proxy: pSel.value, ratio: 'auto', includeEnds: rule.includeEnds !== false });
+            } else {
+              ratioInput.disabled = false;
+              ratioInput.value = '1';
+              if (nt) EDGE_PROXY.set(nt, { proxy: pSel.value, ratio: 1, includeEnds: rule.includeEnds !== false });
+            }
+            reapplyStep();
+          });
+          const endsCb = document.createElement('input');
+          endsCb.type = 'checkbox'; endsCb.checked = rule.includeEnds !== false;
+          endsCb.style.cssText = 'width:12px;height:12px';
+          endsCb.title = '含端点';
+          endsCb.addEventListener('change', () => {
+            const nt = tSel.value;
+            if (nt) EDGE_PROXY.set(nt, { proxy: pSel.value, ratio: rule.ratio, includeEnds: endsCb.checked });
+            reapplyStep();
+          });
           ratioInput.addEventListener('change', () => {
             const r = Math.max(1, parseInt(ratioInput.value) || 1);
             const nt = tSel.value;
-            if (nt) EDGE_PROXY.set(nt, { proxy: pSel.value, ratio: r });
+            if (nt) EDGE_PROXY.set(nt, { proxy: pSel.value, ratio: r, includeEnds: rule.includeEnds !== false });
             reapplyStep();
           });
 
@@ -3423,7 +3784,7 @@ function syncSettingsPanel() {
             const nt = tSel.value;
             if (nt && nt !== oldTargetKey) {
               EDGE_PROXY.delete(oldTargetKey);
-              EDGE_PROXY.set(nt, { proxy: pSel.value, ratio: rule.ratio });
+              EDGE_PROXY.set(nt, { proxy: pSel.value, ratio: rule.ratio, includeEnds: rule.includeEnds !== false });
             }
             reapplyStep();
           });
@@ -3431,8 +3792,18 @@ function syncSettingsPanel() {
           row.appendChild(pSel);
           row.appendChild(arrow);
           row.appendChild(tSel);
+          const autoLabel = document.createElement('label');
+          autoLabel.style.cssText = 'font-size:9px;display:flex;align-items:center;gap:1px';
+          autoLabel.appendChild(autoCb);
+          autoLabel.appendChild(document.createTextNode('自动'));
+          row.appendChild(autoLabel);
           row.appendChild(ratioLabel);
           row.appendChild(ratioInput);
+          const endsLabel = document.createElement('label');
+          endsLabel.style.cssText = 'font-size:9px;display:flex;align-items:center;gap:1px';
+          endsLabel.appendChild(endsCb);
+          endsLabel.appendChild(document.createTextNode('端点'));
+          row.appendChild(endsLabel);
           row.appendChild(delBtn);
           proxyItems.appendChild(row);
         }
@@ -3445,12 +3816,11 @@ function syncSettingsPanel() {
         addBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px dashed #aaa;background:#fafafa;border-radius:3px';
         addBtn.addEventListener('click', () => {
           if (allTargetRefs.length > 0 && nonRefFields.length > 0) {
-            const parentRefs = containerFields.length ? containerFields : allTargetRefs;
-            const defaultTarget = parentRefs[0].key;
+            const defaultTarget = allTargetRefs[0].key;
             const keysField = nonRefFields.find(f => f.fieldName === 'keys') || nonRefFields[0];
             const defaultProxy = keysField.key;
             if (!EDGE_PROXY.has(defaultTarget)) {
-              EDGE_PROXY.set(defaultTarget, { proxy: defaultProxy, ratio: 1 });
+              EDGE_PROXY.set(defaultTarget, { proxy: defaultProxy, ratio: 'auto', includeEnds: true });
               reapplyStep();
             }
           }
@@ -3542,6 +3912,18 @@ document.getElementById('ctxHideSelf')?.addEventListener('click', () => hideViaC
 document.getElementById('ctxHideCascade')?.addEventListener('click', () => hideViaContextMenu(true));
 
 updateResizeHandleState();
+
+// Load persisted config
+loadProxy();
+loadVisibility();
+try {
+  const leRaw = localStorage.getItem('dsvis:layerEdges');
+  if (leRaw) { LAYER_EDGES = new Set(JSON.parse(leRaw)); }
+} catch(_) {}
+try {
+  const tfRaw = localStorage.getItem('dsvis:titleField');
+  if (tfRaw) { TITLE_FIELD = JSON.parse(tfRaw); }
+} catch(_) {}
 
 renderAllCode();
 computeStepDiffs();
