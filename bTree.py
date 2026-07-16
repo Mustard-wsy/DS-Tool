@@ -2,6 +2,8 @@ import random
 import dsvis
 #dsvis.disable_breakpoints()
 dsvis.set_mode("coarse")
+dsvis.set_layout("vertical")
+dsvis.set_text_flow("vertical")
 dsvis.auto()
 class BTreeNode:
 

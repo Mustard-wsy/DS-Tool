@@ -28,9 +28,19 @@ from .field_binding import get_bound_specs, get_instance_bound_specs
 # Row-append helpers (used during field resolution)
 # ---------------------------------------------------------------------------
 
+def _owner_field_prefix(owner):
+    """Stable field-key prefix used by UI presets and user settings.
+
+    Prefer the bare class name over the fully qualified runtime type because
+    scripts may run as ``__main__`` during visualization but as an imported
+    module during tests.
+    """
+    return owner.get('class_name') or owner.get('type', '')
+
+
 def _append_field(owner, item_name, item_val, *, bind_group=None, bind_block=None):
     """Append a plain (non-ref) row."""
-    field_key = f"{owner.get('type', owner.get('class_name', ''))}::{item_name}"
+    field_key = f"{_owner_field_prefix(owner)}::{item_name}"
     row = {"name": item_name, "kind": "field",
            "text": f"{item_name} = {short(item_val)}",
            "field_key": field_key}
@@ -48,7 +58,7 @@ def _append_ref_or_field(item_name, item_val, owner, obj_id, nodes, edges,
     if is_class_object(item_val):
         cid = _add_obj(item_val, format_typed_label(item_name, item_val))
         if cid:
-            field_key = f"{owner.get('type', owner.get('class_name', ''))}::{item_name}"
+            field_key = f"{_owner_field_prefix(owner)}::{item_name}"
             row = {"name": item_name, "kind": "ref", "text": item_name, "field_key": field_key}
             if bind_group is not None:
                 row["bind_group"] = bind_group
@@ -138,10 +148,13 @@ def _resolve_object_fields(owner, obj, item_map, obj_id,
             _append_field(owner, attr, val)
         elif isinstance(val, (list, tuple, set, frozenset, dict, deque)):
             items = list(iter_container_items(attr, val))
+            # Keep an aggregate row for containers so UI presets and title-field
+            # substitution can target the logical field (for example
+            # ``BTreeNode.keys``) instead of only its expanded items
+            # (``BTreeNode.keys[0]``).  This is especially important for
+            # textbook-style B/B+ tree nodes whose keys are the node body.
+            _append_field(owner, attr, val)
             if not items:
-                owner["rows"].append({"name": attr, "kind": "field",
-                                      "text": f"{attr} = {type(val).__name__}()",
-                                      "field_key": f"{owner.get('type', owner.get('class_name',''))}::{attr}"})
                 continue
             for item_name, item_val in items:
                 _append_ref_or_field(item_name, item_val, owner, obj_id,
@@ -219,7 +232,7 @@ def walk_graph(
             "is_class_object": is_class_object(obj),
         }
         if value_text is not None:
-            n["rows"].append({"name": "value", "kind": "field", "text": value_text, "field_key": f"{n.get('type', n.get('class_name',''))}::value"})
+            n["rows"].append({"name": "value", "kind": "field", "text": value_text, "field_key": f"{n.get('class_name') or n.get('type', '')}::value"})
         nodes.append(n)
         node_index[obj_id] = n
 
@@ -229,7 +242,7 @@ def walk_graph(
                 "name": "summary",
                 "kind": "field",
                 "text": f"size = {len(items)}",
-                "field_key": f"{n.get('type', n.get('class_name',''))}::summary",
+                "field_key": f"{n.get('class_name') or n.get('type', '')}::summary",
             })
             for item_name, item_val in items[:12]:
                 if is_primitive(item_val):
@@ -237,12 +250,12 @@ def walk_graph(
                         "name": item_name,
                         "kind": "field",
                         "text": f"{item_name} = {short(item_val)}",
-                        "field_key": f"{n.get('type', n.get('class_name',''))}::{item_name}",
+                        "field_key": f"{n.get('class_name') or n.get('type', '')}::{item_name}",
                     })
                 elif is_class_object(item_val):
                     cid = _add_obj(item_val, format_typed_label(item_name, item_val))
                     if cid:
-                        field_key = f"{n.get('type', n.get('class_name',''))}::{item_name}"
+                        field_key = f"{n.get('class_name') or n.get('type', '')}::{item_name}"
                         n["rows"].append({
                             "name": item_name,
                             "kind": "ref",
