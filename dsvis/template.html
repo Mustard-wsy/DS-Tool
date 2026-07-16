@@ -56,6 +56,7 @@ __STYLES__
         </span>
         <button id="hiddenNodesBtn" class="icon-btn" type="button" title="隐藏节点列表"></button>
         <button id="settingsBtn" class="icon-btn" type="button" title="节点可见性"></button>
+        <button id="pageAgentBtn" class="icon-btn" type="button" title="页面 AI 助手"></button>
         <span id="breakpointInfo">断点：点击代码行设置；继续和单步回放会在命中前暂停</span>
         <label id="autoFitWrap">
           <input id="autoFitToggle" type="checkbox" checked />
@@ -84,6 +85,25 @@ __STYLES__
           </select>
         </div>
         <div class="settings-note">同名字段在所有同类节点中共享可见性。</div>
+        <div class="agent-settings-group">
+          <div class="settings-row">
+            <span>页面 AI 助手</span>
+            <label class="agent-inline"><input id="pageAgentEnabled" type="checkbox" /> 启用 PageAgent</label>
+          </div>
+          <div class="settings-row agent-config-row">
+            <span>API URL</span>
+            <input id="pageAgentBaseURL" type="text" placeholder="留空使用默认 Testing API" />
+          </div>
+          <div class="settings-row agent-config-row">
+            <span>Token</span>
+            <input id="pageAgentApiKey" type="password" placeholder="留空使用默认 Testing API" autocomplete="off" />
+          </div>
+          <div class="settings-row agent-config-row">
+            <span>模型</span>
+            <input id="pageAgentModel" type="text" placeholder="留空使用默认 Testing API" />
+          </div>
+          <div class="settings-note">同时配置 URL、Token、模型时使用你的 OpenAI-compatible API；否则使用 PageAgent 默认测试接口。生产环境不要在前端保存真实密钥。</div>
+        </div>
         <div id="nodeTypeList"></div>
         <div class="settings-actions">
           <button id="settingsApplyBtn" type="button">应用</button>
@@ -273,9 +293,19 @@ function exportConfigAsPreset() {
 
 // ── Visualisation configuration ──
 const VIS_CONFIG_STORAGE_KEY = 'dsvis:config';
+const PAGE_AGENT_STORAGE_KEY = 'dsvis:pageAgentConfig';
+const PAGE_AGENT_CDN_VERSION = '1.12.2';
+const PAGE_AGENT_DEMO_SCRIPT = `https://cdn.jsdelivr.net/npm/page-agent@${PAGE_AGENT_CDN_VERSION}/dist/iife/page-agent.demo.js`;
 const DEFAULT_VIS_CONFIG = {
   textFlow: 'horizontal',
   showSubtitle: true,
+};
+const DEFAULT_PAGE_AGENT_CONFIG = {
+  enabled: false,
+  baseURL: '',
+  apiKey: '',
+  model: '',
+  language: 'zh-CN',
 };
 
 function loadVisConfig() {
@@ -300,6 +330,87 @@ function saveVisConfig(config) {
   try {
     localStorage.setItem(VIS_CONFIG_STORAGE_KEY, JSON.stringify(config));
   } catch (_) { /* storage unavailable — silently ignore */ }
+}
+
+function loadPageAgentConfig() {
+  try {
+    const raw = localStorage.getItem(PAGE_AGENT_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_PAGE_AGENT_CONFIG };
+    const parsed = JSON.parse(raw);
+    return {
+      ...DEFAULT_PAGE_AGENT_CONFIG,
+      enabled: Boolean(parsed.enabled),
+      baseURL: typeof parsed.baseURL === 'string' ? parsed.baseURL.trim() : '',
+      apiKey: typeof parsed.apiKey === 'string' ? parsed.apiKey : '',
+      model: typeof parsed.model === 'string' ? parsed.model.trim() : '',
+      language: typeof parsed.language === 'string' ? parsed.language : DEFAULT_PAGE_AGENT_CONFIG.language,
+    };
+  } catch (_) {
+    return { ...DEFAULT_PAGE_AGENT_CONFIG };
+  }
+}
+
+function savePageAgentConfig(config) {
+  try {
+    localStorage.setItem(PAGE_AGENT_STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_PAGE_AGENT_CONFIG,
+      ...config,
+      baseURL: String(config.baseURL || '').trim(),
+      model: String(config.model || '').trim(),
+    }));
+  } catch (_) { /* storage unavailable — silently ignore */ }
+}
+
+function hasCustomPageAgentConfig(config) {
+  return Boolean(config && config.baseURL && config.apiKey && config.model);
+}
+
+function loadScriptOnce(src, id) {
+  return new Promise((resolve, reject) => {
+    const existing = document.getElementById(id);
+    if (existing) {
+      if (existing.dataset.loaded === 'true') resolve();
+      else existing.addEventListener('load', () => resolve(), { once: true });
+      return;
+    }
+    const script = document.createElement('script');
+    script.id = id;
+    script.src = src;
+    script.crossOrigin = 'anonymous';
+    script.onload = () => { script.dataset.loaded = 'true'; resolve(); };
+    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
+async function initializePageAgentFromConfig() {
+  const config = loadPageAgentConfig();
+  if (!config.enabled || window.__dsvisPageAgentInitialized) return;
+
+  const useCustom = hasCustomPageAgentConfig(config);
+  const src = useCustom ? `${PAGE_AGENT_DEMO_SCRIPT}?autoInit=false` : PAGE_AGENT_DEMO_SCRIPT;
+  try {
+    await loadScriptOnce(src, 'page-agent-script');
+    if (useCustom && window.PageAgent) {
+      window.__dsvisPageAgent = new window.PageAgent({
+        baseURL: config.baseURL,
+        apiKey: config.apiKey,
+        model: config.model,
+        language: config.language || 'zh-CN',
+      });
+    }
+    window.__dsvisPageAgentInitialized = true;
+  } catch (error) {
+    console.warn('[dsvis] PageAgent 初始化失败:', error);
+  }
+}
+
+function restartPageAgent() {
+  window.__dsvisPageAgentInitialized = false;
+  window.__dsvisPageAgent = null;
+  const oldScript = document.getElementById('page-agent-script');
+  if (oldScript) oldScript.remove();
+  initializePageAgentFromConfig();
 }
 
 /** Apply VIS_CONFIG changes and re-render. Usable from devtools:
@@ -3231,6 +3342,7 @@ const ICONS = {
   breakpointOff: 'codicon-debug-breakpoint-disabled',
   eye: 'codicon-eye',
   gear: 'codicon-gear',
+  sparkle: 'codicon-sparkle',
   paneLeft: 'codicon-chevron-left',
   paneRight: 'codicon-chevron-right',
 };
@@ -3256,6 +3368,7 @@ setIconButton(document.getElementById('stopBtn'), 'stop', '停止当前调试会
 setIconButton(document.getElementById('toggleBreakpointsBtn'), 'breakpointOn', '切换断点命中开关');
 setIconButton(document.getElementById('hiddenNodesBtn'), 'eye', '隐藏节点列表');
 setIconButton(document.getElementById('settingsBtn'), 'gear', '节点可见性');
+setIconButton(document.getElementById('pageAgentBtn'), 'sparkle', '页面 AI 助手');
 syncRunButtonLabel();
 syncBreakpointToggleButton();
 syncDebuggerControlState();
@@ -3493,6 +3606,15 @@ function toggleSettingsPanel() {
 function syncSettingsPanel() {
   const sel = document.getElementById('settingsTextFlow');
   if (sel) sel.value = VIS_CONFIG.textFlow;
+  const pageAgentConfig = loadPageAgentConfig();
+  const agentEnabled = document.getElementById('pageAgentEnabled');
+  const agentBaseURL = document.getElementById('pageAgentBaseURL');
+  const agentApiKey = document.getElementById('pageAgentApiKey');
+  const agentModel = document.getElementById('pageAgentModel');
+  if (agentEnabled) agentEnabled.checked = pageAgentConfig.enabled;
+  if (agentBaseURL) agentBaseURL.value = pageAgentConfig.baseURL;
+  if (agentApiKey) agentApiKey.value = pageAgentConfig.apiKey;
+  if (agentModel) agentModel.value = pageAgentConfig.model;
   buildNodeTypeRegistry();
   const list = document.getElementById('nodeTypeList');
   if (!list) return;
@@ -3880,12 +4002,35 @@ function syncSettingsPanel() {
 function applySettings() {
   const sel = document.getElementById('settingsTextFlow');
   if (sel) VIS_CONFIG.textFlow = sel.value;
+
+  const agentEnabled = document.getElementById('pageAgentEnabled');
+  const agentBaseURL = document.getElementById('pageAgentBaseURL');
+  const agentApiKey = document.getElementById('pageAgentApiKey');
+  const agentModel = document.getElementById('pageAgentModel');
+  savePageAgentConfig({
+    enabled: Boolean(agentEnabled && agentEnabled.checked),
+    baseURL: agentBaseURL ? agentBaseURL.value : '',
+    apiKey: agentApiKey ? agentApiKey.value : '',
+    model: agentModel ? agentModel.value : '',
+    language: 'zh-CN',
+  });
+  restartPageAgent();
   applyVisConfig();
 }
 
 const settingsBtn = document.getElementById('settingsBtn');
 if (settingsBtn) {
   settingsBtn.addEventListener('click', toggleSettingsPanel);
+}
+const pageAgentBtn = document.getElementById('pageAgentBtn');
+if (pageAgentBtn) {
+  pageAgentBtn.addEventListener('click', () => {
+    const config = loadPageAgentConfig();
+    config.enabled = true;
+    savePageAgentConfig(config);
+    restartPageAgent();
+    if (!settingsPanelVisible) toggleSettingsPanel();
+  });
 }
 const settingsCloseBtn = document.getElementById('settingsCloseBtn');
 if (settingsCloseBtn) {
@@ -3896,6 +4041,7 @@ if (settingsApplyBtn) {
   settingsApplyBtn.addEventListener('click', applySettings);
 }
 syncSettingsPanel();
+initializePageAgentFromConfig();
 
 // ── Context menu handlers (works for both graph nodes and field items) ──
 function hideViaContextMenu(cascade) {
