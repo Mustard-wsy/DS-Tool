@@ -21,6 +21,7 @@ from .runtime.config import (
     add_global_watch_vars,
     remove_global_watch_vars,
     set_layout,
+    set_text_flow,
     set_mode,
     enable_breakpoints as _enable_bp,
     disable_breakpoints as _disable_bp,
@@ -63,6 +64,8 @@ __all__ = [
     "watch_vars",
     "bind_fields",
     "set_mode",
+    "set_layout",
+    "set_text_flow",
     "enable_breakpoints",
 ]
 
