@@ -4,6 +4,7 @@
 <meta charset="utf-8"/>
 <title>__TITLE__</title>
 <script src="https://unpkg.com/@antv/g6@5.0.51/dist/g6.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/page-agent@1/dist/iife/page-agent.demo.js" crossorigin="anonymous" defer></script>
 <style>
 __STYLES__
 </style>
@@ -116,6 +117,19 @@ __STYLES__
   <div id="nodeContextMenu" style="display:none;position:fixed;z-index:10000;background:#fff;border:1px solid #ccc;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.15);padding:4px 0;min-width:160px;">
     <div id="ctxHideSelf" style="padding:6px 14px;cursor:pointer;font-size:12px;white-space:nowrap;" onmouseover="this.style.background='#e8f0fe'" onmouseout="this.style.background='transparent'">仅隐藏自身</div>
     <div id="ctxHideCascade" style="padding:6px 14px;cursor:pointer;font-size:12px;white-space:nowrap;" onmouseover="this.style.background='#e8f0fe'" onmouseout="this.style.background='transparent'">隐藏自身及子节点</div>
+  </div>
+  <!-- AI 助手面板 -->
+  <div id="pageAgentPanel" style="display:none;position:fixed;right:12px;bottom:12px;z-index:9999;width:360px;max-height:500px;background:#fff;border:1px solid #ccc;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,0.18);display:flex;flex-direction:column;">
+    <div id="pageAgentPanelHeader" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#e8f0fe;border-radius:10px 10px 0 0;cursor:move;">
+      <span style="font-weight:700;font-size:12px;color:#0f2c63;">🤖 AI 助手</span>
+      <button id="pageAgentPanelClose" type="button" style="border:none;background:none;font-size:16px;cursor:pointer;color:#666;">✕</button>
+    </div>
+    <div id="pageAgentChat" style="flex:1;overflow-y:auto;padding:8px;font-size:11px;min-height:120px;max-height:300px;"></div>
+    <div style="display:flex;padding:6px;border-top:1px solid #eee;">
+      <input id="pageAgentInput" type="text" placeholder="输入指令，如：帮我跳到第 50 步" style="flex:1;padding:6px 8px;border:1px solid #ccc;border-radius:6px;font-size:11px;" />
+      <button id="pageAgentSend" type="button" style="margin-left:6px;padding:6px 12px;border:none;background:#5b8ff9;color:#fff;border-radius:6px;cursor:pointer;font-size:11px;">发送</button>
+    </div>
+    <div id="pageAgentStatus" style="padding:4px 12px;font-size:10px;color:#888;text-align:center;"></div>
   </div>
 </div>
 
@@ -294,9 +308,8 @@ function exportConfigAsPreset() {
 // ── Visualisation configuration ──
 const VIS_CONFIG_STORAGE_KEY = 'dsvis:config';
 const PAGE_AGENT_STORAGE_KEY = 'dsvis:pageAgentConfig';
-const PAGE_AGENT_CDN_VERSION = '1.12.2';
+const PAGE_AGENT_CDN_VERSION = '1';
 const PAGE_AGENT_DEMO_SCRIPT = `https://cdn.jsdelivr.net/npm/page-agent@${PAGE_AGENT_CDN_VERSION}/dist/iife/page-agent.demo.js`;
-const LOG_LEVEL_STORAGE_KEY = 'dsvis:logLevel';
 const DEFAULT_VIS_CONFIG = {
   textFlow: 'horizontal',
   showSubtitle: true,
@@ -308,41 +321,6 @@ const DEFAULT_PAGE_AGENT_CONFIG = {
   model: '',
   language: 'zh-CN',
 };
-const LOG_LEVELS = { debug: 10, info: 20, warn: 30, error: 40, silent: 99 };
-
-function loadLogLevel() {
-  try {
-    const level = String(localStorage.getItem(LOG_LEVEL_STORAGE_KEY) || 'warn').toLowerCase();
-    return Object.prototype.hasOwnProperty.call(LOG_LEVELS, level) ? level : 'warn';
-  } catch (_) {
-    return 'warn';
-  }
-}
-
-const DSVisLogger = {
-  level: loadLogLevel(),
-  setLevel(level) {
-    const normalized = String(level || '').toLowerCase();
-    if (!Object.prototype.hasOwnProperty.call(LOG_LEVELS, normalized)) {
-      throw new Error(`Invalid DSVis log level: ${level}`);
-    }
-    this.level = normalized;
-    try { localStorage.setItem(LOG_LEVEL_STORAGE_KEY, normalized); } catch (_) {}
-  },
-  shouldLog(level) {
-    return LOG_LEVELS[level] >= LOG_LEVELS[this.level];
-  },
-  emit(level, channel, event, payload = {}) {
-    if (!this.shouldLog(level)) return;
-    const method = level === 'debug' ? 'debug' : (level === 'info' ? 'info' : (level === 'warn' ? 'warn' : 'error'));
-    console[method](`[dsvis:${channel}] ${event}`, payload);
-  },
-  debug(channel, event, payload) { this.emit('debug', channel, event, payload); },
-  info(channel, event, payload) { this.emit('info', channel, event, payload); },
-  warn(channel, event, payload) { this.emit('warn', channel, event, payload); },
-  error(channel, event, payload) { this.emit('error', channel, event, payload); },
-};
-window.DSVisLogger = DSVisLogger;
 
 function loadVisConfig() {
   try {
@@ -401,53 +379,42 @@ function hasCustomPageAgentConfig(config) {
   return Boolean(config && config.baseURL && config.apiKey && config.model);
 }
 
-function loadScriptOnce(src, id) {
-  return new Promise((resolve, reject) => {
-    const existing = document.getElementById(id);
-    if (existing) {
-      if (existing.dataset.loaded === 'true') resolve();
-      else existing.addEventListener('load', () => resolve(), { once: true });
-      return;
-    }
-    const script = document.createElement('script');
-    script.id = id;
-    script.src = src;
-    script.crossOrigin = 'anonymous';
-    script.onload = () => { script.dataset.loaded = 'true'; resolve(); };
-    script.onerror = () => reject(new Error(`Failed to load ${src}`));
-    document.head.appendChild(script);
-  });
-}
-
 async function initializePageAgentFromConfig() {
   const config = loadPageAgentConfig();
   if (!config.enabled || window.__dsvisPageAgentInitialized) return;
-
+  
   const useCustom = hasCustomPageAgentConfig(config);
-  const src = useCustom ? `${PAGE_AGENT_DEMO_SCRIPT}?autoInit=false` : PAGE_AGENT_DEMO_SCRIPT;
-  try {
-    await loadScriptOnce(src, 'page-agent-script');
-    if (useCustom && window.PageAgent) {
+  // CDN script already loaded via <script defer>; just configure if custom API
+  if (useCustom && window.PageAgent) {
+    try {
       window.__dsvisPageAgent = new window.PageAgent({
         baseURL: config.baseURL,
         apiKey: config.apiKey,
         model: config.model,
         language: config.language || 'zh-CN',
       });
+      window.__dsvisPageAgentInitialized = true;
+    } catch(e) {
+      console.warn('[dsvis] PageAgent 自定义 API 初始化失败:', e);
     }
+  } else if (window.PageAgent) {
+    // Use default testing API (already auto-initialized by demo script)
     window.__dsvisPageAgentInitialized = true;
-    DSVisLogger.info('agent', 'page-agent-initialized', { custom: useCustom, model: useCustom ? config.model : 'default' });
-  } catch (error) {
-    DSVisLogger.warn('agent', 'page-agent-init-failed', { error });
+  }
+  // If PageAgent not on window yet, it will be available after defer script loads
+  if (!window.PageAgent) {
+    window.addEventListener('load', () => {
+      if (window.PageAgent && !window.__dsvisPageAgentInitialized) {
+        window.__dsvisPageAgentInitialized = true;
+      }
+    }, { once: true });
   }
 }
 
-function restartPageAgent() {
+async function restartPageAgent() {
   window.__dsvisPageAgentInitialized = false;
   window.__dsvisPageAgent = null;
-  const oldScript = document.getElementById('page-agent-script');
-  if (oldScript) oldScript.remove();
-  initializePageAgentFromConfig();
+  await initializePageAgentFromConfig();
 }
 
 /** Apply VIS_CONFIG changes and re-render. Usable from devtools:
@@ -4061,12 +4028,29 @@ if (settingsBtn) {
 }
 const pageAgentBtn = document.getElementById('pageAgentBtn');
 if (pageAgentBtn) {
-  pageAgentBtn.addEventListener('click', () => {
-    const config = loadPageAgentConfig();
-    config.enabled = true;
-    savePageAgentConfig(config);
-    restartPageAgent();
-    if (!settingsPanelVisible) toggleSettingsPanel();
+  pageAgentBtn.addEventListener('click', async () => {
+    const panel = document.getElementById('pageAgentPanel');
+    if (!panel) return;
+    const visible = panel.style.display !== 'none';
+    panel.style.display = visible ? 'none' : 'flex';
+    if (!visible) {
+      const config = loadPageAgentConfig();
+      if (!config.enabled) {
+        config.enabled = true;
+        savePageAgentConfig(config);
+      }
+      const status = document.getElementById('pageAgentStatus');
+      if (status) status.textContent = '正在加载 CDN...';
+      try {
+        await restartPageAgent();
+        if (status) {
+          const useCustom = hasCustomPageAgentConfig(config);
+          status.textContent = useCustom ? '就绪 — 自定义 API' : '就绪 — 免费测试 API（可能受限）';
+        }
+      } catch(e) {
+        if (status) status.textContent = 'CDN 加载失败，请检查网络: ' + (e.message || '');
+      }
+    }
   });
 }
 const settingsCloseBtn = document.getElementById('settingsCloseBtn');
@@ -4196,6 +4180,46 @@ DSVisLogger.info('agent', 'agent-api-ready', { methods: Object.keys(window.DSVis
 
 syncSettingsPanel();
 initializePageAgentFromConfig();
+
+// ── AI Assistant panel handlers ──
+document.getElementById('pageAgentPanelClose')?.addEventListener('click', () => {
+  document.getElementById('pageAgentPanel').style.display = 'none';
+});
+document.getElementById('pageAgentSend')?.addEventListener('click', async () => {
+  const input = document.getElementById('pageAgentInput');
+  const chat = document.getElementById('pageAgentChat');
+  const status = document.getElementById('pageAgentStatus');
+  const text = input.value.trim();
+  if (!text || !chat) return;
+  
+  chat.innerHTML += `<div style="color:#0f2c63;margin:2px 0"><b>你:</b> ${text}</div>`;
+  input.value = '';
+  chat.scrollTop = chat.scrollHeight;
+  
+  try {
+    if (window.__dsvisPageAgent && typeof window.__dsvisPageAgent.execute === 'function') {
+      status.textContent = 'AI 思考中...';
+      const result = await window.__dsvisPageAgent.execute(text);
+      chat.innerHTML += `<div style="color:#333;margin:2px 0"><b>AI:</b> ${result || '已完成'}</div>`;
+      status.textContent = '就绪';
+    } else if (window.PageAgent && typeof window.PageAgent.execute === 'function') {
+      status.textContent = 'AI 思考中...';
+      const result = await window.PageAgent.execute(text);
+      chat.innerHTML += `<div style="color:#333;margin:2px 0"><b>AI:</b> ${result || '已完成'}</div>`;
+      status.textContent = '就绪';
+    } else {
+      chat.innerHTML += `<div style="color:#999;margin:2px 0"><b>系统:</b> PageAgent 未加载。请在设置面板中配置 API 后刷新页面，或使用默认测试 API。</div>`;
+      status.textContent = '未连接';
+    }
+  } catch(e) {
+    chat.innerHTML += `<div style="color:#c00;margin:2px 0"><b>错误:</b> ${e.message}</div>`;
+    status.textContent = '出错';
+  }
+  chat.scrollTop = chat.scrollHeight;
+});
+document.getElementById('pageAgentInput')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('pageAgentSend')?.click();
+});
 
 // ── Context menu handlers (works for both graph nodes and field items) ──
 function hideViaContextMenu(cascade) {
