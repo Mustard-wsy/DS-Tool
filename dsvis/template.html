@@ -4061,6 +4061,123 @@ const settingsApplyBtn = document.getElementById('settingsApplyBtn');
 if (settingsApplyBtn) {
   settingsApplyBtn.addEventListener('click', applySettings);
 }
+function normalizeAgentFieldKey(fieldKey) {
+  return String(fieldKey || '').replace(/::/g, '.').trim();
+}
+
+function serializeRegistryMap(map) {
+  return Array.from(map.entries()).map(([className, fields]) => ({
+    className,
+    fields: fields.map((field) => ({ ...field })),
+  }));
+}
+
+function getCurrentStepForAgent() {
+  const rawIndex = currentRaw != null ? currentRaw : toReal(current);
+  return STEPS[rawIndex] || null;
+}
+
+function createAgentAPI() {
+  return {
+    getCurrentStepSummary() {
+      const step = getCurrentStepForAgent();
+      return {
+        rawIndex: currentRaw != null ? currentRaw : toReal(current),
+        displayIndex: current,
+        lineno: step?.lineno ?? null,
+        stack: step?.stack || null,
+      };
+    },
+    getGraphSchema() {
+      buildNodeTypeRegistry();
+      return {
+        classes: serializeRegistryMap(NODE_TYPE_REGISTRY),
+        bindGroups: serializeRegistryMap(BIND_GROUP_REGISTRY),
+      };
+    },
+    getPresentationConfig() {
+      return {
+        textFlow: VIS_CONFIG.textFlow,
+        showSubtitle: VIS_CONFIG.showSubtitle,
+        visibility: Object.fromEntries(NODE_TYPE_VISIBILITY),
+        edgeProxy: Object.fromEntries(EDGE_PROXY),
+        titleField: TITLE_FIELD ? { ...TITLE_FIELD } : null,
+        hiddenNodes: Array.from(HIDDEN_NODES.keys()),
+        activePresetId: getActivePresetId(),
+        pageAgent: { ...loadPageAgentConfig(), apiKey: undefined },
+        logLevel: DSVisLogger.level,
+      };
+    },
+    getRenderDiagnostics() {
+      return {
+        nodeCount: graph?.getNodeData?.().length || 0,
+        edgeCount: graph?.getEdgeData?.().length || 0,
+        pendingRender: Boolean(pendingRenderRequest),
+        currentStep: this.getCurrentStepSummary(),
+      };
+    },
+    applyPreset(id) {
+      const preset = getAllPresets().find((item) => item.id === id);
+      if (!preset) throw new Error(`Unknown preset: ${id}`);
+      applyPreset(preset);
+      DSVisLogger.info('agent', 'preset-applied', { id });
+      return this.getPresentationConfig();
+    },
+    setTextFlow(flow) {
+      if (!['horizontal', 'vertical'].includes(flow)) throw new Error(`Invalid textFlow: ${flow}`);
+      VIS_CONFIG.textFlow = flow;
+      applyVisConfig();
+      DSVisLogger.info('agent', 'text-flow-updated', { flow });
+      return this.getPresentationConfig();
+    },
+    setFieldVisibility(fieldKey, state = 'visible') {
+      const key = normalizeAgentFieldKey(fieldKey);
+      if (!key) throw new Error('fieldKey is required');
+      if (!['visible', 'self', 'cascade'].includes(state) && state !== false) {
+        throw new Error(`Invalid field visibility: ${state}`);
+      }
+      setNodeFieldVisible(key, state);
+      DSVisLogger.info('agent', 'field-visibility-updated', { key, state });
+      return this.getPresentationConfig();
+    },
+    setTitleField(className, fieldKey = null) {
+      if (fieldKey) TITLE_FIELD = { className, key: normalizeAgentFieldKey(fieldKey) };
+      else TITLE_FIELD = null;
+      try { localStorage.setItem('dsvis:titleField', JSON.stringify(TITLE_FIELD)); } catch (_) {}
+      reapplyStep();
+      DSVisLogger.info('agent', 'title-field-updated', { titleField: TITLE_FIELD });
+      return this.getPresentationConfig();
+    },
+    setEdgeProxy(targetKey, rule = null) {
+      const key = normalizeAgentFieldKey(targetKey);
+      if (!key) throw new Error('targetKey is required');
+      if (rule === null) {
+        EDGE_PROXY.delete(key);
+      } else {
+        const proxy = normalizeAgentFieldKey(rule.proxy);
+        if (!proxy) throw new Error('rule.proxy is required');
+        const ratio = rule.ratio === 'auto' ? 'auto' : Math.max(1, parseInt(rule.ratio, 10) || 1);
+        EDGE_PROXY.set(key, { proxy, ratio, includeEnds: rule.includeEnds !== false });
+      }
+      reapplyStep();
+      DSVisLogger.info('agent', 'edge-proxy-updated', { key, rule: EDGE_PROXY.get(key) || null });
+      return this.getPresentationConfig();
+    },
+    restoreHiddenNode(nodeId) {
+      restoreNode(String(nodeId));
+      DSVisLogger.info('agent', 'hidden-node-restored', { nodeId });
+      return this.getPresentationConfig();
+    },
+    setLogLevel(level) {
+      DSVisLogger.setLevel(level);
+      return this.getPresentationConfig();
+    },
+  };
+}
+
+window.DSVisAgentAPI = createAgentAPI();
+DSVisLogger.info('agent', 'agent-api-ready', { methods: Object.keys(window.DSVisAgentAPI) });
+
 syncSettingsPanel();
 initializePageAgentFromConfig();
 
