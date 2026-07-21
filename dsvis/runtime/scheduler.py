@@ -112,11 +112,18 @@ class Scheduler:
         signature = self._make_signature(nodes, edges)
         has_changed = signature != self.last_signature
 
-        # When breakpoints are enabled, record every trigger so the frontend
-        # can stop on any line.  Visibility is determined by comparing with
-        # the *last visible step's* signature, so the display matches what
-        # the current mode would show without breakpoints.
-        if breakpoints_enabled():
+        # ---------------------------------------------------------------
+        # Single decision point: breakpoint semantics
+        # ---------------------------------------------------------------
+        # ON  → record every trigger so the frontend can navigate
+        #        line by line.  _visible is set per the capture mode.
+        # OFF → record only when the object graph actually changes;
+        #        every recorded step is visible.
+        # ---------------------------------------------------------------
+        use_breakpoints = breakpoints_enabled()
+
+        if use_breakpoints:
+            # --- breakpoint-aware recording ---
             if has_changed:
                 self.last_signature = signature
                 self.last_nodes = nodes
@@ -162,6 +169,7 @@ class Scheduler:
             )
             return
 
+        # --- mode-driven recording (breakpoints OFF) ---
         if not has_changed:
             return
 

@@ -8,11 +8,10 @@
 - ``field_binding``    字段绑定 (bind_fields)
 """
 
-import functools
 import inspect
 import os
 from pathlib import Path
-from typing import Any, Callable, TypeVar, overload
+from typing import Callable, TypeVar, overload
 
 from .runtime.config import (
     get_mode,
@@ -28,45 +27,18 @@ from .runtime.config import (
 )
 from .runtime.scheduler import scheduler
 
-# Re-export implementation functions so callers that used the old private API
-# (e.g. scheduler, tests) continue to work.
-from .introspection import (          # noqa: F401 — re-exported
-    typename as _typename,
-    short as _short,
-    stack_display_text as _stack_display_text,
-    stack_tree_item_text as _stack_tree_item_text,
-    is_primitive as _is_primitive,
-    is_class_object as _is_class_object,
-    is_container as _is_container,
-    is_renderable as _is_renderable,
-    is_graph_root_value as _is_graph_root_value,
-    format_typed_label as _format_typed_label,
-    iter_container_items as _iter_container_items,
-    iter_object_items as _iter_object_items,
-)
-from .stack_serializer import (       # noqa: F401
-    serialize_runtime_stack as _serialize_runtime_stack,
-    serialize_scope_rows as _serialize_scope_rows,
-)
-from .graph_builder import (          # noqa: F401
-    walk_graph as _walk,
-)
-from .card_renderer import (          # noqa: F401
-    build_g6_data as _build_g6_data,
-    render_debugger as _render_debugger,
-)
 from .field_binding import bind_fields  # noqa: F401 — public re-export
 
 __all__ = [
     "capture",
     "auto",
-    "visualize",
     "watch_vars",
     "bind_fields",
     "set_mode",
     "set_layout",
     "set_text_flow",
     "enable_breakpoints",
+    "disable_breakpoints",
 ]
 
 _DEFAULT_LAYOUT = {
@@ -76,8 +48,6 @@ _DEFAULT_LAYOUT = {
     "ranksep": 220,
 }
 
-_PACKAGE_ROOT = Path(__file__).resolve().parent
-_DecoratorFunc = TypeVar("_DecoratorFunc", bound=Callable[..., Any])
 
 
 # ---------------------------------------------------------------------------

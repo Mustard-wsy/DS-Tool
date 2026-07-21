@@ -8,8 +8,11 @@ _WATCH_STACK = []
 _GLOBAL_WATCH_VARS = set()
 _LAYOUT = os.environ.get("DSVIS_LAYOUT", "default")
 
-# Breakpoints toggle — when ON, the scheduler/injector use line-mode
-# collection regardless of _MODE.  When OFF, collection follows _MODE.
+# Breakpoints toggle — controls frontend step-navigation behaviour.
+# When ON, the scheduler records every trigger so the replay UI can
+# stop on any source line.  Visibility metadata is still driven by
+# the capture mode (coarse / fine / line).
+# When OFF, the scheduler only records graph-changing steps.
 _BREAKPOINTS_ENABLED = True
 
 _TEXT_FLOW = os.environ.get("DSVIS_TEXT_FLOW", "horizontal").strip().lower()

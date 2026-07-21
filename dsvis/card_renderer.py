@@ -485,6 +485,8 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
     from .dsvis import _normalize_layout  # deferred — avoids circular import
     from .runtime.config import breakpoints_enabled, get_text_flow
 
+    # breakpoints state is a pure presentation hint for the frontend —
+    # the scheduler already decided recording policy before reaching here.
     if display_indices is None:
         display_indices = list(range(len(steps)))
 
