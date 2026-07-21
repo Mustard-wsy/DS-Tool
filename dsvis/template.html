@@ -230,6 +230,13 @@ const BUILTIN_PRESETS = [
   },
 ];
 
+/* ========================================================================
+ * Persistence & PageAgent Section
+ * localStorage save/load helpers, preset management, vis-config state,
+ * PageAgent CDN loading, and Agent API surface.  Consumed by the
+ * settings panel and the AI assistant panel.
+ * ======================================================================== */
+
 // ── Persistence helpers ──
 function persistProxy() {
   try { localStorage.setItem(PROXY_STORAGE_KEY, JSON.stringify([...EDGE_PROXY])); } catch(_) {}
@@ -4242,6 +4249,10 @@ document.getElementById('pageAgentSend')?.addEventListener('click', async () => 
 document.getElementById('pageAgentInput')?.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') document.getElementById('pageAgentSend')?.click();
 });
+
+/* ========================================================================
+ * End Persistence & PageAgent Section
+ * ======================================================================== */
 
 // ── Context menu handlers (works for both graph nodes and field items) ──
 function hideViaContextMenu(cascade) {
