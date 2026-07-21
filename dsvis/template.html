@@ -503,6 +503,13 @@ const DELTA_COLORS = {
   added: { fill: '#eafaf0', stroke: '#34a853', line: '#1e8e3e' },
 };
 
+/* ========================================================================
+ * Replay Navigation Section
+ * Step mapping (toReal / toDisplay), breakpoint-aware forward stepping,
+ * line-target navigation, and raw-step jump helpers.  These are consumed
+ * by button handlers, keyboard shortcuts, and the render pipeline.
+ * ======================================================================== */
+
 // Map display index → real step index
 function toReal(di) {
   const i = Math.max(0, Math.min(di, DISPLAY_INDICES.length - 1));
@@ -1035,6 +1042,10 @@ function findFrameStepIndex(frameKeyValue, preferredIndex = current) {
   }
   return preferredIndex;
 }
+
+/* ========================================================================
+ * End Replay Navigation Section
+ * ======================================================================== */
 
 function analyzeLayoutMetrics(graphData, viewport) {
   const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
@@ -2736,6 +2747,13 @@ function buildHorizontalPorts(refRowIndices, headerH, height) {
   };
 }
 
+/* ========================================================================
+ * Visibility Section
+ * Functions below own field visibility, edge proxying, title substitution,
+ * hidden-node tracking, and settings-panel state.  They are consumed by
+ * the render pipeline (renderStepImpl) and the settings UI.
+ * ======================================================================== */
+
 function buildNodeTypeRegistry() {
   if (nodeTypeRegistryBuilt) return;
   NODE_TYPE_REGISTRY.clear();
@@ -3255,6 +3273,10 @@ function syncHiddenPanel() {
     list.appendChild(item);
   }
 }
+
+/* ========================================================================
+ * End Visibility Section
+ * ======================================================================== */
 
 function renderStep(i) {
   if (!DISPLAY_INDICES.length) return;
