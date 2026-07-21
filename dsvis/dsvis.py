@@ -55,6 +55,8 @@ _DEFAULT_LAYOUT = {
 # ---------------------------------------------------------------------------
 
 def _normalize_layout(layout):
+    # Canonical layout normalisation consumed by card_renderer.render_debugger().
+    # Accepts None / str / bool / dict and always returns a dagre layout dict.
     if layout is None:
         return dict(_DEFAULT_LAYOUT)
 

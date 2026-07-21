@@ -1,10 +1,16 @@
 """Graph builder — BFS traversal of runtime objects.
 
+Responsibilities
+---------------
+- Row-append helpers: construct field rows and ref rows with canonical
+  ``TypeName::fieldName`` keys (``_make_field_key``).
+- Bind-group resolution: ``_resolve_object_fields()`` owns the animation
+  policy that interleaves bound container fields.
+- Traversal: ``walk_graph()`` scans the root scope, processes pointer
+  watchers, and runs a BFS loop that delegates field resolution per object.
+
 The main entry point is ``walk_graph()`` which takes a root scope dict and
 returns ``(nodes, edges)`` ready for the card renderer.
-
-Bind-group animation logic lives in ``_resolve_object_fields()``,
-called as a post-processing step for each object visited during BFS.
 """
 
 from collections import deque
@@ -312,7 +318,7 @@ def walk_graph(
         except Exception:
             _add_pointer_node(pointer_name, container_name, pointer_value, "status = out_of_range_or_invalid")
 
-    # ---------- BFS ----------
+    # ---------- BFS (field resolution delegated to _resolve_object_fields) ----------
     while q:
         obj = q.popleft()
         obj_id = id(obj)

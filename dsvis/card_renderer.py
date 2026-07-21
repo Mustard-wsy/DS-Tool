@@ -480,9 +480,20 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
 def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, display_indices=None):
     """Generate a self-contained HTML debugger page and open it in a browser.
 
-    *display_indices* is an optional list of indices into *steps* that
-    should be visible in the UI (step counter, Prev/Next).  All steps are
-    still available for breakpoint / line navigation.
+    Layout contract
+    ---------------
+    *layout* is normalised once via :func:`dsvis._normalize_layout` and
+    embedded as ``__LAYOUT__``.  The frontend consumes this value as-is;
+    there is no second normalisation pass.
+
+    Step payload contract
+    ---------------------
+    Each raw *step* dict (``lineno``, ``nodes``, ``edges``, ``stack``,
+    ``_visible``) is transformed here into a display-step payload
+    (``step``, ``lineno``, ``stack``, ``graph``).  *display_indices*
+    (computed by the scheduler) selects which display steps are visible
+    in the UI — all steps remain available for breakpoint / line
+    navigation.
     """
     from .dsvis import _normalize_layout  # deferred — avoids circular import
     from .runtime.config import breakpoints_enabled, get_text_flow

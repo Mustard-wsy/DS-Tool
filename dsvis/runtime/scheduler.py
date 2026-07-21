@@ -185,6 +185,13 @@ class Scheduler:
         )
 
     def flush(self):
+        """Flush recorded steps to a self-contained HTML replay page.
+
+        display_indices is the single source of truth for which steps
+        are visible in the frontend.  The renderer receives the full
+        *self.steps* list so that raw-step navigation (breakpoints,
+        step-into) still works.
+        """
         if not self.steps:
             return
         
