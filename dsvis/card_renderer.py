@@ -401,6 +401,8 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
             text_cfg=text_cfg,
         )
 
+        # Field keys follow the backend contract (graph_builder._make_field_key).
+        # The renderer passes them through without re-normalising the prefix.
         node_style = NodeStyle(
             size=(card_w, height),
             name=display_name,

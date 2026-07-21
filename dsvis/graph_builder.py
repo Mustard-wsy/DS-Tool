@@ -38,9 +38,19 @@ def _owner_field_prefix(owner):
     return owner.get('class_name') or owner.get('type', '')
 
 
+def _make_field_key(owner, item_name):
+    """Canonical ``TypeName::fieldName`` key shared across backend and frontend.
+
+    This is the single backend path for constructing field keys.  Both
+    ``card_renderer.py`` and ``template.html`` consume this format without
+    re-normalising the prefix.
+    """
+    return f"{_owner_field_prefix(owner)}::{item_name}"
+
+
 def _append_field(owner, item_name, item_val, *, bind_group=None, bind_block=None):
     """Append a plain (non-ref) row."""
-    field_key = f"{_owner_field_prefix(owner)}::{item_name}"
+    field_key = _make_field_key(owner, item_name)
     row = {"name": item_name, "kind": "field",
            "text": f"{item_name} = {short(item_val)}",
            "field_key": field_key}
@@ -58,7 +68,7 @@ def _append_ref_or_field(item_name, item_val, owner, obj_id, nodes, edges,
     if is_class_object(item_val):
         cid = _add_obj(item_val, format_typed_label(item_name, item_val))
         if cid:
-            field_key = f"{_owner_field_prefix(owner)}::{item_name}"
+            field_key = _make_field_key(owner, item_name)
             row = {"name": item_name, "kind": "ref", "text": item_name, "field_key": field_key}
             if bind_group is not None:
                 row["bind_group"] = bind_group
