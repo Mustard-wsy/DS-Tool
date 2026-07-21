@@ -54,20 +54,6 @@ _DEFAULT_LAYOUT = {
 # Layout helpers
 # ---------------------------------------------------------------------------
 
-def _normalize_watch_names(var_names):
-    if len(var_names) == 1 and isinstance(var_names[0], (list, tuple, set, frozenset)):
-        candidates = var_names[0]
-    else:
-        candidates = var_names
-
-    normalized = []
-    for name in candidates:
-        text = str(name).strip()
-        if text:
-            normalized.append(text)
-    return normalized
-
-
 def _normalize_layout(layout):
     if layout is None:
         return dict(_DEFAULT_LAYOUT)
@@ -106,6 +92,20 @@ def _normalize_layout(layout):
 # ---------------------------------------------------------------------------
 # watch_vars
 # ---------------------------------------------------------------------------
+
+def _normalize_watch_names(var_names):
+    if len(var_names) == 1 and isinstance(var_names[0], (list, tuple, set, frozenset)):
+        candidates = var_names[0]
+    else:
+        candidates = var_names
+
+    normalized = []
+    for name in candidates:
+        text = str(name).strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
 
 class _WatchVarsToken:
     def __init__(self, names):

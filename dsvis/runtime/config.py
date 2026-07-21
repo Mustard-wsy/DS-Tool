@@ -1,34 +1,12 @@
 import os
 
+# ---------------------------------------------------------------------------
+# Mode — capture granularity
+# ---------------------------------------------------------------------------
+
 _MODE = os.environ.get("DSVIS_MODE", "coarse").strip().lower()
 if _MODE not in {"coarse", "fine", "line"}:
     _MODE = "coarse"
-
-_WATCH_STACK = []
-_GLOBAL_WATCH_VARS = set()
-_LAYOUT = os.environ.get("DSVIS_LAYOUT", "default")
-
-# Breakpoints toggle — controls frontend step-navigation behaviour.
-# When ON, the scheduler records every trigger so the replay UI can
-# stop on any source line.  Visibility metadata is still driven by
-# the capture mode (coarse / fine / line).
-# When OFF, the scheduler only records graph-changing steps.
-_BREAKPOINTS_ENABLED = True
-
-_TEXT_FLOW = os.environ.get("DSVIS_TEXT_FLOW", "horizontal").strip().lower()
-if _TEXT_FLOW not in {"horizontal", "vertical"}:
-    _TEXT_FLOW = "horizontal"
-
-
-def get_text_flow() -> str:
-    return _TEXT_FLOW
-
-
-def set_text_flow(flow: str):
-    global _TEXT_FLOW
-    if flow not in {"horizontal", "vertical"}:
-        raise ValueError("text_flow must be 'horizontal' or 'vertical'")
-    _TEXT_FLOW = flow
 
 
 def set_mode(mode: str | None = None):
@@ -46,6 +24,53 @@ def get_mode() -> str:
     return _MODE
 
 
+# ---------------------------------------------------------------------------
+# Layout
+# ---------------------------------------------------------------------------
+
+_LAYOUT = os.environ.get("DSVIS_LAYOUT", "default")
+
+
+def set_layout(layout):
+    global _LAYOUT
+    _LAYOUT = layout
+
+
+def get_layout():
+    return _LAYOUT
+
+
+# ---------------------------------------------------------------------------
+# Text flow
+# ---------------------------------------------------------------------------
+
+_TEXT_FLOW = os.environ.get("DSVIS_TEXT_FLOW", "horizontal").strip().lower()
+if _TEXT_FLOW not in {"horizontal", "vertical"}:
+    _TEXT_FLOW = "horizontal"
+
+
+def get_text_flow() -> str:
+    return _TEXT_FLOW
+
+
+def set_text_flow(flow: str):
+    global _TEXT_FLOW
+    if flow not in {"horizontal", "vertical"}:
+        raise ValueError("text_flow must be 'horizontal' or 'vertical'")
+    _TEXT_FLOW = flow
+
+
+# ---------------------------------------------------------------------------
+# Breakpoints — frontend step-navigation toggle
+# ---------------------------------------------------------------------------
+# When ON, the scheduler records every trigger so the replay UI can
+# stop on any source line.  Visibility metadata is still driven by
+# the capture mode (coarse / fine / line).
+# When OFF, the scheduler only records graph-changing steps.
+
+_BREAKPOINTS_ENABLED = True
+
+
 def enable_breakpoints():
     global _BREAKPOINTS_ENABLED
     _BREAKPOINTS_ENABLED = True
@@ -60,13 +85,12 @@ def breakpoints_enabled() -> bool:
     return _BREAKPOINTS_ENABLED
 
 
-def set_layout(layout):
-    global _LAYOUT
-    _LAYOUT = layout
+# ---------------------------------------------------------------------------
+# Watch variables — global set + context stack
+# ---------------------------------------------------------------------------
 
-
-def get_layout():
-    return _LAYOUT
+_WATCH_STACK: list[tuple[set[str], list]] = []
+_GLOBAL_WATCH_VARS: set[str] = set()
 
 
 def push_watch_context(var_names, pointers):
