@@ -119,7 +119,7 @@ __STYLES__
     <div id="ctxHideCascade" style="padding:6px 14px;cursor:pointer;font-size:12px;white-space:nowrap;" onmouseover="this.style.background='#e8f0fe'" onmouseout="this.style.background='transparent'">隐藏自身及子节点</div>
   </div>
   <!-- AI 助手面板 -->
-  <div id="pageAgentPanel" style="display:none;position:fixed;right:12px;bottom:12px;z-index:9999;width:360px;max-height:500px;background:#fff;border:1px solid #ccc;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,0.18);display:flex;flex-direction:column;">
+  <div id="pageAgentPanel" style="display:none;position:fixed;right:12px;bottom:12px;z-index:9999;width:360px;max-height:500px;background:#fff;border:1px solid #ccc;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,0.18);flex-direction:column;">
     <div id="pageAgentPanelHeader" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#e8f0fe;border-radius:10px 10px 0 0;cursor:move;">
       <span style="font-weight:700;font-size:12px;color:#0f2c63;">🤖 AI 助手</span>
       <button id="pageAgentPanelClose" type="button" style="border:none;background:none;font-size:16px;cursor:pointer;color:#666;">✕</button>
@@ -1350,8 +1350,8 @@ function initGraph(data) {
 
       const key = this.upsert('key', 'rect', {
         x: -w/2, y: -h/2, width:w, height:h, radius:4,
-        fill: attributes.fill || DELTA_COLORS.unchanged.fill,
-        stroke: attributes.stroke || DELTA_COLORS.unchanged.stroke,
+        fill: (attributes.style && attributes.style.fill) || attributes.fill || DELTA_COLORS.unchanged.fill,
+        stroke: (attributes.style && attributes.style.stroke) || attributes.stroke || DELTA_COLORS.unchanged.stroke,
         lineWidth: attributes.lineWidth || 1,
         zIndex: -1
       }, container);
@@ -4105,6 +4105,31 @@ function getCurrentStepForAgent() {
   const rawIndex = currentRaw != null ? currentRaw : toReal(current);
   return STEPS[rawIndex] || null;
 }
+
+const DSVisLogger = (() => {
+  let _level = 'info';
+  const levels = { debug: 0, info: 1, warn: 2, error: 3, none: 4 };
+  function log(level, module, event, data) {
+    if (levels[level] >= levels[_level]) {
+      const prefix = `[dsvis:${module}]`;
+      const extra = data != null ? ' ' + JSON.stringify(data) : '';
+      const msg = event + extra;
+      switch (level) {
+        case 'error': console.error(prefix, msg); break;
+        case 'warn': console.warn(prefix, msg); break;
+        default: console.log(prefix, msg);
+      }
+    }
+  }
+  return {
+    get level() { return _level; },
+    setLevel(l) { if (levels[l] !== undefined) _level = l; },
+    debug: (m, e, d) => log('debug', m, e, d),
+    info: (m, e, d) => log('info', m, e, d),
+    warn: (m, e, d) => log('warn', m, e, d),
+    error: (m, e, d) => log('error', m, e, d),
+  };
+})();
 
 function createAgentAPI() {
   return {

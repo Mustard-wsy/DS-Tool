@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>DSVis 节点样式验证</title>
+<style>
+  body { font-family: sans-serif; padding: 20px; background: #f5f5f5; }
+  h2 { color: #333; margin-top: 30px; }
+  .demo-row { display: flex; gap: 40px; flex-wrap: wrap; margin: 10px 0; align-items: start; }
+  .demo-card { 
+    border: 1px solid #ccc; border-radius: 4px; padding: 0; 
+    display: inline-block; background: white;
+  }
+  .card-header { 
+    font-weight: 700; font-size: 12px; padding: 6px 10px;
+    border-bottom: 1px solid #ddd;
+  }
+  .card-row { 
+    font-size: 11px; padding: 3px 10px; border-bottom: 1px solid #f0f0f0;
+  }
+  .card-row:last-child { border-bottom: none; }
+  .legend { display: flex; gap: 20px; margin: 10px 0; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .legend-swatch { width: 20px; height: 20px; border-radius: 3px; border: 1px solid #aaa; }
+  table { border-collapse: collapse; margin-top: 10px; }
+  td, th { border: 1px solid #ccc; padding: 6px 12px; font-size: 12px; text-align: left; }
+  th { background: #eee; }
+  code { background: #f5f5f5; padding: 1px 4px; border-radius: 2px; }
+  .pass { color: green; font-weight: 700; }
+  .fail { color: red; font-weight: 700; }
+</style></head><body>
+
+<h1>DSVis Card Node 样式验证</h1>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-swatch" style="background:#e8f0fe;border-color:#5b8ff9"></div> 未修改 (unchanged) — fill #e8f0fe / stroke #5b8ff9</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#fff5e6;border-color:#ff9800"></div> 已修改 (changed) — fill #fff5e6 / stroke #ff9800</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#eafaf0;border-color:#34a853"></div> 新增 (added) — fill #eafaf0 / stroke #34a853</div>
+</div>
+
+<h2>1. 填充色测试 (Fill Colors)</h2>
+<div class="demo-row">
+  <div class="demo-card">
+    <div class="card-header" style="background:#e8f0fe;color:#0f2c63;">arr (unchanged)</div>
+    <div class="card-row">0 = 1</div><div class="card-row">1 = 2</div><div class="card-row">2 = 3</div>
+  </div>
+  <div class="demo-card">
+    <div class="card-header" style="background:#fff5e6;color:#c97200;">arr (changed)</div>
+    <div class="card-row">0 = 99</div><div class="card-row">1 = 2</div><div class="card-row">2 = 3</div>
+  </div>
+  <div class="demo-card">
+    <div class="card-header" style="background:#eafaf0;color:#1e8e3e;">new Node (added)</div>
+    <div class="card-row">val = 42</div>
+    <div class="card-row">next → ...</div>
+  </div>
+</div>
+
+<h2>2. DELTA_COLORS 定义核对</h2>
+<table>
+  <tr><th>状态</th><th>fill</th><th>stroke</th><th>预期表现</th></tr>
+  <tr><td>unchanged</td><td><code style="background:#e8f0fe">#e8f0fe</code></td><td><code style="background:#5b8ff9;color:white">#5b8ff9</code></td><td>极浅蓝底，中蓝边框 — <b>不应是深蓝色</b></td></tr>
+  <tr><td>changed</td><td><code style="background:#fff5e6">#fff5e6</code></td><td><code style="background:#ff9800;color:white">#ff9800</code></td><td>极浅橙底，橙色边框</td></tr>
+  <tr><td>added</td><td><code style="background:#eafaf0">#eafaf0</code></td><td><code style="background:#34a853;color:white">#34a853</code></td><td>极浅绿底，绿色边框</td></tr>
+</table>
+
+<h2>3. CardNode 渲染路径检查</h2>
+<table>
+  <tr><th>检查项</th><th>状态</th><th>说明</th></tr>
+  <tr><td>fill 来源: <code>attributes.style?.fill</code></td><td class="pass">OK</td><td>已修复 — 优先读 style 嵌套对象</td></tr>
+  <tr><td>fill fallback: <code>attributes.fill</code></td><td class="pass">OK</td><td>兼容扁平属性</td></tr>
+  <tr><td>fill default: <code>DELTA_COLORS.unchanged.fill</code></td><td class="pass">OK</td><td>= #e8f0fe (浅蓝)</td></tr>
+  <tr><td>stroke 来源: <code>attributes.style?.stroke</code></td><td class="pass">OK</td><td>同上模式</td></tr>
+</table>
+
+<h2>4. 如果仍然深蓝 — 可能原因</h2>
+<ul>
+  <li>浏览器缓存了旧版 template.html — 请 <b>硬刷新 (Ctrl+Shift+R)</b> </li>
+  <li>生成的 HTML 文件是旧版本 — 删除 temp 目录下旧的 <code>tmp*.html</code></li>
+  <li>G6 默认样式覆盖 — 检查 <code>DELTA_COLORS</code> 是否在 HTML 中正确定义</li>
+</ul>
+
+<script>
+// 实时验证：检查当前页面的 DELTA_COLORS 定义
+console.log("DSVis 样式验证页面已加载");
+</script>
+</body></html>

@@ -56,6 +56,12 @@ class Scheduler:
         if self.source_lines:
             return
         file_path = caller_frame.f_globals.get("__file__")
+        # Fallback: try sys.argv[0] when __file__ is not available
+        # (e.g. interactive sessions or capture()-only mode)
+        if not file_path:
+            import sys
+            if sys.argv and sys.argv[0]:
+                file_path = sys.argv[0]
         if not file_path:
             return
         p = Path(file_path)
