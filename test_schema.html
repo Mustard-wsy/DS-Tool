@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Schema Test</title></head><body>
+<h1>DSVis Schema Unit Test</h1>
+<pre id="log"></pre>
+<script>
+var log = document.getElementById('log');
+function L(msg) { log.textContent += msg + '\n'; }
+
+// === Copy of dsvis schema builder (standalone test) ===
+function toParamType(def) {
+  var t = def.type;
+  if (t === 'number') return 'number';
+  if (t === 'string') return 'string';
+  if (t === 'boolean') return 'boolean';
+  return 'string';
+}
+
+function buildZodSchema(params) {
+  var shape = {};
+  var required = [];
+  if (params) {
+    for (var _i = 0, _keys = Object.keys(params); _i < _keys.length; _i++) {
+      (function() {
+      var key = _keys[_i];
+      var def = params[key];
+      var typeStr = toParamType(def);
+      var inner = {};
+      var innerDef = {
+        typeName: 'Zod' + typeStr.charAt(0).toUpperCase() + typeStr.slice(1),
+        type: typeStr, checks: [], coerce: false,
+      };
+      inner._def = innerDef;
+      var innerTraits = new Set(); innerTraits.add('$ZodType');
+      var innerZod = { def: innerDef, traits: innerTraits };
+      innerZod.processJSONSchema = function(ctx, target, path) { target.type = typeStr; };
+      innerZod.run = function(ctx, options) { return innerZod.parse(ctx, options); };
+      innerZod.parse = function(ctx, options) {
+        var v = ctx.value, ok = false;
+        if (typeStr === 'number') ok = (typeof v === 'number' && !isNaN(v) && isFinite(v));
+        else if (typeStr === 'boolean') ok = (typeof v === 'boolean');
+        else ok = (typeof v === 'string');
+        if (!ok) ctx.issues.push({ expected: typeStr, code: 'invalid_type', input: v, path: [] });
+        return ctx;
+      };
+      Object.defineProperty(inner, '_zod', { value: innerZod, enumerable: false, writable: true, configurable: true });
+      inner.parse = function(v) { return v; };
+      inner.safeParse = function(v) { return { success: true, data: v }; };
+      shape[key] = inner;
+      if (def.required !== false) required.push(key);
+      })();
+    }
+  }
+  var schema = {};
+  var outerDef = {
+    typeName: 'ZodObject', type: 'object',
+    shape: function() { return shape; }, unknownKeys: 'strip',
+  };
+  schema._def = outerDef;
+  schema.shape = shape;
+  var outerTraits = new Set();
+  outerTraits.add('$ZodType');
+  var outerZod = { def: outerDef, traits: outerTraits };
+  outerZod.processJSONSchema = function(ctx, target, path) {
+    target.type = 'object'; target.properties = {};
+    for (var k in shape) {
+      if (!Object.prototype.hasOwnProperty.call(shape, k)) continue;
+      var innerTarget = {};
+      var innerSchema = shape[k];
+      if (innerSchema._zod && innerSchema._zod.processJSONSchema) {
+        innerSchema._zod.processJSONSchema(ctx, innerTarget, {
+          path: (path && path.path || []).concat(['properties', k]),
+        });
+      }
+      target.properties[k] = innerTarget;
+    }
+    if (required.length > 0) target.required = required.slice();
+  };
+  outerZod.run = function(ctx, options) { return outerZod.parse(ctx, options); };
+  outerZod.parse = function(ctx, options) {
+    var v = ctx.value;
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+      ctx.issues.push({ expected: 'object', code: 'invalid_type', input: v, path: [] });
+      return ctx;
+    }
+    ctx.value = {};
+    for (var k in shape) {
+      if (!Object.prototype.hasOwnProperty.call(shape, k)) continue;
+      var propCtx = { value: v[k], issues: [] };
+      shape[k]._zod.run(propCtx, options || {});
+      if (propCtx.issues.length > 0) {
+        for (var j = 0; j < propCtx.issues.length; j++) {
+          var iss = propCtx.issues[j];
+          var p = [k];
+          if (iss.path && iss.path.length > 0) p = p.concat(iss.path);
+          ctx.issues.push({ expected: iss.expected, code: iss.code || 'invalid_type', input: iss.input, path: p, message: iss.message });
+        }
+      }
+      if (v[k] === undefined && required.indexOf(k) >= 0) {
+        if (propCtx.issues.length === 0) ctx.issues.push({ code: 'invalid_type', expected: 'nonoptional', input: undefined, path: [k] });
+      }
+      ctx.value[k] = propCtx.value;
+    }
+    return ctx;
+  };
+  Object.defineProperty(schema, '_zod', { value: outerZod, enumerable: false, writable: true, configurable: true });
+  schema.parse = function(data) {
+    data = data || {};
+    var result = {};
+    for (var k in shape) {
+      if (!Object.prototype.hasOwnProperty.call(shape, k)) continue;
+      var v = data[k];
+      if (v === undefined && required.indexOf(k) >= 0) throw new Error('Missing required param: ' + k);
+      result[k] = v;
+    }
+    return result;
+  };
+  schema.safeParse = function(data) {
+    try { return { success: true, data: schema.parse(data) }; } catch (e) { return { success: false, error: e }; }
+  };
+  return schema;
+}
+
+// === TESTS ===
+function test(name, fn) {
+  try { fn(); L('✓ ' + name); } catch(e) { L('✗ ' + name + ': ' + e.message); }
+}
+
+// Test 1: schema has _zod (non-enumerable)
+test('schema._zod exists', function() {
+  var s = buildZodSchema({ name: { type: 'string', description: 'test' } });
+  if (!s._zod) throw new Error('no _zod');
+  if (s._zod.def.typeName !== 'ZodObject') throw new Error('wrong typeName: ' + s._zod.def.typeName);
+  if (!s._zod.traits.has('$ZodType')) throw new Error('missing $ZodType trait');
+});
+
+// Test 2: shape property has _zod
+test('shape prop has _zod', function() {
+  var s = buildZodSchema({ name: { type: 'string' } });
+  var shape = s._def.shape();
+  var inner = shape['name'];
+  if (!inner._zod) throw new Error('inner no _zod');
+  if (!inner._zod.traits.has('$ZodType')) throw new Error('inner missing $ZodType');
+});
+
+// Test 3: _zod.run works
+test('_zod.run validates', function() {
+  var s = buildZodSchema({ name: { type: 'string' } });
+  var shape = s._def.shape();
+  var inner = shape['name'];
+  var ctx = { value: 'hello', issues: [] };
+  inner._zod.run(ctx, {});
+  if (ctx.issues.length !== 0) throw new Error('valid string failed: ' + JSON.stringify(ctx.issues));
+  var ctx2 = { value: 42, issues: [] };
+  inner._zod.run(ctx2, {});
+  if (ctx2.issues.length === 0) throw new Error('invalid string passed');
+});
+
+// Test 4: processJSONSchema works
+test('processJSONSchema', function() {
+  var s = buildZodSchema({ name: { type: 'string' }, count: { type: 'number' } });
+  var target = {};
+  s._zod.processJSONSchema({}, target, { path: [] });
+  if (target.type !== 'object') throw new Error('wrong type: ' + target.type);
+  if (!target.properties || !target.properties.name || target.properties.name.type !== 'string')
+    throw new Error('wrong properties: ' + JSON.stringify(target.properties));
+  if (!target.required || target.required.indexOf('name') < 0)
+    throw new Error('missing required');
+  L('  → ' + JSON.stringify(target));
+});
+
+// Test 5: outer _zod.run validates whole object
+test('outer _zod.run', function() {
+  var s = buildZodSchema({ name: { type: 'string' }, count: { type: 'number' } });
+  var ctx = { value: { name: 'test', count: 5 }, issues: [] };
+  s._zod.run(ctx, {});
+  if (ctx.issues.length !== 0) throw new Error('valid object rejected: ' + JSON.stringify(ctx.issues));
+  var ctx2 = { value: { name: 123, count: 'bad' }, issues: [] };
+  s._zod.run(ctx2, {});
+  if (ctx2.issues.length < 2) throw new Error('invalid object passed: ' + JSON.stringify(ctx2.issues));
+});
+
+// Test 6: empty schema
+test('empty schema', function() {
+  var s = buildZodSchema({});
+  if (!s._zod) throw new Error('no _zod');
+  var target = {};
+  s._zod.processJSONSchema({}, target, { path: [] });
+  if (target.type !== 'object') throw new Error('wrong type');
+});
+
+// Test 7: _zod is non-enumerable
+test('_zod is non-enumerable', function() {
+  var s = buildZodSchema({ name: { type: 'string' } });
+  var keys = Object.keys(s);
+  if (keys.indexOf('_zod') >= 0) throw new Error('_zod should not be enumerable');
+  var desc = Object.getOwnPropertyDescriptor(s, '_zod');
+  if (!desc) throw new Error('no descriptor');
+  if (desc.enumerable) throw new Error('should be enumerable:false');
+});
+
+// Test 8: simulate PageAgent's normalizeDef check
+test('normalizeDef simulation', function() {
+  var s = buildZodSchema({ step: { type: 'number' }, text: { type: 'string' } });
+  var def = s._def;
+  var shape = def.shape();
+  var keys = Object.keys(shape);
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    var prop = shape[k];
+    if (!prop || !prop._zod || !prop._zod.traits || !prop._zod.traits.has('$ZodType')) {
+      throw new Error('normalizeDef fails for ' + k);
+    }
+  }
+  L('  → all ' + keys.length + ' properties pass normalizeDef');
+});
+
+L('\n=== ALL DONE ===');
+</script>
+</body></html>

@@ -4,7 +4,7 @@
 <meta charset="utf-8"/>
 <title>__TITLE__</title>
 <script src="https://unpkg.com/@antv/g6@5.0.51/dist/g6.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/page-agent@1/dist/iife/page-agent.demo.js" crossorigin="anonymous" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/page-agent@1.12.2/dist/iife/page-agent.demo.js?autoInit=false&showPanel=false" crossorigin="anonymous" defer></script>
 <style>
 __STYLES__
 </style>
@@ -156,6 +156,7 @@ let hoveredFrameKey = null;
 let selectedFrameKey = null;
 const BREAKPOINTS = new Set();
 let BREAKPOINTS_ENABLED = __BREAKPOINTS_ENABLED__;
+const DSVIS_ALGO = __DSVIS_ALGO__;
 const HIDDEN_NODES = new Map();  // Map<nodeId, label> — hidden nodes
 const HIDDEN_NODES_CASCADE = new Set();  // nodeIds whose descendants also cascade-hide
 let hiddenPanelVisible = false;
@@ -315,8 +316,6 @@ function exportConfigAsPreset() {
 // ── Visualisation configuration ──
 const VIS_CONFIG_STORAGE_KEY = 'dsvis:config';
 const PAGE_AGENT_STORAGE_KEY = 'dsvis:pageAgentConfig';
-const PAGE_AGENT_CDN_VERSION = '1';
-const PAGE_AGENT_DEMO_SCRIPT = `https://cdn.jsdelivr.net/npm/page-agent@${PAGE_AGENT_CDN_VERSION}/dist/iife/page-agent.demo.js`;
 const DEFAULT_VIS_CONFIG = {
   textFlow: 'horizontal',
   showSubtitle: true,
@@ -386,42 +385,134 @@ function hasCustomPageAgentConfig(config) {
   return Boolean(config && config.baseURL && config.apiKey && config.model);
 }
 
-async function initializePageAgentFromConfig() {
-  const config = loadPageAgentConfig();
-  if (!config.enabled || window.__dsvisPageAgentInitialized) return;
-  
+// Demo (testing) API config — same as what the CDN auto-init uses.
+// Only applies when the user has NOT configured a custom API.
+const PAGE_AGENT_DEMO_CONFIG = {
+  baseURL: 'https://page-ag-testing-ohftxirgbn.cn-shanghai.fcapp.run',
+  apiKey: 'NA',
+  model: 'qwen3.5-plus',
+};
+
+function buildPageAgentInstance(PageAgentClass, config) {
   const useCustom = hasCustomPageAgentConfig(config);
-  // CDN script already loaded via <script defer>; just configure if custom API
-  if (useCustom && window.PageAgent) {
-    try {
-      window.__dsvisPageAgent = new window.PageAgent({
-        baseURL: config.baseURL,
-        apiKey: config.apiKey,
-        model: config.model,
-        language: config.language || 'zh-CN',
-      });
-      window.__dsvisPageAgentInitialized = true;
-    } catch(e) {
-      console.warn('[dsvis] PageAgent 自定义 API 初始化失败:', e);
-    }
-  } else if (window.PageAgent) {
-    // Use default testing API (already auto-initialized by demo script)
-    window.__dsvisPageAgentInitialized = true;
+  const tools = typeof dsvis.buildPageAgentTools === 'function'
+    ? dsvis.buildPageAgentTools() : {};
+  const instructions = typeof dsvis.buildInstructions === 'function'
+    ? dsvis.buildInstructions() : '';
+
+  if (useCustom) {
+    return new PageAgentClass({
+      baseURL: config.baseURL,
+      apiKey: config.apiKey,
+      model: config.model,
+      language: config.language || 'zh-CN',
+      instructions: { system: instructions },
+      customTools: tools,
+    });
   }
-  // If PageAgent not on window yet, it will be available after defer script loads
-  if (!window.PageAgent) {
-    window.addEventListener('load', () => {
-      if (window.PageAgent && !window.__dsvisPageAgentInitialized) {
-        window.__dsvisPageAgentInitialized = true;
+  // Use the built-in demo/testing API (free, rate-limited)
+  return new PageAgentClass({
+    baseURL: PAGE_AGENT_DEMO_CONFIG.baseURL,
+    apiKey: PAGE_AGENT_DEMO_CONFIG.apiKey,
+    model: PAGE_AGENT_DEMO_CONFIG.model,
+    language: config.language || 'zh-CN',
+    instructions: { system: instructions },
+    customTools: tools,
+  });
+}
+
+function hideAutoCreatedPanel() {
+  // The CDN auto-creates window.pageAgent with its own floating UI.
+  // We hide it immediately and also schedule a deferred hide in case
+  // the CDN's setTimeout-based auto-init has not yet fired.
+  for (const key of ['pageAgent', '__dsvisAgent']) {
+    try {
+      const inst = window[key];
+      if (inst && typeof inst.panel?.hide === 'function') {
+        inst.panel.hide();
       }
-    }, { once: true });
+    } catch (_) {}
+  }
+  // Deferred: the CDN's auto-init runs inside setTimeout(fn), so
+  // window.pageAgent may not exist yet at this point.
+  setTimeout(() => {
+    try {
+      if (window.pageAgent && typeof window.pageAgent.panel?.hide === 'function') {
+        window.pageAgent.panel.hide();
+      }
+    } catch (_) {}
+  }, 200);
+  setTimeout(() => {
+    try {
+      if (window.pageAgent && typeof window.pageAgent.panel?.hide === 'function') {
+        window.pageAgent.panel.hide();
+      }
+    } catch (_) {}
+  }, 800);
+}
+
+async function initializeDsvisAgent() {
+  if (window.__dsvisAgentInitialized) return;
+  if (!window.PageAgent) {
+    DSVisLogger.warn('agent', 'cdn-not-loaded', {});
+    // CDN script not yet loaded — retry on load
+    window.addEventListener('load', () => { initializeDsvisAgent(); }, { once: true });
+    return;
+  }
+  const config = loadPageAgentConfig();
+  if (!config.enabled) {
+    DSVisLogger.debug('agent', 'not-enabled', {});
+    return;
+  }
+  try {
+    // The PageAgent class ALWAYS creates a Panel DOM node. We remove it
+    // immediately and also patch panel.show to be a no-op.
+    var toolsCount = dsvis._registry ? dsvis._registry.size : 0;
+    const agent = buildPageAgentInstance(window.PageAgent, config);
+    try {
+      if (agent.panel && agent.panel.hide) agent.panel.hide();
+      if (agent.panel && agent.panel.show) agent.panel.show = function() {};
+      var pw = document.getElementById('page-agent-runtime_agent-panel');
+      if (pw) pw.remove();
+    } catch (_) {}
+    // Deferred cleanup – the Panel constructor appends to body inside
+    // requestAnimationFrame or similar async path.
+    setTimeout(function() {
+      try {
+        if (agent.panel && agent.panel.hide) agent.panel.hide();
+        var pw = document.getElementById('page-agent-runtime_agent-panel');
+        if (pw) pw.remove();
+      } catch (_) {}
+    }, 50);
+    setTimeout(function() {
+      try {
+        if (agent.panel && agent.panel.hide) agent.panel.hide();
+        var pw = document.getElementById('page-agent-runtime_agent-panel');
+        if (pw) pw.remove();
+      } catch (_) {}
+    }, 300);
+    window.__dsvisAgent = agent;
+    window.__dsvisAgentInitialized = true;
+    DSVisLogger.info('agent', 'agent-initialized', {
+      custom: hasCustomPageAgentConfig(config),
+      toolsCount,
+    });
+  } catch (e) {
+    console.warn('[dsvis] Agent 初始化失败:', e);
+    DSVisLogger.error('agent', 'init-failed', { error: e.message || String(e) });
   }
 }
 
-async function restartPageAgent() {
-  window.__dsvisPageAgentInitialized = false;
-  window.__dsvisPageAgent = null;
-  await initializePageAgentFromConfig();
+async function reloadDsvisAgent() {
+  if (window.__dsvisAgent && typeof window.__dsvisAgent.panel?.hide === 'function') {
+    window.__dsvisAgent.panel.hide();
+  }
+  window.__dsvisAgent = null;
+  window.__dsvisAgentInitialized = false;
+  if (window.__dsvisAgentDispose && typeof window.__dsvisAgentDispose === 'function') {
+    try { window.__dsvisAgentDispose(); } catch (_) {}
+  }
+  await initializeDsvisAgent();
 }
 
 /** Apply VIS_CONFIG changes and re-render. Usable from devtools:
@@ -4047,7 +4138,7 @@ function applySettings() {
     model: agentModel ? agentModel.value : '',
     language: 'zh-CN',
   });
-  restartPageAgent();
+  reloadDsvisAgent();
   applyVisConfig();
 }
 
@@ -4071,7 +4162,7 @@ if (pageAgentBtn) {
       const status = document.getElementById('pageAgentStatus');
       if (status) status.textContent = '正在加载 CDN...';
       try {
-        await restartPageAgent();
+        await reloadDsvisAgent();
         if (status) {
           const useCustom = hasCustomPageAgentConfig(config);
           status.textContent = useCustom ? '就绪 — 自定义 API' : '就绪 — 免费测试 API（可能受限）';
@@ -4199,7 +4290,7 @@ function createAgentAPI() {
       else TITLE_FIELD = null;
       try { localStorage.setItem('dsvis:titleField', JSON.stringify(TITLE_FIELD)); } catch (_) {}
       reapplyStep();
-      DSVisLogger.info('agent', 'title-field-updated', { titleField: TITLE_FIELD });
+      DSVisLogger.info('agent', 'title-field-updated', { titleField: TITLE_FIELD } );
       return this.getPresentationConfig();
     },
     setEdgeProxy(targetKey, rule = null) {
@@ -4232,8 +4323,733 @@ function createAgentAPI() {
 window.DSVisAgentAPI = createAgentAPI();
 DSVisLogger.info('agent', 'agent-api-ready', { methods: Object.keys(window.DSVisAgentAPI) });
 
+// ═══════════════════════════════════════════════════════════════════════
+// dsvis Agent-native Capability Registry
+// ═══════════════════════════════════════════════════════════════════════
+(function() {
+  const registry = new Map();
+
+  // ── Public API surface ──
+  window.dsvis = window.dsvis || {};
+  const dsvis = window.dsvis;
+  dsvis._registry = registry;
+
+  dsvis.define = function(name, def) {
+    registry.set(name, def);
+  };
+
+  dsvis.manifest = function() {
+    const caps = {};
+    for (const [name, def] of registry) {
+      caps[name] = { description: def.description, params: def.params };
+    }
+    return caps;
+  };
+
+  // ── Bridge: convert registry → PageAgent customTools ──
+  // Zod v4 stores JSON Schema conversion logic on schema._zod (a
+  // non-enumerable prototype object set via Object.defineProperty).
+  // PageAgent calls `schema._zod.def` and `schema._zod.processJSONSchema(ctx,target,path)`
+  // to generate OpenAI function definitions. We must replicate this interface.
+  //
+  // Schema hierarchy: ZodObject { _def.shape() → { key: ZodString|ZodNumber|ZodBoolean } }
+  // Each primitive's _zod.processJSONSchema fills in { type: "string"|"number"|"boolean" }
+  // The object's _zod.processJSONSchema fills in { type:"object", properties:{...}, required:[...] }
+  function toParamType(def) {
+    var t = def.type;
+    if (t === 'number') return 'number';
+    if (t === 'string') return 'string';
+    if (t === 'boolean') return 'boolean';
+    return 'string';
+  }
+
+  function buildZodSchema(params) {
+    var shape = {};
+    var required = [];
+    if (params) {
+      for (var _i = 0, _keys = Object.keys(params); _i < _keys.length; _i++) {
+        // IIFE captures per-iteration values so closures don't share var typeStr
+        (function() {
+        var key = _keys[_i];
+        var def = params[key];
+        var typeStr = toParamType(def);
+
+        // ── Inner primitive schema ──
+        var inner = {};
+        var innerDef = {
+          typeName: 'Zod' + typeStr.charAt(0).toUpperCase() + typeStr.slice(1),
+          type: typeStr, checks: [], coerce: false,
+        };
+        inner._def = innerDef;
+        var innerTraits = new Set(); innerTraits.add('$ZodType');
+        var innerZod = { def: innerDef, traits: innerTraits };
+        innerZod.processJSONSchema = function(ctx, target, path) { target.type = typeStr; };
+        innerZod.run = function(ctx, options) { return innerZod.parse(ctx, options); };
+        innerZod.parse = function(ctx, options) {
+          var v = ctx.value, ok = false;
+          if (typeStr === 'number') ok = (typeof v === 'number' && !isNaN(v) && isFinite(v));
+          else if (typeStr === 'boolean') ok = (typeof v === 'boolean');
+          else ok = (typeof v === 'string');
+          if (!ok) ctx.issues.push({ expected: typeStr, code: 'invalid_type', input: v, path: [] });
+          return ctx;
+        };
+        Object.defineProperty(inner, '_zod', { value: innerZod, enumerable: false, writable: true, configurable: true });
+
+        inner.parse = function(v) { return v; };
+        inner.safeParse = function(v) { return { success: true, data: v }; };
+        shape[key] = inner;
+        if (def.required !== false) required.push(key);
+        })();
+      }
+    }
+
+    // ── Outer ZodObject schema ──
+    var schema = {};
+    var outerDef = {
+      typeName: 'ZodObject',
+      type: 'object',
+      shape: function() { return shape; },
+      unknownKeys: 'strip',
+    };
+    schema._def = outerDef;
+    schema.shape = shape;
+
+    var outerTraits = new Set();
+    outerTraits.add('$ZodType');
+    var outerZod = {
+      def: outerDef,
+      traits: outerTraits,
+    };
+
+    // JSON Schema generation
+    outerZod.processJSONSchema = function(ctx, target, path) {
+      target.type = 'object';
+      target.properties = {};
+      for (var k in shape) {
+        if (!Object.prototype.hasOwnProperty.call(shape, k)) continue;
+        var innerTarget = {};
+        var innerSchema = shape[k];
+        if (innerSchema._zod && innerSchema._zod.processJSONSchema) {
+          innerSchema._zod.processJSONSchema(ctx, innerTarget, {
+            path: (path && path.path || []).concat(['properties', k]),
+          });
+        }
+        target.properties[k] = innerTarget;
+      }
+      if (required.length > 0) {
+        target.required = required.slice();
+      }
+    };
+
+    // Runtime validation (JIT-compiled code calls _zod.run on outer, which calls
+    // _zod.run on each inner)
+    outerZod.run = function(ctx, options) {
+      return outerZod.parse(ctx, options);
+    };
+    outerZod.parse = function(ctx, options) {
+      var v = ctx.value;
+      if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+        ctx.issues.push({ expected: 'object', code: 'invalid_type', input: v, path: [] });
+        return ctx;
+      }
+      ctx.value = {};
+      for (var k in shape) {
+        if (!Object.prototype.hasOwnProperty.call(shape, k)) continue;
+        var propCtx = { value: v[k], issues: [] };
+        shape[k]._zod.run(propCtx, options || {});
+        if (propCtx.issues.length > 0) {
+          for (var j = 0; j < propCtx.issues.length; j++) {
+            var iss = propCtx.issues[j];
+            var p = [k];
+            if (iss.path && iss.path.length > 0) p = p.concat(iss.path);
+            ctx.issues.push({
+              expected: iss.expected,
+              code: iss.code || 'invalid_type',
+              input: iss.input,
+              path: p,
+              message: iss.message,
+            });
+          }
+        }
+        if (v[k] === undefined && required.indexOf(k) >= 0) {
+          if (propCtx.issues.length === 0) {
+            ctx.issues.push({ code: 'invalid_type', expected: 'nonoptional', input: undefined, path: [k] });
+          }
+        }
+        ctx.value[k] = propCtx.value;
+      }
+      return ctx;
+    };
+
+    Object.defineProperty(schema, '_zod', {
+      value: outerZod,
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+
+    // Public API
+    schema.parse = function(data) {
+      data = data || {};
+      var result = {};
+      for (var k in shape) {
+        if (!Object.prototype.hasOwnProperty.call(shape, k)) continue;
+        var v = data[k];
+        if (v === undefined && required.indexOf(k) >= 0) throw new Error('Missing required param: ' + k);
+        result[k] = v;
+      }
+      return result;
+    };
+    schema.safeParse = function(data) {
+      try { return { success: true, data: schema.parse(data) }; } catch (e) { return { success: false, error: e }; }
+    };
+
+    return schema;
+  }
+
+  function buildMinimalSchema(params) {
+    return buildZodSchema(params);
+  }
+
+  dsvis.buildPageAgentTools = function() {
+    const tools = {};
+    for (const [name, def] of registry) {
+      const safeName = name.replace(/\./g, '_');
+      tools[safeName] = {
+        description: def.description,
+        inputSchema: buildMinimalSchema(def.params || {}),
+        execute: async function(args) {
+          try {
+            const result = await def.handler(args || {});
+            return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+          } catch (e) {
+            return '错误: ' + (e.message || String(e));
+          }
+        },
+      };
+    }
+    // Disable ALL built-in PageAgent DOM tools — the LLM must use our
+    // semantic DSVis tools instead of clicking / scrolling / typing.
+    tools.click_element_by_index = null;
+    tools.input_text = null;
+    tools.select_dropdown_option = null;
+    tools.scroll = null;
+    tools.scroll_horizontally = null;
+    tools.execute_javascript = null;
+    tools.navigate_to = null;
+    tools.go_back = null;
+    tools.switch_tab = null;
+    return tools;
+  };
+
+  dsvis.buildInstructions = function() {
+    const summary = (function() {
+      try {
+        const step = getCurrentStepForAgent();
+        return {
+          algo: (DSVIS_ALGO || 'Unknown'),
+          step: current != null ? current : 0,
+          lineno: step?.lineno ?? null,
+        };
+      } catch (_) { return { algo: 'Unknown', step: 0, lineno: null }; }
+    })();
+    const caps = [];
+    for (const [name, def] of registry) {
+      caps.push(`- ${name}: ${def.description}`);
+    }
+    return [
+      '你是 DSVis 数据结构可视化教学助手，内嵌在用户的算法回放页面中。',
+      '',
+      '⚠️ 绝对禁止的操作：',
+      '- 禁止点击页面上的任何按钮或链接',
+      '- 禁止填写任何输入框',
+      '- 禁止滚动页面',
+      '- 禁止执行 JavaScript 代码',
+      '- 禁止导航到其他页面或刷新',
+      '- 禁止使用任何 DOM / 浏览器操作',
+      '这些操作已被禁用，尝试使用会导致错误。',
+      '',
+      '✅ 你只能使用下方列出的自定义工具函数与 DSVis 交互。',
+      '这些工具直接操作算法可视化引擎的内部状态（步号、树结构、变量、高亮等），',
+      '不需要解析 HTML 或 Canvas。',
+      '',
+      '回答规则：',
+      '1. 收到用户问题后，先用 runtime.getState 了解当前算法和步号',
+      '2. 如需查看历史，用 runtime.getHistory',
+      '3. 如需跳转到特定步，用 navigation.gotoStep',
+      '4. 回答使用中文，简洁清晰，面向学习数据结构的学生',
+      '5. 回答问题后不要进行额外操作（不要自动跳步、自动高亮等）',
+      '',
+      `当前页面上下文：`,
+      `- 算法：${summary.algo}`,
+      `- 当前显示步：${summary.step}`,
+      `- 当前源码行：${summary.lineno != null ? summary.lineno : '未知'}`,
+      '',
+      '可用工具列表：',
+      ...caps,
+    ].join('\n');
+  };
+
+  // ── Helper to extract current state for runtime tools ──
+  function getRuntimeState() {
+    const step = getCurrentStepForAgent();
+    const rawIndex = currentRaw != null ? currentRaw : toReal(current);
+    return {
+      step: current != null ? current : 0,
+      rawIndex: rawIndex,
+      lineno: step?.lineno ?? null,
+      stack: step?.stack || [],
+      variables: step?.variables || {},
+      algorithm: DSVIS_ALGO || 'Unknown',
+      event: step?.event || null,
+    };
+  }
+
+  function getTreeNode(id, visited) {
+    visited = visited || new Set();
+    if (visited.has(id)) return null;
+    visited.add(id);
+    const node = graph?.getNodeData?.().find(n => String(n.id) === String(id));
+    if (!node) return null;
+    const result = { id: node.id };
+    try {
+      const pos = graph.getElementPosition(node.id);
+      result.x = pos ? pos[0] : undefined;
+      result.y = pos ? pos[1] : undefined;
+    } catch (_) {}
+    // Collect label text
+    try {
+      const labels = (node.data && node.data.__labels__) || {};
+      result.label = labels._title_ || String(node.id);
+    } catch (_) { result.label = String(node.id); }
+    // Children via edge direction
+    try {
+      const edges = graph?.getRelatedEdges?.(node.id, 'out') || [];
+      const children = [];
+      for (const e of edges) {
+        const child = getTreeNode(e.target, visited);
+        if (child) children.push(child);
+      }
+      if (children.length > 0) result.children = children;
+    } catch (_) {}
+    return result;
+  }
+
+  function findRootNodeId() {
+    try {
+      const nodes = graph?.getNodeData?.() || [];
+      const hasInEdge = new Set();
+      const allIds = new Set();
+      for (const n of nodes) { allIds.add(String(n.id)); }
+      try {
+        const edges = graph?.getAllEdgesData?.() || graph?.getEdgeData?.() || [];
+        for (const e of edges) { hasInEdge.add(String(e.target)); }
+      } catch (_) {}
+      for (const id of allIds) {
+        if (!hasInEdge.has(id)) return id;
+      }
+      return nodes.length > 0 ? String(nodes[0].id) : null;
+    } catch (_) { return null; }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Capability definitions (27 total)
+  // ═══════════════════════════════════════════════════════════════════
+
+  // ── navigation (7) ──
+  dsvis.define('navigation.gotoStep', {
+    description: '跳转到指定 Display Step（从 0 开始编号）',
+    params: { step: { type: 'number', description: '目标步号' } },
+    handler(args) { jumpToStep(args.step); return `已跳转到第 ${args.step} 步`; },
+  });
+  dsvis.define('navigation.next', {
+    description: '前进到下一步',
+    handler() { stepNext(); return '已前进到下一步'; },
+  });
+  dsvis.define('navigation.prev', {
+    description: '后退到上一步',
+    handler() { stepPrev(); return '已后退到上一步'; },
+  });
+  dsvis.define('navigation.play', {
+    description: '开始自动回放',
+    handler() { doPlay(); return '回放已开始'; },
+  });
+  dsvis.define('navigation.pause', {
+    description: '暂停自动回放',
+    handler() { doPause(); return '回放已暂停'; },
+  });
+  dsvis.define('navigation.restart', {
+    description: '回到第 0 步',
+    handler() { doRestart(); return '已回到第 0 步'; },
+  });
+  dsvis.define('navigation.gotoRawStep', {
+    description: '跳转到指定原始步（raw step index）',
+    params: { rawIndex: { type: 'number', description: '原始步序号' } },
+    handler(args) {
+      renderStepRaw(args.rawIndex);
+      return `已跳转到原始步 ${args.rawIndex}`;
+    },
+  });
+
+  // ── runtime (6) ──
+  dsvis.define('runtime.getState', {
+    description: '获取当前步的完整运行时状态：步号、算法、行号、调用栈、变量',
+    handler() { return getRuntimeState(); },
+  });
+  dsvis.define('runtime.getTree', {
+    description: '获取当前图（树）结构：nodes、edges 及 root，LLM 无需分析 Canvas',
+    handler() {
+      try {
+        const nodes = (graph?.getNodeData?.() || []).map(n => ({ id: n.id }));
+        const edges = (graph?.getEdgeData?.() || []).map(e => ({ source: e.source, target: e.target }));
+        const root = findRootNodeId();
+        return { root, nodes, edges };
+      } catch (e) { return { error: e.message }; }
+    },
+  });
+  dsvis.define('runtime.getHistory', {
+    description: '获取操作历史：每一步的事件类型和简要描述',
+    handler() {
+      try {
+        return (STEPS || []).map((s, i) => ({
+          step: i,
+          lineno: s?.lineno ?? null,
+          event: s?.event || s?.label || null,
+          stack: s?.stack ? s.stack.map(fr => `${fr.func}:${fr.lineno}`) : [],
+        }));
+      } catch (e) { return []; }
+    },
+  });
+  dsvis.define('runtime.getVariables', {
+    description: '获取当前步所有变量的快照',
+    handler() { const st = getRuntimeState(); return st.variables || {}; },
+  });
+  dsvis.define('runtime.getSourceCode', {
+    description: '获取算法源代码全文，附带行号',
+    handler() {
+      try {
+        return (SOURCE_LINES || []).map((line, i) => ({ line: i + 1, text: line }));
+      } catch (_) { return []; }
+    },
+  });
+  dsvis.define('runtime.getAlgorithm', {
+    description: '获取当前算法的名称',
+    handler() { return { algorithm: DSVIS_ALGO || 'Unknown' }; },
+  });
+
+  // ── query (3) ──
+  dsvis.define('query.findEvent', {
+    description: '在操作历史中搜索第一个匹配的事件（如 Rotate、Split、Merge、Delete）',
+    params: { type: { type: 'string', description: '事件类型关键词，支持部分匹配' } },
+    handler(args) {
+      const t = (args.type || '').toLowerCase();
+      for (let i = 0; i < (STEPS || []).length; i++) {
+        const ev = (STEPS[i]?.event || STEPS[i]?.label || '').toLowerCase();
+        if (ev.includes(t)) return { found: true, step: i, event: STEPS[i]?.event || STEPS[i]?.label };
+      }
+      return { found: false };
+    },
+  });
+  dsvis.define('query.findVariableChange', {
+    description: '在操作历史中搜索变量变化（新增、修改或删除）的步',
+    params: { varName: { type: 'string', description: '变量名（支持部分匹配）' } },
+    handler(args) {
+      const name = (args.varName || '').toLowerCase();
+      const results = [];
+      for (let i = 0; i < (STEPS || []).length; i++) {
+        const vars = STEPS[i]?.variables || {};
+        for (const [k, v] of Object.entries(vars)) {
+          if (k.toLowerCase().includes(name)) {
+            results.push({ step: i, variable: k, value: v, event: STEPS[i]?.event || null });
+            break;
+          }
+        }
+      }
+      return { changes: results.slice(0, 20), total: results.length };
+    },
+  });
+  dsvis.define('query.findSourceLine', {
+    description: '找到第一个执行到指定源码行号的步',
+    params: { line: { type: 'number', description: '源码行号（从 1 开始）' } },
+    handler(args) {
+      for (let i = 0; i < (STEPS || []).length; i++) {
+        if (STEPS[i]?.lineno === args.line) return { found: true, step: i, lineno: args.line };
+      }
+      return { found: false };
+    },
+  });
+
+  // ── explain (2) ──
+  dsvis.define('explain.currentContext', {
+    description: '获取当前的完整教学上下文：算法、当前步、当前事件、受影响的节点、操作原因（如 balance factor）、对应代码行',
+    handler() {
+      const st = getRuntimeState();
+      try {
+        const nodes = graph?.getNodeData?.() || [];
+        const highlighted = [];
+        for (const n of nodes) {
+          try {
+            if (n.style?.stroke === '#ff4444' || n.style?.fill === '#ffe0e0') highlighted.push(n.id);
+          } catch (_) {}
+        }
+        return {
+          algorithm: st.algorithm,
+          step: st.step,
+          lineno: st.lineno,
+          event: st.event,
+          stackFrames: st.stack,
+          highlightedNodes: highlighted,
+        };
+      } catch (_) { return { algorithm: st.algorithm, step: st.step, lineno: st.lineno }; }
+    },
+  });
+  dsvis.define('explain.algorithmSummary', {
+    description: '获取当前算法的简介：做什么、复杂度、核心性质',
+    handler() {
+      const algo = DSVIS_ALGO || 'Unknown';
+      const summaries = {
+        'AVL': '自平衡二叉搜索树，插入删除后通过左旋/右旋转恢复平衡。平衡因子（左子树高度-右子树高度）须保持在 [-1, 0, 1] 范围内。查找/插入/删除均为 O(log n)。',
+        'RBTree': '红黑树是一种自平衡二叉搜索树，通过颜色约束（红黑性质）和旋转保持近似平衡。查找/插入/删除均为 O(log n)。',
+        'BTree': 'B 树是一种多路自平衡搜索树，每个节点可包含多个键和子节点。常用于数据库和文件系统索引。查找/插入/删除均为 O(log n)。',
+        'BPlusTree': 'B+树的所有键存储在叶子节点，内部节点仅作索引。叶子节点通过链表相连，支持高效范围查询。',
+        'BinaryHeap': '二叉堆是完全二叉树，满足堆序性质（大顶堆/小顶堆）。插入和删除均为 O(log n)，查找最值为 O(1)。',
+        'Graph': '图遍历算法，用于访问图中所有节点。',
+      };
+      return { algorithm: algo, summary: summaries[algo] || `这是 ${algo} 算法的回放页面。` };
+    },
+  });
+
+  // ── focus (5) ──
+  dsvis.define('focus.highlightNode', {
+    description: '高亮指定节点，方便定位和讲解',
+    params: { id: { type: 'string', description: '节点标识符' } },
+    handler(args) {
+      try {
+        const el = graph?.getElementData?.(args.id);
+        if (el) {
+          graph.updateData({ nodes: [{ id: args.id, style: { stroke: '#ff4444', lineWidth: 3, shadowColor: '#ff4444', shadowBlur: 12 } }] });
+          return `已高亮节点 ${args.id}`;
+        }
+        return `未找到节点 ${args.id}`;
+      } catch (e) { return `高亮失败: ${e.message}`; }
+    },
+  });
+  dsvis.define('focus.highlightEdge', {
+    description: '高亮指定边',
+    params: { id: { type: 'string', description: '边标识符' } },
+    handler(args) {
+      try {
+        graph?.updateData({ edges: [{ id: args.id, style: { stroke: '#ff4444', lineWidth: 3 } }] });
+        return `已高亮边 ${args.id}`;
+      } catch (e) { return `高亮失败: ${e.message}`; }
+    },
+  });
+  dsvis.define('focus.highlightSubtree', {
+    description: '高亮指定节点及其所有后代',
+    params: { id: { type: 'string', description: '子树根节点标识符' } },
+    handler(args) {
+      try {
+        const collect = (nodeId, visited) => {
+          visited = visited || new Set();
+          if (visited.has(nodeId)) return [];
+          visited.add(nodeId);
+          let ids = [nodeId];
+          const outEdges = graph?.getRelatedEdges?.(nodeId, 'out') || [];
+          for (const e of outEdges) ids = ids.concat(collect(e.target, visited));
+          return ids;
+        };
+        const ids = collect(String(args.id));
+        const updates = ids.map(id => ({ id, style: { stroke: '#5b8ff9', lineWidth: 3, shadowColor: '#5b8ff9', shadowBlur: 10 } }));
+        graph?.updateData({ nodes: updates });
+        return `已高亮以 ${args.id} 为根的子树（${ids.length} 个节点）`;
+      } catch (e) { return `高亮失败: ${e.message}`; }
+    },
+  });
+  dsvis.define('focus.clearHighlight', {
+    description: '清除所有高亮效果',
+    handler() {
+      try {
+        const nodes = (graph?.getNodeData?.() || []).map(n => ({ id: n.id, style: { stroke: undefined, lineWidth: undefined, shadowColor: undefined, shadowBlur: undefined } }));
+        graph?.updateData({ nodes });
+        return '已清除所有高亮';
+      } catch (e) { return `清除失败: ${e.message}`; }
+    },
+  });
+  dsvis.define('focus.zoomToFit', {
+    description: '画布自适应缩放，使所有节点可见',
+    handler() {
+      try { graph?.fitView?.(); return '画布已自适应缩放'; }
+      catch (e) { return `缩放失败: ${e.message}`; }
+    },
+  });
+
+  // ── presentation (10) ──
+  dsvis.define('presentation.setTextFlow', {
+    description: '设置文本方向（horizontal=横向, vertical=纵向）',
+    params: { flow: { type: 'string', description: '"horizontal" 或 "vertical"' } },
+    handler(args) {
+      if (!['horizontal', 'vertical'].includes(args.flow)) throw new Error('flow 必须为 horizontal 或 vertical');
+      VIS_CONFIG.textFlow = args.flow;
+      applyVisConfig();
+      return `文本方向已设为 ${args.flow}`;
+    },
+  });
+  dsvis.define('presentation.showPanel', {
+    description: '显示指定面板（stack=栈面板, code=源代码面板）',
+    params: { name: { type: 'string', description: '"stack" 或 "code"' } },
+    handler(args) {
+      if (args.name === 'stack') { showStackPanel(); return '栈面板已显示'; }
+      if (args.name === 'code') { showRightPanel(); return '代码面板已显示'; }
+      throw new Error('面板名必须为 stack 或 code');
+    },
+  });
+  dsvis.define('presentation.hidePanel', {
+    description: '隐藏指定面板',
+    params: { name: { type: 'string', description: '"stack" 或 "code"' } },
+    handler(args) {
+      if (args.name === 'stack') { hideStackPanel(); return '栈面板已隐藏'; }
+      if (args.name === 'code') { hideRightPanel(); return '代码面板已隐藏'; }
+      throw new Error('面板名必须为 stack 或 code');
+    },
+  });
+  dsvis.define('presentation.applyPreset', {
+    description: '应用预设配置（需要先知道预设ID，可通过 getConfig 查看可用预设）',
+    params: { id: { type: 'string', description: '预设标识符' } },
+    handler(args) {
+      const preset = getAllPresets().find(p => p.id === args.id);
+      if (!preset) throw new Error(`未知预设: ${args.id}。可用预设: ${getAllPresets().map(p => p.id).join(', ')}`);
+      applyPreset(preset);
+      return `已应用预设: ${preset.name || args.id}`;
+    },
+  });
+  dsvis.define('presentation.setFieldVisibility', {
+    description: '控制节点字段的可见性（visible=显示, self=仅隐藏自身, cascade=隐藏自身及子节点, false=隐藏）',
+    params: {
+      fieldKey: { type: 'string', description: '字段标识（如 "TreeNode::val"）' },
+      state: { type: 'string', description: '"visible", "self", "cascade", 或 "false"' },
+    },
+    handler(args) {
+      const key = normalizeAgentFieldKey(args.fieldKey);
+      if (!key) throw new Error('fieldKey 不能为空');
+      const state = args.state;
+      if (!['visible', 'self', 'cascade'].includes(state) && state !== 'false') {
+        throw new Error('state 必须为 visible/self/cascade/false');
+      }
+      setNodeFieldVisible(key, state === 'false' ? false : state);
+      return `字段 ${key} 可见性已设为 ${state}`;
+    },
+  });
+  dsvis.define('presentation.setTitleField', {
+    description: '设置节点标题替换（将节点默认标题替换为指定字段的值）',
+    params: {
+      className: { type: 'string', description: '节点类名（如 TreeNode）' },
+      fieldKey: { type: 'string', description: '用作标题的字段键；传空字符串或 null 可取消替换' },
+    },
+    handler(args) {
+      if (args.fieldKey && args.fieldKey !== 'null') {
+        TITLE_FIELD = { className: args.className, key: normalizeAgentFieldKey(args.fieldKey) };
+      } else {
+        TITLE_FIELD = null;
+      }
+      try { localStorage.setItem('dsvis:titleField', JSON.stringify(TITLE_FIELD)); } catch (_) {}
+      reapplyStep();
+      return TITLE_FIELD ? `标题已替换为 ${args.className}::${args.fieldKey}` : '标题替换已取消';
+    },
+  });
+  dsvis.define('presentation.setEdgeProxy', {
+    description: '设置边代理规则（让边从指定字段位置发出）。传 null rule 可删除代理',
+    params: {
+      targetKey: { type: 'string', description: '目标字段键' },
+      rule: { type: 'string', description: '代理规则的 JSON 字符串：{"proxy":"键名","ratio":3,"includeEnds":true} 或 "null"' },
+    },
+    handler(args) {
+      const key = normalizeAgentFieldKey(args.targetKey);
+      if (!key) throw new Error('targetKey 不能为空');
+      const ruleStr = (args.rule || '').trim();
+      if (!ruleStr || ruleStr === 'null' || ruleStr === '""') {
+        EDGE_PROXY.delete(key);
+        reapplyStep();
+        return `已删除字段 ${key} 的边代理`;
+      }
+      let parsed;
+      try { parsed = JSON.parse(ruleStr); } catch (_) { throw new Error('rule 必须是有效 JSON'); }
+      const proxy = normalizeAgentFieldKey(parsed.proxy);
+      if (!proxy) throw new Error('rule.proxy 不能为空');
+      const ratio = parsed.ratio === 'auto' ? 'auto' : Math.max(1, parseInt(parsed.ratio, 10) || 1);
+      EDGE_PROXY.set(key, { proxy, ratio, includeEnds: parsed.includeEnds !== false });
+      reapplyStep();
+      return `字段 ${key} 的边代理已设为 → ${proxy}`;
+    },
+  });
+  dsvis.define('presentation.restoreHiddenNode', {
+    description: '恢复（取消隐藏）指定节点',
+    params: { nodeId: { type: 'string', description: '节点标识符' } },
+    handler(args) {
+      restoreNode(String(args.nodeId));
+      return `节点 ${args.nodeId} 已恢复`;
+    },
+  });
+  dsvis.define('presentation.getConfig', {
+    description: '获取当前所有展示配置',
+    handler() {
+      return {
+        textFlow: VIS_CONFIG.textFlow,
+        showSubtitle: VIS_CONFIG.showSubtitle,
+        visibility: Object.fromEntries(NODE_TYPE_VISIBILITY),
+        edgeProxy: Object.fromEntries(EDGE_PROXY),
+        titleField: TITLE_FIELD,
+        hiddenNodes: Array.from(HIDDEN_NODES.keys()),
+        presets: getAllPresets().map(p => ({ id: p.id, name: p.name, builtin: p.builtin })),
+      };
+    },
+  });
+  dsvis.define('presentation.resetLayout', {
+    description: '重置布局到默认状态',
+    handler() { resetGraphInstance(); renderStep(current); return '布局已重置'; },
+  });
+
+  // ── Build nested namespace: dsvis.agent.{category}.{name} ──
+  dsvis.agent = dsvis.agent || {};
+  for (const [name, def] of registry) {
+    const parts = name.split('.');
+    let obj = dsvis.agent;
+    for (let i = 0; i < parts.length - 1; i++) {
+      obj[parts[i]] = obj[parts[i]] || {};
+      obj = obj[parts[i]];
+    }
+    obj[parts[parts.length - 1]] = def.handler;
+  }
+
+  DSVisLogger.info('agent', 'registry-ready', { count: registry.size });
+})();
+
+// ── Agent initialization ──
 syncSettingsPanel();
-initializePageAgentFromConfig();
+initializeDsvisAgent();
+
+// ── Capability helper wrappers ──
+function showStackPanel() {
+  PANEL_STATE.stackVisible = true;
+  setPaneVisible('stack', true, '隐藏', '恢复');
+}
+function hideStackPanel() {
+  PANEL_STATE.stackVisible = false;
+  setPaneVisible('stack', false, '隐藏', '恢复');
+}
+function showRightPanel() {
+  PANEL_STATE.codeVisible = true;
+  setPaneVisible('right', true, '隐藏', '恢复');
+}
+function hideRightPanel() {
+  PANEL_STATE.codeVisible = false;
+  setPaneVisible('right', false, '隐藏', '恢复');
+}
+function stepNext() { jumpToStep(current + 1); }
+function stepPrev() { jumpToStep(current - 1); }
+function stopPlayPause() { stopAutoRun(); }
+function doPlay() { startAutoRun(); }
+function doPause() { stopAutoRun(); }
+function doRestart() { restartDebugSession(); }
 
 // ── AI Assistant panel handlers ──
 document.getElementById('pageAgentPanelClose')?.addEventListener('click', () => {
@@ -4245,27 +5061,37 @@ document.getElementById('pageAgentSend')?.addEventListener('click', async () => 
   const status = document.getElementById('pageAgentStatus');
   const text = input.value.trim();
   if (!text || !chat) return;
-  
+
   chat.innerHTML += `<div style="color:#0f2c63;margin:2px 0"><b>你:</b> ${text}</div>`;
   input.value = '';
   chat.scrollTop = chat.scrollHeight;
-  
+
+  const agent = window.__dsvisAgent;
+
   try {
-    if (window.__dsvisPageAgent && typeof window.__dsvisPageAgent.execute === 'function') {
+    if (agent && typeof agent.execute === 'function') {
       status.textContent = 'AI 思考中...';
-      const result = await window.__dsvisPageAgent.execute(text);
-      chat.innerHTML += `<div style="color:#333;margin:2px 0"><b>AI:</b> ${result || '已完成'}</div>`;
-      status.textContent = '就绪';
-    } else if (window.PageAgent && typeof window.PageAgent.execute === 'function') {
-      status.textContent = 'AI 思考中...';
-      const result = await window.PageAgent.execute(text);
-      chat.innerHTML += `<div style="color:#333;margin:2px 0"><b>AI:</b> ${result || '已完成'}</div>`;
+      const raw = await agent.execute(text);
+      // agent.execute returns { success, data, history } — extract the text
+      let msg = '';
+      if (raw && typeof raw === 'object' && raw.data) {
+        msg = String(raw.data);
+      } else if (typeof raw === 'string') {
+        msg = raw;
+      } else {
+        msg = JSON.stringify(raw);
+      }
+      // Escape HTML to prevent injection, then replace newlines with <br>
+      var div = document.createElement('div');
+      div.textContent = msg;
+      var safe = div.innerHTML;
+      chat.innerHTML += '<div style="color:#333;margin:2px 0"><b>AI:</b> ' + safe.replace(/\n/g, '<br>') + '</div>';
       status.textContent = '就绪';
     } else {
-      chat.innerHTML += `<div style="color:#999;margin:2px 0"><b>系统:</b> PageAgent 未加载。请在设置面板中配置 API 后刷新页面，或使用默认测试 API。</div>`;
+      chat.innerHTML += `<div style="color:#999;margin:2px 0"><b>系统:</b> Agent 未连接。请在设置面板中启用 AI 助手。若首次使用，请刷新页面。</div>`;
       status.textContent = '未连接';
     }
-  } catch(e) {
+  } catch (e) {
     chat.innerHTML += `<div style="color:#c00;margin:2px 0"><b>错误:</b> ${e.message}</div>`;
     status.textContent = '出错';
   }

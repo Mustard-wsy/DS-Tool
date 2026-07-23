@@ -477,6 +477,73 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
 # HTML rendering
 # ---------------------------------------------------------------------------
 
+def _derive_algorithm_name(source_lines, title):
+    """Derive a human-readable algorithm name from source code heuristics."""
+    source = "\n".join(source_lines) if source_lines else ""
+    source_lower = source.lower()
+
+    # Class-name heuristics: look for tree / heap / graph classes
+    import re
+    class_match = re.search(r'class\s+(\w*(?:Tree|Heap|Graph|Hash|Sort|List|Queue|Stack|Union|Find|DSU|Huffman|Prim|Kruskal|DFS|BFS|SCC|Topo)\w*)', source)
+    if class_match:
+        return class_match.group(1)
+
+    # Keyword heuristics
+    if 'avl' in source_lower and ('rotate' in source_lower or 'balance_factor' in source_lower):
+        return 'AVL'
+    if 'red_black' in source_lower or 'rb_tree' in source_lower or ('color' in source_lower and 'rotate' in source_lower and 'black' in source_lower):
+        return 'RBTree'
+    if 'b_plus_tree' in source_lower or 'bptree' in source_lower or 'BPlusTree' in source:
+        return 'BPlusTree'
+    if 'btree' in source_lower or 'b_tree' in source_lower or 'BTree' in source:
+        return 'BTree'
+    if 'binary_heap' in source_lower or 'binheap' in source_lower or ('heap' in source_lower and 'sift' in source_lower):
+        return 'BinaryHeap'
+    if 'huffman' in source_lower or 'huff' in source_lower:
+        return 'Huffman'
+    if 'prim' in source_lower and ('mst' in source_lower or 'minimum_spanning' in source_lower):
+        return 'Prim'
+    if 'dfs' in source_lower and 'bfs' in source_lower:
+        return 'DFS/BFS'
+    if 'dfs' in source_lower:
+        return 'DFS'
+    if 'bfs' in source_lower:
+        return 'BFS'
+    if 'scc' in source_lower or 'strongly_connected' in source_lower or 'tarjan' in source_lower or 'kosaraju' in source_lower:
+        return 'SCC'
+    if 'topo' in source_lower or 'topological' in source_lower:
+        return 'TopologicalSort'
+    if 'dsu' in source_lower or 'disjoint' in source_lower or 'union_find' in source_lower:
+        return 'DSU'
+    if 'bubble_sort' in source_lower or 'bubblesort' in source_lower:
+        return 'BubbleSort'
+    if 'merge_sort' in source_lower or 'mergesort' in source_lower:
+        return 'MergeSort'
+    if 'hash_open' in source_lower or 'open_addressing' in source_lower:
+        return 'HashOpenAddressing'
+    if 'hash_closed' in source_lower or 'closed_addressing' in source_lower or 'separate_chaining' in source_lower:
+        return 'HashClosedAddressing'
+    if 'hanoi' in source_lower or 'tower_of_hanoi' in source_lower:
+        return 'HanoiTower'
+    if 'gcd' in source_lower and ('euclid' in source_lower or 'gcd' in source_lower):
+        return 'GCD'
+    if 'priority_queue' in source_lower or 'priorityqueue' in source_lower:
+        return 'PriorityQueue'
+    if 'stack' in source_lower and ('push' in source_lower or 'pop' in source_lower):
+        return 'Stack'
+    if 'queue' in source_lower and 'enq' in source_lower:
+        return 'Queue'
+    if 'palindrome' in source_lower:
+        return 'Palindrome'
+
+    # Fallback: extract from title (strips "DSVis Debugger" prefix)
+    if title and title != 'DSVis Debugger':
+        clean = title.replace('DSVis Debugger', '').replace('(', '').replace(')', '').strip()
+        if clean:
+            return clean
+
+    return 'Algorithm'
+
 def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, display_indices=None):
     """Generate a self-contained HTML debugger page and open it in a browser.
 
@@ -523,6 +590,7 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
         styles = f"{codicon_styles}\n{styles}"
     html = html.replace("__TITLE__", title)
     html = html.replace("__STYLES__", styles)
+    html = html.replace("__DSVIS_ALGO__", json.dumps(_derive_algorithm_name(source_lines, title)))
     html = html.replace("__STEPS__", json.dumps(step_payload, ensure_ascii=False))
     html = html.replace("__SOURCE_LINES__", json.dumps(source_lines, ensure_ascii=False))
     html = html.replace("__LAYOUT__", json.dumps(normalized_layout))
