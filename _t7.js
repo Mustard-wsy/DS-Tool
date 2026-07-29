@@ -1,141 +1,6 @@
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8"/>
-<title>__TITLE__</title>
-<script src="https://unpkg.com/@antv/g6@5.0.51/dist/g6.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/page-agent@1.12.2/dist/iife/page-agent.demo.js?autoInit=false&showPanel=false" crossorigin="anonymous" defer></script>
-<style>
-__STYLES__
-</style>
-</head>
 
-<body>
-<div id="root">
-  <div id="stack">
-    <div class="pane-header">
-      <span class="pane-title">运行栈</span>
-      <button id="stackToggleBtn" class="pane-toggle" type="button">隐藏</button>
-    </div>
-    <div id="stackView"></div>
-  </div>
-  <div id="stackResizeHandle" class="pane-resizer" role="separator" aria-label="resize stack"></div>
-  <div id="middle">
-    <div id="graph"></div>
-  </div>
-  <div id="rightResizeHandle" class="pane-resizer" role="separator" aria-label="resize right"></div>
-  <div id="right">
-    <div class="pane-header">
-      <span class="pane-title">源代码</span>
-      <button id="codeToggleBtn" class="pane-toggle" type="button">隐藏</button>
-    </div>
-    <div id="codeView"></div>
-    <div id="controls">
-      <div class="controls-row controls-row-main">
-        <button id="prevStepBtn">Previous Display Step</button>
-        <button id="nextStepBtn">Next Display Step</button>
-        <button id="stepIntoBtn">Step Into</button>
-        <button id="stepOverBtn">Step Over</button>
-        <button id="stepOutBtn">Step Out</button>
-        <button id="runBtn">Continue</button>
-        <button id="pauseBtn">Pause</button>
-        <button id="restartBtn">Restart</button>
-        <button id="stopBtn">Stop</button>
-        <button id="toggleBreakpointsBtn">Toggle Breakpoints</button>
-      </div>
-      <div class="controls-row controls-row-meta">
-        <span class="controls-inline-group">
-          Jump to Display Step
-          <input id="stepInput" type="number" min="1" step="1" />
-          / <span id="stepTotal">0</span>
-          &nbsp;|&nbsp; line <span id="lineInfo">-</span>
-        </span>
-        <span class="controls-inline-group">
-          运行到行
-          <input id="runLineInput" type="number" min="1" step="1" />
-          <button id="runToLineBtn">跳转</button>
-        </span>
-        <button id="hiddenNodesBtn" class="icon-btn" type="button" title="隐藏节点列表"></button>
-        <button id="settingsBtn" class="icon-btn" type="button" title="节点可见性"></button>
-        <button id="pageAgentBtn" class="icon-btn" type="button" title="页面 AI 助手"></button>
-        <span id="breakpointInfo">断点：点击代码行设置；继续和单步回放会在命中前暂停</span>
-        <label id="autoFitWrap">
-          <input id="autoFitToggle" type="checkbox" checked />
-          自动缩放
-        </label>
-      </div>
-    </div>
-    <div id="hiddenNodesPanel">
-      <div class="pane-header">
-        <span class="pane-title">隐藏节点</span>
-        <button id="hiddenNodesCloseBtn" class="pane-toggle" type="button">关闭</button>
-      </div>
-      <div id="hiddenNodesList"></div>
-    </div>
-    <div id="settingsPanel">
-      <div class="pane-header">
-        <span class="pane-title">节点可见性</span>
-        <button id="settingsCloseBtn" class="pane-toggle" type="button">关闭</button>
-      </div>
-      <div id="settingsBody">
-        <div class="settings-row">
-          <span>文本方向</span>
-          <select id="settingsTextFlow">
-            <option value="horizontal">横向</option>
-            <option value="vertical">纵向</option>
-          </select>
-        </div>
-        <div class="settings-note">同名字段在所有同类节点中共享可见性。</div>
-        <div class="agent-settings-group">
-          <div class="settings-row">
-            <span>页面 AI 助手</span>
-            <label class="agent-inline"><input id="pageAgentEnabled" type="checkbox" /> 启用 PageAgent</label>
-          </div>
-          <div class="settings-row agent-config-row">
-            <span>API URL</span>
-            <input id="pageAgentBaseURL" type="text" placeholder="留空使用默认 Testing API" />
-          </div>
-          <div class="settings-row agent-config-row">
-            <span>Token</span>
-            <input id="pageAgentApiKey" type="password" placeholder="留空使用默认 Testing API" autocomplete="off" />
-          </div>
-          <div class="settings-row agent-config-row">
-            <span>模型</span>
-            <input id="pageAgentModel" type="text" placeholder="留空使用默认 Testing API" />
-          </div>
-          <div class="settings-note">同时配置 URL、Token、模型时使用你的 OpenAI-compatible API；否则使用 PageAgent 默认测试接口。生产环境不要在前端保存真实密钥。</div>
-        </div>
-        <div id="nodeTypeList"></div>
-        <div class="settings-actions">
-          <button id="settingsApplyBtn" type="button">应用</button>
-        </div>
-      </div>
-    </div>
-  </div>
-  <button id="stackRestoreBtn" class="edge-toggle edge-toggle-left" type="button" title="显示左侧栈面板" aria-label="显示左侧栈面板"></button>
-  <button id="rightRestoreBtn" class="edge-toggle edge-toggle-right" type="button" title="显示右侧代码面板" aria-label="显示右侧代码面板"></button>
-  <div id="nodeContextMenu" style="display:none;position:fixed;z-index:10000;background:#fff;border:1px solid #ccc;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.15);padding:4px 0;min-width:160px;">
-    <div id="ctxHideSelf" style="padding:6px 14px;cursor:pointer;font-size:12px;white-space:nowrap;" onmouseover="this.style.background='#e8f0fe'" onmouseout="this.style.background='transparent'">仅隐藏自身</div>
-    <div id="ctxHideCascade" style="padding:6px 14px;cursor:pointer;font-size:12px;white-space:nowrap;" onmouseover="this.style.background='#e8f0fe'" onmouseout="this.style.background='transparent'">隐藏自身及子节点</div>
-  </div>
-  <!-- AI 助手面板 (可拖拽 / 可调整大小) -->
-  <div id="pageAgentPanel" style="display:none;position:fixed;left:calc(100vw - 380px);top:calc(100vh - 420px);z-index:9999;width:360px;min-width:260px;min-height:180px;max-height:80vh;background:#fff;border:1px solid #ccc;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,0.18);flex-direction:column;overflow:hidden;">
-    <div id="pageAgentPanelHeader" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#e8f0fe;border-radius:10px 10px 0 0;cursor:move;user-select:none;">
-      <span style="font-weight:700;font-size:12px;color:#0f2c63;">🤖 AI 助手</span>
-      <button id="pageAgentPanelClose" type="button" style="border:none;background:none;font-size:16px;cursor:pointer;color:#666;">✕</button>
-    </div>
-    <div id="pageAgentChat" style="flex:1;overflow-y:auto;padding:8px;font-size:12px;min-height:80px;max-height:400px;line-height:1.5;"></div>
-    <div style="display:flex;padding:6px;border-top:1px solid #eee;">
-      <input id="pageAgentInput" type="text" placeholder="输入指令，如：帮我跳到第 50 步" style="flex:1;padding:6px 8px;border:1px solid #ccc;border-radius:6px;font-size:11px;" />
-      <button id="pageAgentSend" type="button" style="margin-left:6px;padding:6px 12px;border:none;background:#5b8ff9;color:#fff;border-radius:6px;cursor:pointer;font-size:11px;">发送</button>
-    </div>
-    <div id="pageAgentStatus" style="padding:4px 12px;font-size:10px;color:#888;text-align:center;"></div>
-    <!-- 右下角拖拽调整大小的手柄 -->
-    <div id="pageAgentResizeHandle" style="position:absolute;right:0;bottom:0;width:16px;height:16px;cursor:nwse-resize;background:linear-gradient(135deg,transparent 50%,#ccc 50%,#ccc 60%,transparent 60%);border-radius:0 0 10px 0;"></div>
-  </div>
-</div>
 
-<script>
+
 const STEPS = __STEPS__;
 const DISPLAY_INDICES = __DISPLAY_INDICES__;
 const SOURCE_LINES = __SOURCE_LINES__;
@@ -516,13 +381,13 @@ function buildFieldSelect(fields, selectedValue) {
   return sel;
 }
 
-/** Apply default layer-edge auto-detection and rebuild LAYER_EDGES */
+/** Apply all defaults for the current structure type: layer edges, proxy, visibility, title */
 function autoApplyStructureDefaults() {
   var st = VIS_CONFIG.structureType;
   var def = STRUCTURE_TYPES[st];
   if (!def) return;
 
-  // Collect field names
+  // Collect field names for auto-detection
   var allFields = [];
   var seen2 = {};
   for (var _e2 = Array.from(NODE_TYPE_REGISTRY.entries()), _k = 0; _k < _e2.length; _k++) {
@@ -533,6 +398,7 @@ function autoApplyStructureDefaults() {
     }
   }
 
+  // Auto-detect layer edge fields
   var detected = autoDetectLayerFields(allFields, st);
   if (detected) VIS_CONFIG.layerEdgeKeys = detected;
   else VIS_CONFIG.layerEdgeKeys = {};
@@ -541,6 +407,29 @@ function autoApplyStructureDefaults() {
   for (var _dk in VIS_CONFIG.layerEdgeKeys) {
     if (VIS_CONFIG.layerEdgeKeys[_dk]) LAYER_EDGES.add(VIS_CONFIG.layerEdgeKeys[_dk]);
   }
+
+  // Also apply the matching builtin preset's full config (edgeProxy, visibility, titleField, etc.)
+  var preset = null;
+  for (var _p = 0; _p < BUILTIN_PRESETS.length; _p++) {
+    if (BUILTIN_PRESETS[_p].structureType === st) { preset = BUILTIN_PRESETS[_p]; break; }
+  }
+  if (preset) {
+    EDGE_PROXY.clear();
+    if (preset.edgeProxy) {
+      for (var _ek in preset.edgeProxy) EDGE_PROXY.set(_ek, preset.edgeProxy[_ek]);
+    }
+    for (var _vk in preset.visibility || {}) {
+      NODE_TYPE_VISIBILITY.set(_vk, preset.visibility[_vk]);
+    }
+    TITLE_FIELD = preset.titleField && Object.keys(preset.titleField).length
+      ? { className: Object.keys(preset.titleField)[0], key: Object.values(preset.titleField)[0] }
+      : null;
+    if (preset.layout && preset.layout.rankdir) {
+      VIS_CONFIG.textFlow = preset.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
+    }
+    if (preset.showSubtitle !== undefined) VIS_CONFIG.showSubtitle = preset.showSubtitle;
+  }
+
   saveVisConfig(VIS_CONFIG);
   applyVisConfig();
   if (settingsPanelVisible) syncSettingsPanel();
@@ -1661,14 +1550,151 @@ function prepareGraphForLayout(graphData, viewport = null) {
     layoutData = { edges: layerEdges, nodes: layerNodes };
   }
   const metrics = analyzeLayoutMetrics(layoutData, viewport || getGraphSize());
-  if (!metrics.treeLike) {
-    // Use original graphData for rendering, layoutData only for metrics
-    const compactLayout = applyCompactGridLayout(LAYER_EDGES.size > 0 ? graphData : layoutData, viewport || getGraphSize());
-    return compactLayout;
+
+  // ═══ Binary-tree: custom recursive layout — guarantees no edge crossings ═══
+  // Always use tree layout when structure type is binary-tree and layer edges are set,
+  // regardless of treeLike heuristic (insert/delete can temporarily disconnect nodes).
+  if (VIS_CONFIG.structureType === 'binary-tree'
+      && VIS_CONFIG.layerEdgeKeys && (VIS_CONFIG.layerEdgeKeys.left || VIS_CONFIG.layerEdgeKeys.right)) {
+    return computeBinaryTreeLayout(graphData);
   }
-  const layout = computeAdaptiveLayout(layoutData, viewport);
-  // Use original graphData (all edges) with the computed layout
-  return { data: graphData, layout };
+
+  // ═══ N-ary tree / BTree: dagre with layer edges ═══
+  if (metrics.treeLike) {
+    const layout = computeAdaptiveLayout(layoutData, viewport);
+    return { data: graphData, layout };
+  }
+
+  // ═══ Fallback: grid for non-tree structures ═══
+  const compactLayout = applyCompactGridLayout(LAYER_EDGES.size > 0 ? graphData : layoutData, viewport || getGraphSize());
+  return compactLayout;
+
+/** Recursive tree layout for binary trees. Guarantees left child on left,
+ *  right child on right, and zero edge crossings. */
+function computeBinaryTreeLayout(graphData) {
+  var nodes = Array.isArray(graphData.nodes) ? graphData.nodes.slice() : [];
+  var edges = Array.isArray(graphData.edges) ? graphData.edges.slice() : [];
+  var nodeMap = {};
+  for (var i = 0; i < nodes.length; i++) {
+    nodeMap[String(nodes[i].id)] = nodes[i];
+  }
+
+  var leftKey = VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.left;
+  var rightKey = VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.right;
+
+  // Build child map → { left: id, right: id }
+  var children = {};
+  var hasParent = {};
+  var treeNodes = {};  // nodes connected by left/right edges
+  for (var j = 0; j < edges.length; j++) {
+    var e = edges[j];
+    var label = e.data && e.data.label;
+    var src = String(e.source), tgt = String(e.target);
+    var matched = false;
+    if (leftKey && label === leftKey) {
+      if (!children[src]) children[src] = {};
+      children[src].left = tgt;
+      hasParent[tgt] = true;
+      treeNodes[src] = true; treeNodes[tgt] = true;
+      matched = true;
+    }
+    if (rightKey && label === rightKey) {
+      if (!children[src]) children[src] = {};
+      children[src].right = tgt;
+      hasParent[tgt] = true;
+      treeNodes[src] = true; treeNodes[tgt] = true;
+      matched = true;
+    }
+  }
+
+  // Find roots (tree nodes with no parent)
+  var roots = [];
+  for (var k = 0; k < nodes.length; k++) {
+    var nid = String(nodes[k].id);
+    if (treeNodes[nid] && !hasParent[nid]) roots.push(nid);
+  }
+
+  // If no tree structure detected, fall back to grid
+  if (roots.length === 0) {
+    return applyCompactGridLayout(graphData);
+  }
+
+  // Read node dimensions from first node
+  var nW = 160, nH = 60;
+  if (nodes.length > 0) {
+    var first = nodes[0];
+    if (first.style && first.style.size) {
+      nW = (first.style.size[0] || nW);
+      nH = (first.style.size[1] || nH);
+    }
+  }
+  var H_GAP = nH * 0.75;   // compact vertical
+  var W_GAP = nW * 0.12;   // compact horizontal
+
+  // ── First pass: compute subtree widths (post-order) ──
+  function computeWidth(nodeId) {
+    if (!nodeId || !nodeMap[nodeId]) return nW + W_GAP;
+    var ch = children[nodeId];
+    if (!ch || (!ch.left && !ch.right)) return nW + W_GAP;
+    var lw = ch.left ? computeWidth(ch.left) : 0;
+    var rw = ch.right ? computeWidth(ch.right) : 0;
+    return lw + W_GAP + rw;
+  }
+
+  // ── Second pass: assign positions (in-order) ──
+  function assignPosition(nodeId, depth, leftBound) {
+    if (!nodeId || !nodeMap[nodeId]) return;
+    var ch = children[nodeId];
+    var lw = 0;
+    if (ch && ch.left) lw = computeWidth(ch.left);
+
+    // Left child
+    if (ch && ch.left) assignPosition(ch.left, depth + 1, leftBound);
+
+    // This node
+    var myX = leftBound + lw;
+    var node = nodeMap[nodeId];
+    if (!node.style) node.style = {};
+    node.style.x = myX;
+    node.style.y = depth * H_GAP;
+
+    // Right child
+    if (ch && ch.right) assignPosition(ch.right, depth + 1, myX + nW + W_GAP);
+  }
+
+  // Layout each root tree, stacking them horizontally
+  var nextRootX = 0;
+  for (var r = 0; r < roots.length; r++) {
+    var rootW = computeWidth(roots[r]);
+    assignPosition(roots[r], 0, nextRootX);
+    nextRootX = nextRootX + rootW + nW;
+  }
+
+  // ── Place orphan nodes (not connected by left/right) below everything ──
+  var maxDepth = 0;
+  var maxX = 0;
+  for (var _ni = 0; _ni < nodes.length; _ni++) {
+    var _n = nodeMap[String(nodes[_ni].id)];
+    if (_n && _n.style) {
+      if (_n.style.y > maxDepth) maxDepth = _n.style.y;
+      if (_n.style.x > maxX) maxX = _n.style.x;
+    }
+  }
+  var orphanY = maxDepth + H_GAP * 2;
+  var orphanX = nW;
+  for (var _oi = 0; _oi < nodes.length; _oi++) {
+    var _oid = String(nodes[_oi].id);
+    if (treeNodes[_oid]) continue;  // already placed
+    var _on = nodeMap[_oid];
+    if (!_on) continue;
+    if (!_on.style) _on.style = {};
+    _on.style.x = orphanX;
+    _on.style.y = orphanY;
+    orphanX += nW + W_GAP;
+  }
+
+  var result = JSON.parse(JSON.stringify(graphData));
+  return { data: result, layout: { type: 'preset' } };
 }
 
 function getGraphSize() {
@@ -4008,108 +4034,7 @@ function syncSettingsPanel() {
   if (!list) return;
   list.innerHTML = '';
 
-  // ── Preset section ──
-  const presetGroup = document.createElement('div');
-  presetGroup.className = 'node-type-group preset-group';
-  const presetHeader = document.createElement('div');
-  presetHeader.className = 'node-type-group-header';
-  const presetTitle = document.createElement('span');
-  presetTitle.className = 'node-type-group-title';
-  presetTitle.textContent = '预设样式';
-  presetHeader.appendChild(presetTitle);
-  presetGroup.appendChild(presetHeader);
-
-  const presetItems = document.createElement('div');
-  presetItems.className = 'node-type-items preset-items';
-  presetItems.style.cssText = 'flex-wrap:wrap;gap:6px;align-items:center';
-
-  const allPresets = getAllPresets();
-  const activeId = getActivePresetId();
-
-  const presetSel = document.createElement('select');
-  presetSel.style.cssText = 'font-size:11px;min-width:100px';
-  const customOpt = document.createElement('option');
-  customOpt.value = ''; customOpt.textContent = '自定义';
-  if (!activeId) customOpt.selected = true;
-  presetSel.appendChild(customOpt);
-  const defaultOpt = document.createElement('option');
-  defaultOpt.value = '__default__'; defaultOpt.textContent = '↺ 默认';
-  presetSel.appendChild(defaultOpt);
-  for (const p of allPresets) {
-    const o = document.createElement('option');
-    o.value = p.id; o.textContent = (p.builtin ? '📦 ' : '💾 ') + p.name;
-    if (p.id === activeId) o.selected = true;
-    presetSel.appendChild(o);
-  }
-
-  const applyBtn = document.createElement('button');
-  applyBtn.textContent = '应用'; applyBtn.type = 'button';
-  applyBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #5b8ff9;background:#e8f0fe;border-radius:3px';
-  applyBtn.addEventListener('click', () => {
-    const pid = presetSel.value;
-    if (pid === '__default__') {
-      // Reset to factory defaults
-      EDGE_PROXY.clear();
-      LAYER_EDGES.clear();
-      TITLE_FIELD = null;
-      for (const [key] of NODE_TYPE_VISIBILITY) NODE_TYPE_VISIBILITY.set(key, 'visible');
-      VIS_CONFIG.textFlow = 'horizontal';
-      VIS_CONFIG.showSubtitle = true;
-      VIS_CONFIG.structureType = 'other';
-      VIS_CONFIG.layerEdgeKeys = {};
-      setActivePresetId('');
-      persistProxy(); persistVisibility();
-      try { localStorage.removeItem('dsvis:layerEdges'); } catch(_) {}
-      try { localStorage.removeItem('dsvis:titleField'); } catch(_) {}
-      applyVisConfig();
-      return;
-    }
-    if (!pid) {
-      // "自定义" — just mark as no active preset
-      setActivePresetId('');
-      return;
-    }
-    const preset = allPresets.find(p => p.id === pid);
-    if (preset) applyPreset(preset);
-  });
-
-  const exportBtn = document.createElement('button');
-  exportBtn.textContent = '导出'; exportBtn.type = 'button';
-  exportBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #aaa;background:#fafafa;border-radius:3px';
-  exportBtn.addEventListener('click', () => {
-    const data = exportConfigAsPreset();
-    const json = JSON.stringify(data, null, 2);
-    navigator.clipboard.writeText(json).then(() => alert('配置已复制到剪贴板')).catch(() => alert('复制失败:\n' + json));
-  });
-
-  const importBtn = document.createElement('button');
-  importBtn.textContent = '导入'; importBtn.type = 'button';
-  importBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #aaa;background:#fafafa;border-radius:3px';
-  importBtn.addEventListener('click', () => {
-    const text = prompt('粘贴预设 JSON:');
-    if (!text) return;
-    try {
-      const preset = JSON.parse(text);
-      if (!preset.id || !preset.name) throw new Error('缺少 id 或 name');
-      preset.builtin = false;
-      const userPresets = loadUserPresets().filter(p => p.id !== preset.id);
-      userPresets.push(preset);
-      localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(userPresets));
-      applyPreset(preset);
-      syncSettingsPanel();
-    } catch(e) {
-      alert('无效的 JSON: ' + e.message);
-    }
-  });
-
-  presetItems.appendChild(presetSel);
-  presetItems.appendChild(applyBtn);
-  presetItems.appendChild(exportBtn);
-  presetItems.appendChild(importBtn);
-  presetGroup.appendChild(presetItems);
-  list.appendChild(presetGroup);
-
-  // ── Structure type section ──
+  // ── Structure type section (was: 预设样式 — merged) ──
   (function() {
     var structGroup = document.createElement('div');
     structGroup.className = 'node-type-group';
@@ -4151,6 +4076,36 @@ function syncSettingsPanel() {
     applyDefaultsBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #5b8ff9;background:#e8f0fe;border-radius:3px';
     applyDefaultsBtn.addEventListener('click', function() { autoApplyStructureDefaults(); });
     structItems.appendChild(applyDefaultsBtn);
+
+    // Export / Import
+    var exportBtn2 = document.createElement('button');
+    exportBtn2.textContent = '导出'; exportBtn2.type = 'button';
+    exportBtn2.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #aaa;background:#fafafa;border-radius:3px';
+    exportBtn2.addEventListener('click', function() {
+      var data = exportConfigAsPreset();
+      var json = JSON.stringify(data, null, 2);
+      navigator.clipboard.writeText(json).then(function() { alert('配置已复制到剪贴板'); }).catch(function() { alert('复制失败:\n' + json); });
+    });
+    structItems.appendChild(exportBtn2);
+
+    var importBtn2 = document.createElement('button');
+    importBtn2.textContent = '导入'; importBtn2.type = 'button';
+    importBtn2.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #aaa;background:#fafafa;border-radius:3px';
+    importBtn2.addEventListener('click', function() {
+      var text = prompt('粘贴预设 JSON:');
+      if (!text) return;
+      try {
+        var preset = JSON.parse(text);
+        if (!preset.id || !preset.name) throw new Error('缺少 id 或 name');
+        preset.builtin = false;
+        var userPresets = loadUserPresets().filter(function(p) { return p.id !== preset.id; });
+        userPresets.push(preset);
+        localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(userPresets));
+        applyPreset(preset);
+        syncSettingsPanel();
+      } catch(e) { alert('无效的 JSON: ' + e.message); }
+    });
+    structItems.appendChild(importBtn2);
 
     structGroup.appendChild(structItems);
 
@@ -5666,6 +5621,3 @@ try {
 renderAllCode();
 computeStepDiffs();
 renderStep(0);
-</script>
-</body>
-</html>
