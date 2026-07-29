@@ -1660,15 +1660,102 @@ function prepareGraphForLayout(graphData, viewport = null) {
       .filter(n => layerNodeIds.has(String(n.id)));
     layoutData = { edges: layerEdges, nodes: layerNodes };
   }
+
+  // ── Tree-order sort for binary trees ──
+  // Detect left/right edge labels from actual data, then sort nodes so that
+  // left-subtree nodes precede right-subtree nodes.  Dagre processes nodes in
+  // data order, which strongly influences sibling positioning within a rank.
+  const sortedGraphData = reorderTreeNodesByLeftRight(graphData || layoutData);
+
   const metrics = analyzeLayoutMetrics(layoutData, viewport || getGraphSize());
   if (!metrics.treeLike) {
-    // Use original graphData for rendering, layoutData only for metrics
     const compactLayout = applyCompactGridLayout(LAYER_EDGES.size > 0 ? graphData : layoutData, viewport || getGraphSize());
     return compactLayout;
   }
   const layout = computeAdaptiveLayout(layoutData, viewport);
-  // Use original graphData (all edges) with the computed layout
-  return { data: graphData, layout };
+  // Use sorted graph data (all edges) with the computed layout
+  return { data: sortedGraphData, layout };
+}
+
+// ── Binary tree left/right ordering ──
+// Auto-detects left/right edge labels and reorders nodes so dagre places
+// left children to the left of right children, minimising edge crossings.
+
+function detectLeftRightLabels(edges) {
+  var leftPat = /^(l|left|leftchild|left_child|lchild|left_node)$/i;
+  var rightPat = /^(r|right|rightchild|right_child|rchild|right_node)$/i;
+  var leftLabel = null, rightLabel = null;
+  for (var i = 0; i < edges.length; i++) {
+    var label = String(edges[i]?.data?.label || '').trim();
+    if (!leftLabel && leftPat.test(label)) leftLabel = label;
+    if (!rightLabel && rightPat.test(label)) rightLabel = label;
+  }
+  return { left: leftLabel, right: rightLabel };
+}
+
+function reorderTreeNodesByLeftRight(graphData) {
+  var nodes = Array.isArray(graphData?.nodes) ? graphData.nodes.slice() : [];
+  var edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+  if (nodes.length < 2 || edges.length < 2) return graphData;
+
+  var lr = detectLeftRightLabels(edges);
+  if (!lr.left && !lr.right) return graphData;  // no binary tree edges detected
+
+  // Build adjacency: parent → { left: [childIds], right: [childIds] }
+  var childrenMap = {};
+  var nodeIds = new Set();
+  for (var j = 0; j < nodes.length; j++) nodeIds.add(String(nodes[j].id));
+  for (var k = 0; k < edges.length; k++) {
+    var e = edges[k];
+    var src = String(e.source), tgt = String(e.target);
+    var label = String(e?.data?.label || '').trim();
+    if (!nodeIds.has(src) || !nodeIds.has(tgt)) continue;
+    if (!childrenMap[src]) childrenMap[src] = { left: [], right: [], other: [] };
+    if (lr.left && label === lr.left) childrenMap[src].left.push(tgt);
+    else if (lr.right && label === lr.right) childrenMap[src].right.push(tgt);
+    else childrenMap[src].other.push(tgt);
+  }
+
+  // Find roots (nodes with no incoming edge, or the first node)
+  var hasParent = {};
+  for (var m = 0; m < edges.length; m++) {
+    hasParent[String(edges[m].target)] = true;
+  }
+  var roots = [];
+  for (var n = 0; n < nodes.length; n++) {
+    var nid = String(nodes[n].id);
+    if (!hasParent[nid]) roots.push(nid);
+  }
+  if (roots.length === 0) roots = [String(nodes[0].id)];
+
+  // Pre-order DFS: left children first, then right, then other
+  var order = [];
+  var visited = {};
+  function dfs(id) {
+    if (visited[id]) return;
+    visited[id] = true;
+    order.push(id);
+    var ch = childrenMap[id];
+    if (!ch) return;
+    var list = (ch.left || []).concat(ch.right || []).concat(ch.other || []);
+    for (var p = 0; p < list.length; p++) dfs(list[p]);
+  }
+  for (var r = 0; r < roots.length; r++) dfs(roots[r]);
+
+  // If we missed any, append them at the end
+  for (var q = 0; q < nodes.length; q++) {
+    var nid2 = String(nodes[q].id);
+    if (!visited[nid2]) order.push(nid2);
+  }
+
+  // Sort nodes by DFS order
+  var idToIndex = {};
+  for (var s = 0; s < order.length; s++) idToIndex[order[s]] = s;
+  var sortedNodes = nodes.slice().sort(function(a, b) {
+    return (idToIndex[String(a.id)] || 9999) - (idToIndex[String(b.id)] || 9999);
+  });
+
+  return { nodes: sortedNodes, edges: graphData.edges };
 }
 
 function getGraphSize() {
