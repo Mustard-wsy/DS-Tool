@@ -118,18 +118,20 @@ __STYLES__
     <div id="ctxHideSelf" style="padding:6px 14px;cursor:pointer;font-size:12px;white-space:nowrap;" onmouseover="this.style.background='#e8f0fe'" onmouseout="this.style.background='transparent'">仅隐藏自身</div>
     <div id="ctxHideCascade" style="padding:6px 14px;cursor:pointer;font-size:12px;white-space:nowrap;" onmouseover="this.style.background='#e8f0fe'" onmouseout="this.style.background='transparent'">隐藏自身及子节点</div>
   </div>
-  <!-- AI 助手面板 -->
-  <div id="pageAgentPanel" style="display:none;position:fixed;right:12px;bottom:12px;z-index:9999;width:360px;max-height:500px;background:#fff;border:1px solid #ccc;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,0.18);flex-direction:column;">
-    <div id="pageAgentPanelHeader" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#e8f0fe;border-radius:10px 10px 0 0;cursor:move;">
+  <!-- AI 助手面板 (可拖拽 / 可调整大小) -->
+  <div id="pageAgentPanel" style="display:none;position:fixed;left:calc(100vw - 380px);top:calc(100vh - 420px);z-index:9999;width:360px;min-width:260px;min-height:180px;max-height:80vh;background:#fff;border:1px solid #ccc;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,0.18);flex-direction:column;overflow:hidden;">
+    <div id="pageAgentPanelHeader" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#e8f0fe;border-radius:10px 10px 0 0;cursor:move;user-select:none;">
       <span style="font-weight:700;font-size:12px;color:#0f2c63;">🤖 AI 助手</span>
       <button id="pageAgentPanelClose" type="button" style="border:none;background:none;font-size:16px;cursor:pointer;color:#666;">✕</button>
     </div>
-    <div id="pageAgentChat" style="flex:1;overflow-y:auto;padding:8px;font-size:11px;min-height:120px;max-height:300px;"></div>
+    <div id="pageAgentChat" style="flex:1;overflow-y:auto;padding:8px;font-size:12px;min-height:80px;max-height:400px;line-height:1.5;"></div>
     <div style="display:flex;padding:6px;border-top:1px solid #eee;">
       <input id="pageAgentInput" type="text" placeholder="输入指令，如：帮我跳到第 50 步" style="flex:1;padding:6px 8px;border:1px solid #ccc;border-radius:6px;font-size:11px;" />
       <button id="pageAgentSend" type="button" style="margin-left:6px;padding:6px 12px;border:none;background:#5b8ff9;color:#fff;border-radius:6px;cursor:pointer;font-size:11px;">发送</button>
     </div>
     <div id="pageAgentStatus" style="padding:4px 12px;font-size:10px;color:#888;text-align:center;"></div>
+    <!-- 右下角拖拽调整大小的手柄 -->
+    <div id="pageAgentResizeHandle" style="position:absolute;right:0;bottom:0;width:16px;height:16px;cursor:nwse-resize;background:linear-gradient(135deg,transparent 50%,#ccc 50%,#ccc 60%,transparent 60%);border-radius:0 0 10px 0;"></div>
   </div>
 </div>
 
@@ -399,25 +401,36 @@ function buildPageAgentInstance(PageAgentClass, config) {
     ? dsvis.buildPageAgentTools() : {};
   const instructions = typeof dsvis.buildInstructions === 'function'
     ? dsvis.buildInstructions() : '';
+  const getPageCtx = typeof dsvis.buildPageInstructions === 'function'
+    ? dsvis.buildPageInstructions() : null;
+
+  const baseOpts = {
+    language: config.language || 'zh-CN',
+    // ═══ Essential: disable PageAgent's built-in browser-automation UI ═══
+    enableMask: false,     // no glowing border, no cursor pointer, no event blocking
+    // ═══ Speed optimisations ═══
+    maxSteps: 5,          // default 40 → 5: answer in ≤5 reasoning steps
+    stepDelay: 0.05,      // default 0.4s → 0.05s: no page-load wait needed
+    instructions: {
+      system: instructions,
+      getPageInstructions: getPageCtx,
+    },
+    customTools: tools,
+  };
 
   if (useCustom) {
     return new PageAgentClass({
       baseURL: config.baseURL,
       apiKey: config.apiKey,
       model: config.model,
-      language: config.language || 'zh-CN',
-      instructions: { system: instructions },
-      customTools: tools,
+      ...baseOpts,
     });
   }
-  // Use the built-in demo/testing API (free, rate-limited)
   return new PageAgentClass({
     baseURL: PAGE_AGENT_DEMO_CONFIG.baseURL,
     apiKey: PAGE_AGENT_DEMO_CONFIG.apiKey,
     model: PAGE_AGENT_DEMO_CONFIG.model,
-    language: config.language || 'zh-CN',
-    instructions: { system: instructions },
-    customTools: tools,
+    ...baseOpts,
   });
 }
 
@@ -4543,51 +4556,84 @@ DSVisLogger.info('agent', 'agent-api-ready', { methods: Object.keys(window.DSVis
   };
 
   dsvis.buildInstructions = function() {
-    const summary = (function() {
+    var summary = (function() {
       try {
-        const step = getCurrentStepForAgent();
+        var step = getCurrentStepForAgent();
         return {
           algo: (DSVIS_ALGO || 'Unknown'),
           step: current != null ? current : 0,
+          total: totalSteps ? totalSteps() : 0,
           lineno: step?.lineno ?? null,
         };
-      } catch (_) { return { algo: 'Unknown', step: 0, lineno: null }; }
+      } catch (_) { return { algo: 'Unknown', step: 0, total: 0, lineno: null }; }
     })();
-    const caps = [];
-    for (const [name, def] of registry) {
-      caps.push(`- ${name}: ${def.description}`);
+    var caps = [];
+    for (var _i = 0, _entries = Array.from(registry.entries()), _e; _i < _entries.length; _i++) {
+      _e = _entries[_i];
+      caps.push('- ' + _e[0] + ': ' + _e[1].description);
     }
     return [
-      '你是 DSVis 数据结构可视化教学助手，内嵌在用户的算法回放页面中。',
+      '你是 DSVis 数据结构可视化教学助手。你运行在一个**本地算法回放应用**中，',
+      '**不是浏览器**。你没有 DOM、没有网页、没有可点击的按钮。',
       '',
-      '⚠️ 绝对禁止的操作：',
-      '- 禁止点击页面上的任何按钮或链接',
-      '- 禁止填写任何输入框',
-      '- 禁止滚动页面',
-      '- 禁止执行 JavaScript 代码',
-      '- 禁止导航到其他页面或刷新',
-      '- 禁止使用任何 DOM / 浏览器操作',
-      '这些操作已被禁用，尝试使用会导致错误。',
+      '🚫 你唯一能做的事：调用下方列出的工具函数，然后用 done 回答用户。',
+      '🚫 不要尝试观察页面、滚动、点击——这些工具不存在。',
       '',
-      '✅ 你只能使用下方列出的自定义工具函数与 DSVis 交互。',
-      '这些工具直接操作算法可视化引擎的内部状态（步号、树结构、变量、高亮等），',
-      '不需要解析 HTML 或 Canvas。',
+      '⚡ 工作流（最多 2 步完成）：',
+      '1. 如需了解当前状态 → 调 runtime.getState',
+      '2. 立即调 done 回答用户。把回答写在 done 的 text 参数里。',
       '',
-      '回答规则：',
-      '1. 收到用户问题后，先用 runtime.getState 了解当前算法和步号',
-      '2. 如需查看历史，用 runtime.getHistory',
-      '3. 如需跳转到特定步，用 navigation.gotoStep',
-      '4. 回答使用中文，简洁清晰，面向学习数据结构的学生',
-      '5. 回答问题后不要进行额外操作（不要自动跳步、自动高亮等）',
+      '回答要求：',
+      '- 中文回答，简洁清晰，面向数据结构学生',
+      '- 回答完立即 done，不要额外操作',
+      '- 如果用户只是提问（不要求操作），直接 done 回答，不要调其他工具',
       '',
-      `当前页面上下文：`,
-      `- 算法：${summary.algo}`,
-      `- 当前显示步：${summary.step}`,
-      `- 当前源码行：${summary.lineno != null ? summary.lineno : '未知'}`,
+      '当前算法：' + summary.algo,
+      '当前步号：' + summary.step + ' / ' + (summary.total || '?'),
+      '当前源码行：' + (summary.lineno != null ? summary.lineno : '未知'),
       '',
-      '可用工具列表：',
-      ...caps,
-    ].join('\n');
+      '可用工具：',
+    ].concat(caps).join('\n');
+  };
+
+  // Dynamic page-level context injected before EVERY step.
+  // Gives the LLM fresh info about algorithm state, buttons, and source code.
+  dsvis.buildPageInstructions = function() {
+    return function(url) {
+      try {
+        var s = getCurrentStepForAgent();
+        var algo = DSVIS_ALGO || 'Unknown';
+        var cur = current != null ? current : 0;
+        var total = totalSteps ? totalSteps() : 0;
+        var lineno = s ? s.lineno : null;
+
+        // Summarise visible UI controls
+        var controls = [];
+        if (document.getElementById('playBtn') && document.getElementById('playBtn').style.display !== 'none')
+          controls.push('播放/暂停');
+        if (document.getElementById('stepNextBtn')) controls.push('步进(下一歩)');
+        if (document.getElementById('stepPrevBtn')) controls.push('步退(上一歩)');
+        if (document.getElementById('restartBtn')) controls.push('重新开始');
+        var ctrlStr = controls.length > 0 ? controls.join('、') : '未知';
+
+        // Summarise current variables
+        var vars = s && s.variables ? Object.keys(s.variables).slice(0, 10).join(', ') : '无';
+
+        return [
+          '📄 页面信息（自动注入，每个 step 更新）：',
+          '- 算法：' + algo,
+          '- 步号：' + cur + ' / ' + total,
+          '- 源码行号：' + (lineno != null ? lineno : '未知'),
+          '- 当前变量：' + vars,
+          '- 可见控件：' + ctrlStr,
+          '',
+          '💡 提示：',
+          '- 用户可以看到这些控件。你可以指导用户点击它们（如"请点击播放按钮"）',
+          '- navigation.gotoStep 可以直接跳到任一步',
+          '- 回答用户问题时直接 done，不需要先操作',
+        ].join('\n');
+      } catch (_) { return undefined; }
+    };
   };
 
   // ── Helper to extract current state for runtime tools ──
@@ -5052,54 +5098,217 @@ function doPause() { stopAutoRun(); }
 function doRestart() { restartDebugSession(); }
 
 // ── AI Assistant panel handlers ──
-document.getElementById('pageAgentPanelClose')?.addEventListener('click', () => {
-  document.getElementById('pageAgentPanel').style.display = 'none';
-});
-document.getElementById('pageAgentSend')?.addEventListener('click', async () => {
-  const input = document.getElementById('pageAgentInput');
-  const chat = document.getElementById('pageAgentChat');
-  const status = document.getElementById('pageAgentStatus');
-  const text = input.value.trim();
-  if (!text || !chat) return;
+(function() {
+  var panel = document.getElementById('pageAgentPanel');
+  var header = document.getElementById('pageAgentPanelHeader');
+  var resizeHandle = document.getElementById('pageAgentResizeHandle');
+  if (!panel) return;
 
-  chat.innerHTML += `<div style="color:#0f2c63;margin:2px 0"><b>你:</b> ${text}</div>`;
-  input.value = '';
-  chat.scrollTop = chat.scrollHeight;
+  // === Drag support ===
+  var dragging = false, dragStartX = 0, dragStartY = 0, panelStartX = 0, panelStartY = 0;
 
-  const agent = window.__dsvisAgent;
-
-  try {
-    if (agent && typeof agent.execute === 'function') {
-      status.textContent = 'AI 思考中...';
-      const raw = await agent.execute(text);
-      // agent.execute returns { success, data, history } — extract the text
-      let msg = '';
-      if (raw && typeof raw === 'object' && raw.data) {
-        msg = String(raw.data);
-      } else if (typeof raw === 'string') {
-        msg = raw;
-      } else {
-        msg = JSON.stringify(raw);
-      }
-      // Escape HTML to prevent injection, then replace newlines with <br>
-      var div = document.createElement('div');
-      div.textContent = msg;
-      var safe = div.innerHTML;
-      chat.innerHTML += '<div style="color:#333;margin:2px 0"><b>AI:</b> ' + safe.replace(/\n/g, '<br>') + '</div>';
-      status.textContent = '就绪';
-    } else {
-      chat.innerHTML += `<div style="color:#999;margin:2px 0"><b>系统:</b> Agent 未连接。请在设置面板中启用 AI 助手。若首次使用，请刷新页面。</div>`;
-      status.textContent = '未连接';
-    }
-  } catch (e) {
-    chat.innerHTML += `<div style="color:#c00;margin:2px 0"><b>错误:</b> ${e.message}</div>`;
-    status.textContent = '出错';
+  function onDragStart(e) {
+    if (e.target.tagName === 'BUTTON') return; // don't drag when clicking close btn
+    dragging = true;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    panelStartX = panel.offsetLeft;
+    panelStartY = panel.offsetTop;
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
   }
-  chat.scrollTop = chat.scrollHeight;
-});
-document.getElementById('pageAgentInput')?.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') document.getElementById('pageAgentSend')?.click();
-});
+
+  function onDragMove(e) {
+    if (!dragging) return;
+    var dx = e.clientX - dragStartX;
+    var dy = e.clientY - dragStartY;
+    var newLeft = Math.max(0, Math.min(panelStartX + dx, window.innerWidth - panel.offsetWidth));
+    var newTop = Math.max(0, Math.min(panelStartY + dy, window.innerHeight - 60));
+    panel.style.left = newLeft + 'px';
+    panel.style.top = newTop + 'px';
+  }
+
+  function onDragEnd() {
+    dragging = false;
+    document.body.style.userSelect = '';
+  }
+
+  header.addEventListener('mousedown', onDragStart);
+  document.addEventListener('mousemove', onDragMove);
+  document.addEventListener('mouseup', onDragEnd);
+
+  // === Resize support ===
+  var resizing = false, resizeStartX = 0, resizeStartY = 0, panelStartW = 0, panelStartH = 0;
+
+  function onResizeStart(e) {
+    resizing = true;
+    resizeStartX = e.clientX;
+    resizeStartY = e.clientY;
+    panelStartW = panel.offsetWidth;
+    panelStartH = panel.offsetHeight;
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  function onResizeMove(e) {
+    if (!resizing) return;
+    var dw = e.clientX - resizeStartX;
+    var dh = e.clientY - resizeStartY;
+    var newW = Math.max(260, panelStartW + dw);
+    var newH = Math.max(180, panelStartH + dh);
+    panel.style.width = newW + 'px';
+    panel.style.height = newH + 'px';
+  }
+
+  function onResizeEnd() {
+    resizing = false;
+    document.body.style.userSelect = '';
+  }
+
+  resizeHandle.addEventListener('mousedown', onResizeStart);
+  document.addEventListener('mousemove', onResizeMove);
+  document.addEventListener('mouseup', onResizeEnd);
+
+  // === Markdown renderer (lightweight, no external deps) ===
+  function renderMarkdown(md) {
+    if (!md || typeof md !== 'string') return '';
+    var html = md;
+
+    // Escape HTML first (except what we'll generate)
+    html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // Code blocks (``` ... ```) — must be before inline code
+    html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, function(_, lang, code) {
+      var escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return '<pre style="background:#f5f5f5;padding:8px;border-radius:4px;overflow-x:auto;font-size:11px;"><code>' + escaped + '</code></pre>';
+    });
+
+    // Inline code (`...`)
+    html = html.replace(/`([^`]+)`/g, '<code style="background:#f0f0f0;padding:1px 4px;border-radius:3px;font-size:11px;">$1</code>');
+
+    // Bold (**...** or __...__)
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    html = html.replace(/__([^_]+)__/g, '<b>$1</b>');
+
+    // Italic (*...* or _..._) — careful not to match **
+    html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<i>$1</i>');
+    html = html.replace(/(?<!_)_([^_\n]+)_(?!_)/g, '<i>$1</i>');
+
+    // Strikethrough (~~...~~)
+    html = html.replace(/~~([^~]+)~~/g, '<s>$1</s>');
+
+    // Headings (# ... ## ...)
+    html = html.replace(/^### (.+)$/gm, '<h4 style="margin:6px 0 2px;font-size:13px;">$1</h4>');
+    html = html.replace(/^## (.+)$/gm, '<h3 style="margin:8px 0 2px;font-size:14px;">$1</h3>');
+    html = html.replace(/^# (.+)$/gm, '<h2 style="margin:10px 0 2px;font-size:15px;">$1</h2>');
+
+    // Unordered lists (- or *)
+    html = html.replace(/^[\-\*] (.+)$/gm, '<li style="margin-left:16px;">$1</li>');
+    // Ordered lists (1. 2. etc)
+    html = html.replace(/^\d+\. (.+)$/gm, '<li style="margin-left:16px;">$1</li>');
+    // Wrap consecutive <li> in <ul>
+    html = html.replace(/((?:<li[^>]*>.*?<\/li>\n?)+)/g, '<ul style="margin:2px 0;padding:0;">$1</ul>');
+
+    // Horizontal rule
+    html = html.replace(/^---$/gm, '<hr style="border:none;border-top:1px solid #ddd;margin:8px 0;">');
+
+    // Blockquote
+    html = html.replace(/^&gt; (.+)$/gm, '<blockquote style="border-left:3px solid #5b8ff9;margin:4px 0;padding:2px 8px;color:#555;">$1</blockquote>');
+
+    // URLs → links
+    html = html.replace(/(https?:\/\/[^\s<>"]+)/g, '<a href="$1" target="_blank" style="color:#5b8ff9;">$1</a>');
+
+    // Double newlines → paragraph break
+    html = html.replace(/\n\n/g, '<br><br>');
+    // Single newlines → <br> (but not inside <pre> or <ul>)
+    html = html.replace(/\n/g, '<br>');
+
+    return '<div class="markdown-body">' + html + '</div>';
+  }
+
+  // Expose to the send handler
+  window._renderMarkdown = renderMarkdown;
+
+  // === Close button ===
+  document.getElementById('pageAgentPanelClose').addEventListener('click', function() {
+    panel.style.display = 'none';
+  });
+
+  // === Send button ===
+  document.getElementById('pageAgentSend').addEventListener('click', function() {
+    var input = document.getElementById('pageAgentInput');
+    var chat = document.getElementById('pageAgentChat');
+    var status = document.getElementById('pageAgentStatus');
+    var text = input.value.trim();
+    if (!text || !chat) return;
+
+    // ① Show user message immediately
+    chat.innerHTML += '<div style="color:#0f2c63;margin:4px 0"><b>你:</b> ' + text.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>';
+    input.value = '';
+
+    // ② Show "thinking..." bubble with animated dots
+    var thinkId = 'think-' + Date.now();
+    chat.innerHTML += '<div id="' + thinkId + '" style="color:#888;margin:4px 0;font-style:italic;">🤖 思考中<span class="think-dots"></span></div>';
+    chat.scrollTop = chat.scrollHeight;
+
+    // Animate the dots: "." → ".." → "..." → loop
+    var dotIdx = 0;
+    var dotTimer = setInterval(function() {
+      var el = document.getElementById(thinkId);
+      if (!el) { clearInterval(dotTimer); return; }
+      var dots = el.querySelector('.think-dots');
+      if (dots) { dotIdx = (dotIdx + 1) % 4; dots.textContent = '.'.repeat(dotIdx); }
+    }, 400);
+
+    status.textContent = 'AI 思考中...';
+
+    var agent = window.__dsvisAgent;
+
+    // ③ Yield to browser paint before blocking on LLM call
+    setTimeout(async function() {
+      try {
+        var raw, msg = '';
+        if (agent && typeof agent.execute === 'function') {
+          raw = await agent.execute(text);
+          if (raw && typeof raw === 'object' && raw.data) {
+            msg = String(raw.data);
+          } else if (typeof raw === 'string') {
+            msg = raw;
+          } else {
+            msg = JSON.stringify(raw);
+          }
+        } else {
+          msg = null;
+        }
+
+        clearInterval(dotTimer);
+        var thinkEl = document.getElementById(thinkId);
+        if (thinkEl) thinkEl.remove();
+
+        if (msg === null) {
+          chat.innerHTML += '<div style="color:#999;margin:4px 0"><b>系统:</b> Agent 未连接。</div>';
+          status.textContent = '未连接';
+        } else {
+          var rendered = renderMarkdown(msg);
+          chat.innerHTML += '<div style="color:#333;margin:4px 0"><b>AI:</b><div style="margin-top:2px;">' + rendered + '</div></div>';
+          status.textContent = '就绪';
+        }
+      } catch (e) {
+        clearInterval(dotTimer);
+        var thinkEl2 = document.getElementById(thinkId);
+        if (thinkEl2) thinkEl2.remove();
+        chat.innerHTML += '<div style="color:#c00;margin:4px 0"><b>错误:</b> ' + String(e.message).replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>';
+        status.textContent = '出错';
+      }
+      chat.scrollTop = chat.scrollHeight;
+    }, 50);  // 50ms delay lets the browser render the thinking bubble
+  });
+
+  document.getElementById('pageAgentInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') document.getElementById('pageAgentSend').click();
+  });
+})();
 
 /* ========================================================================
  * End Persistence & PageAgent Section
