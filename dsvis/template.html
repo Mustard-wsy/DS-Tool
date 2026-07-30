@@ -1556,7 +1556,7 @@ function initGraph(data) {
       const paddingX = 10;
       const paddingY = 8;
       const rowH = 18;
-      const headerH = attributes.headerHeight || 22;
+      const headerH = attributes.headerHeight != null ? attributes.headerHeight : 22;
       const headerLines = String(name).split('\n');
 
       // ── text-flow dispatch (must be early — used by debug logs + subtitle) ──
@@ -1630,7 +1630,7 @@ function initGraph(data) {
 
       if (textFlow === 'vertical') {
         // ── vertical grid layout ──
-        const titleColW = attributes.titleColW || 80;
+        const titleColW = attributes.titleColW != null ? attributes.titleColW : 80;
         const fieldColW = attributes.fieldColW || 60;
         const gridNames = Array.isArray(attributes.gridNames) ? attributes.gridNames : [];
         const gridValues = Array.isArray(attributes.gridValues) ? attributes.gridValues : [];
@@ -2399,8 +2399,15 @@ function adaptNodesForTextFlow(graphData) {
     st.gridValues = parsed.map((x) => x.value);
     st.gridRefs = parsed.map((_, i) => i).filter((i) => refRowSet.has(i));
 
-    const title = String(st.name || '');
-    const titleW = Math.max(60, Math.min(180, Math.ceil(Math.max(...title.split('\n').map((x) => x.length), 1) * 6 + 12)));
+    // Respect title visibility in vertical grid layout
+    const className = getNodeClassName(st);
+    const titleKey = `${className}.__title__`;
+    const titleVisible = isFieldVisible(titleKey);
+
+    const title = titleVisible ? String(st.name || '') : '';
+    const titleW = titleVisible
+      ? Math.max(60, Math.min(180, Math.ceil(Math.max(...title.split('\n').map((x) => x.length), 1) * 6 + 12)))
+      : 0;
     const colW = Math.max(50, Math.min(130, Math.ceil(Math.max(1, ...parsed.map((x) => Math.max(String(x.name).length, String(x.value).length))) * 6 + 12)));
     const numFields = Math.max(1, parsed.length);
     const padX = 10, padY = 8, rowH = 20;
@@ -2408,17 +2415,18 @@ function adaptNodesForTextFlow(graphData) {
     st.fieldColW = colW;
     st.size = [Math.max(120, padX * 2 + titleW + numFields * colW), padY * 2 + rowH * 2];
 
-    // Ports should attach to cell centers (not whole-node border centers).
-    // Vertical table has 2 rows and (1 + numFields) columns, where column 0 is title.
+    // Ports: when title is hidden, entry ports go to the first field column centre
     const w = Number(st.size?.[0]) || 120;
     const h = Number(st.size?.[1]) || 56;
-    const titleCenterX = (padX + titleW / 2) / Math.max(w, 1);
+    const entryCenterX = titleVisible
+      ? (padX + titleW / 2) / Math.max(w, 1)
+      : (padX + colW / 2) / Math.max(w, 1);
     const topEdgeY = 0;
     const bottomEdgeY = 1;
 
     st.ports = [
-      { key: 'inT', placement: [titleCenterX, topEdgeY], r: 0, fill: 'transparent', stroke: 'transparent' },
-      { key: 'inB', placement: [titleCenterX, bottomEdgeY], r: 0, fill: 'transparent', stroke: 'transparent' },
+      { key: 'inT', placement: [entryCenterX, topEdgeY], r: 0, fill: 'transparent', stroke: 'transparent' },
+      { key: 'inB', placement: [entryCenterX, bottomEdgeY], r: 0, fill: 'transparent', stroke: 'transparent' },
     ];
     const refEntries = [];
     st.gridRefs.forEach((rowIdx) => {
@@ -3378,8 +3386,8 @@ function applyNodeTypeVisibility(graphData) {
     nextStyle.ports = portInfo.ports;
     nextStyle.portLayout = portInfo.portLayout;
 
-    // ── Title substitution ──
-    if (TITLE_FIELD && TITLE_FIELD.className === className) {
+    // ── Title substitution (skip when title is hidden) ──
+    if (titleVisible && TITLE_FIELD && TITLE_FIELD.className === className) {
       for (let i = 0; i < keptRows.length; i++) {
         const origFieldKeys = Array.isArray(style.rowFieldKeys) ? style.rowFieldKeys : [];
         const rowText = keptRows[i];
