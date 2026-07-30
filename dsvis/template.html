@@ -183,15 +183,15 @@ let debugSessionStopped = false;
 // - layerFields: for tree types, the field labels that serve as hierarchy edges.
 // - proxyRules:  for BTree types, the proxy-from→proxy-to mappings.
 const STRUCTURE_TYPES = {
-  'binary-tree':  { name: '二叉树',       layerFields: ['left','right'], parentField: null,   proxyRules: null },
-  'nary-tree':    { name: 'N叉树',        layerFields: ['children'],      parentField: 'parent', proxyRules: null },
-  'btree':        { name: 'B-Tree',       layerFields: ['children'],      parentField: null,   proxyRules: { childField: 'children', keyField: 'keys' } },
-  'bplustree':    { name: 'B+ Tree',      layerFields: ['children'],      parentField: null,   proxyRules: { childField: 'children', keyField: 'keys' } },
-  'heap':         { name: '堆',           layerFields: [],                parentField: null,   proxyRules: null },
-  'graph':        { name: '图',           layerFields: [],                parentField: null,   proxyRules: null },
-  'linkedlist':   { name: '链表/栈/队列', layerFields: [],                parentField: null,   proxyRules: null },
-  'hashtable':    { name: '散列表',       layerFields: [],                parentField: null,   proxyRules: null },
-  'other':        { name: '其他',         layerFields: [],                parentField: null,   proxyRules: null },
+  'binary-tree':  { name: '二叉树',       layerFields: ['left','right'], parentField: null,   proxyRules: null, uniformEdges: true },
+  'nary-tree':    { name: 'N叉树',        layerFields: ['children'],      parentField: 'parent', proxyRules: null, uniformEdges: true },
+  'btree':        { name: 'B-Tree',       layerFields: ['children'],      parentField: null,   proxyRules: { childField: 'children', keyField: 'keys' }, uniformEdges: true },
+  'bplustree':    { name: 'B+ Tree',      layerFields: ['children'],      parentField: null,   proxyRules: { childField: 'children', keyField: 'keys' }, uniformEdges: true },
+  'heap':         { name: '堆',           layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
+  'graph':        { name: '图',           layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
+  'linkedlist':   { name: '链表/栈/队列', layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
+  'hashtable':    { name: '散列表',       layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
+  'other':        { name: '其他',         layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
 };
 
 // ── Persistence helpers ──
@@ -226,6 +226,7 @@ function exportCurrentConfig() {
     layerEdgeKeys: { ...VIS_CONFIG.layerEdgeKeys },
     layout: { rankdir: VIS_CONFIG.textFlow === 'vertical' ? 'TB' : 'LR' },
     showSubtitle: VIS_CONFIG.showSubtitle,
+    uniformEdgesEnabled: VIS_CONFIG.uniformEdgesEnabled,
   };
 }
 
@@ -239,6 +240,7 @@ function importConfig(jsonText) {
   if (cfg.titleField) { var _tkeys = Object.keys(cfg.titleField); if (_tkeys.length) TITLE_FIELD = { className: _tkeys[0], key: cfg.titleField[_tkeys[0]] }; }
   if (cfg.layout && cfg.layout.rankdir) VIS_CONFIG.textFlow = cfg.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
   if (cfg.showSubtitle !== undefined) VIS_CONFIG.showSubtitle = cfg.showSubtitle;
+  if (cfg.uniformEdgesEnabled !== undefined) VIS_CONFIG.uniformEdgesEnabled = cfg.uniformEdgesEnabled;
   if (cfg.structureType) VIS_CONFIG.structureType = cfg.structureType;
   if (cfg.layerEdgeKeys) VIS_CONFIG.layerEdgeKeys = { ...cfg.layerEdgeKeys };
   LAYER_EDGES.clear();
@@ -296,8 +298,9 @@ const PAGE_AGENT_STORAGE_KEY = 'dsvis:pageAgentConfig';
 const DEFAULT_VIS_CONFIG = {
   textFlow: 'horizontal',
   showSubtitle: true,
-  structureType: 'other',      // user-selected data structure type
-  layerEdgeKeys: {},           // e.g. { left: 'l', right: 'r' } for binary-tree
+  structureType: 'other',
+  layerEdgeKeys: {},
+  uniformEdgesEnabled: true,   // distribute orphaned edges evenly (tree types only)
 };
 const DEFAULT_PAGE_AGENT_CONFIG = {
   enabled: false,
@@ -405,6 +408,27 @@ function buildStructureParams(container) {
     });
     row2.appendChild(childSel);
     container.appendChild(row2);
+  }
+
+  // ── Uniform edge distribution toggle (only for types that support it) ──
+  if (def.uniformEdges !== undefined) {
+    var ueRow = document.createElement('div');
+    ueRow.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 0;font-size:11px;';
+    var cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.id = 'settingsUniformEdges';
+    cb.checked = VIS_CONFIG.uniformEdgesEnabled;
+    cb.addEventListener('change', function() {
+      VIS_CONFIG.uniformEdgesEnabled = cb.checked;
+      saveVisConfig(VIS_CONFIG);
+      applyVisConfig();
+    });
+    ueRow.appendChild(cb);
+    var cbLabel = document.createElement('label');
+    cbLabel.textContent = '均匀分布边（隐藏指针后边均匀排列）';
+    cbLabel.htmlFor = 'settingsUniformEdges';
+    cbLabel.style.cssText = 'cursor:pointer;';
+    ueRow.appendChild(cbLabel);
+    container.appendChild(ueRow);
   }
 }
 
@@ -2043,6 +2067,17 @@ function resolvePortsForEdge(e, nodeMap) {
   const src = nodeMap.get(e.source);
   const tgt = nodeMap.get(e.target);
   if (!src || !tgt) return null;
+
+  // ── Uniform-edge mode: direct port name ──
+  if (e.data && e.data._uniformPort) {
+    const pl = src?.style?.portLayout;
+    const neg = pl && pl.direction === 'TB' ? (tgt.style?.y ?? 0) < (src.style?.y ?? 0) : (tgt.style?.x ?? 0) < (src.style?.x ?? 0);
+    return {
+      sourcePort: e.data._uniformPort,
+      targetPort: neg ? (pl?.entry?.[1] || 'inB') : (pl?.entry?.[0] || 'inT'),
+    };
+  }
+
   const refIndex = e.data ? e.data.refIndex : null;
   if (refIndex === null || refIndex === undefined) return null;
 
@@ -3122,6 +3157,67 @@ function isFieldVisible(key) {
   return true;
 }
 
+// ── Uniform edge port distribution ──
+// When a structure type has uniformEdges enabled, edges from hidden ref fields
+// are distributed evenly along the node's top/bottom edge instead of being
+// anchored to a specific row.  The edge padding on each side is 10% of cardW.
+function applyUniformEdgePorts(edgeMeta, filteredNodes, nodeById) {
+  var PAD_RATIO = 0.1;  // 10% padding on each side
+
+  // Group orphaned edges by source node
+  var orphansByNode = {};
+  for (var _ei = 0; _ei < edgeMeta.length; _ei++) {
+    var entry = edgeMeta[_ei];
+    if (!entry.edge?.data?._orphan) continue;
+    var sid = String(entry.srcId);
+    if (!orphansByNode[sid]) orphansByNode[sid] = [];
+    orphansByNode[sid].push(entry);
+  }
+
+  // Process each node
+  for (var _ni = 0; _ni < filteredNodes.length; _ni++) {
+    var node = filteredNodes[_ni];
+    var nid = String(node.id);
+    var orphans = orphansByNode[nid];
+    if (!orphans || orphans.length === 0) continue;
+
+    // Sort by label
+    orphans.sort(function(a, b) {
+      var la = String(a.edge?.data?._orphanLabel || '');
+      var lb = String(b.edge?.data?._orphanLabel || '');
+      return la.localeCompare(lb);
+    });
+
+    var style = node.style || {};
+    var cardW = style.size ? style.size[0] : 160;
+    var count = orphans.length;
+    var pad = cardW * PAD_RATIO;
+    var usable = cardW - pad * 2;
+    var existingPorts = Array.isArray(style.ports) ? style.ports.slice() : [];
+
+    // TB layout: ports on top edge (y=0) or bottom edge (y=1)
+    // Determine direction: if the node has children below, use bottom edge.
+    // Heuristic: use bottom edge as outgoing edge.
+    var y = 1;  // bottom edge
+
+    for (var _oi = 0; _oi < count; _oi++) {
+      var fracX = (pad + usable * (_oi + 0.5) / count) / cardW;
+      var portKey = '_u' + _oi;
+      existingPorts.push({
+        key: portKey,
+        placement: [fracX, y],
+        r: 0, fill: 'transparent', stroke: 'transparent',
+      });
+      // Update edge's refIndex to point to this dynamic port
+      // Use a sentinel: store port key in edge data, and handle in resolvePortsForEdge
+      orphans[_oi].edge.data._uniformPort = portKey;
+    }
+
+    style.ports = existingPorts;
+    node.style = style;
+  }
+}
+
 function applyNodeTypeVisibility(graphData) {
   buildNodeTypeRegistry();
   let hasHidden = false;
@@ -3131,7 +3227,7 @@ function applyNodeTypeVisibility(graphData) {
       break;
     }
   }
-  if (!hasHidden) return graphData;
+  if (!hasHidden) return { data: graphData, edgeMeta: [] };
 
   const working = cloneGraphData(graphData);
   const originalNodes = Array.isArray(working.nodes) ? working.nodes : [];
@@ -3163,42 +3259,60 @@ function applyNodeTypeVisibility(graphData) {
     }
     let effectiveKey = hiddenKey;
     let forceVisible = false;
+    let orphan = false;
     if (hiddenKey && !isFieldVisible(hiddenKey)) {
       const state = NODE_TYPE_VISIBILITY.get(hiddenKey);
       const baseMatch = hiddenKey.match(/^(.+?)\[.*\]$/);
       const baseState = baseMatch ? NODE_TYPE_VISIBILITY.get(baseMatch[1]) : null;
       const isCascade = (state === 'cascade' || state === false) ||
                         (baseState === 'cascade' || baseState === false);
-      // Check EDGE_PROXY: redirect in cascade mode, keep alive in self mode
-      const parentKey = baseMatch ? baseMatch[1] : hiddenKey;
-      const rule = EDGE_PROXY.get(parentKey);
-      if (isCascade && rule && isFieldVisible(rule.proxy)) {
-        const idxMatch = hiddenKey.match(/\[(\d+)\]$/);
-        const hiddenIdx = idxMatch ? parseInt(idxMatch[1]) : 0;
-        if (rule.ratio === 'auto') {
-          const fks = Array.isArray(srcStyle.rowFieldKeys) ? srcStyle.rowFieldKeys : [];
-          let proxyCount = fks.filter(k => {
-            const nk = k.replace(/^.*::/, '').replace(/^.*\./, '');
-            return nk.startsWith(rule.proxy.split('.').pop() + '[');
-          }).length || 1;
-          let targetCount = fks.filter(k => {
-            const nk = k.replace(/^.*::/, '').replace(/^.*\./, '');
-            return nk.startsWith(parentKey.split('.').pop() + '[');
-          }).length || 1;
-          const slots = rule.includeEnds !== false ? proxyCount + 1 : proxyCount;
-          const slotIdx = Math.floor(hiddenIdx * slots / targetCount);
-          const proxyIdx = Math.min(slotIdx, proxyCount - 1);
-          effectiveKey = `${rule.proxy}[${proxyIdx}]`;
-        } else {
-          const proxyIdx = Math.floor(hiddenIdx / (rule.ratio || 1));
-          effectiveKey = `${rule.proxy}[${proxyIdx}]`;
+
+      const stDef = STRUCTURE_TYPES[VIS_CONFIG.structureType];
+      const useUniform = VIS_CONFIG.uniformEdgesEnabled && stDef && stDef.uniformEdges;
+
+      if (useUniform) {
+        // ── Uniform-edge mode: orphaned edges survive, positioned uniformly ──
+        if (!isCascade) {
+          forceVisible = true;
+          orphan = true;  // will be placed by applyUniformEdgePorts later
         }
-      } else if (!isCascade) {
-        forceVisible = true;  // self-mode: edge survives with original key (spacer rows handle it)
+        // cascade mode: edge is hidden (no proxy redirect)
+      } else {
+        // ── Legacy EDGE_PROXY mode ──
+        const parentKey = baseMatch ? baseMatch[1] : hiddenKey;
+        const rule = EDGE_PROXY.get(parentKey);
+        if (isCascade && rule && isFieldVisible(rule.proxy)) {
+          const idxMatch = hiddenKey.match(/\[(\d+)\]$/);
+          const hiddenIdx = idxMatch ? parseInt(idxMatch[1]) : 0;
+          if (rule.ratio === 'auto') {
+            const fks = Array.isArray(srcStyle.rowFieldKeys) ? srcStyle.rowFieldKeys : [];
+            let proxyCount = fks.filter(k => {
+              const nk = k.replace(/^.*::/, '').replace(/^.*\./, '');
+              return nk.startsWith(rule.proxy.split('.').pop() + '[');
+            }).length || 1;
+            let targetCount = fks.filter(k => {
+              const nk = k.replace(/^.*::/, '').replace(/^.*\./, '');
+              return nk.startsWith(parentKey.split('.').pop() + '[');
+            }).length || 1;
+            const slots = rule.includeEnds !== false ? proxyCount + 1 : proxyCount;
+            const slotIdx = Math.floor(hiddenIdx * slots / targetCount);
+            const proxyIdx = Math.min(slotIdx, proxyCount - 1);
+            effectiveKey = `${rule.proxy}[${proxyIdx}]`;
+          } else {
+            const proxyIdx = Math.floor(hiddenIdx / (rule.ratio || 1));
+            effectiveKey = `${rule.proxy}[${proxyIdx}]`;
+          }
+        } else if (!isCascade) {
+          forceVisible = true;
+        }
       }
     }
     const hidden = forceVisible ? false : (effectiveKey ? (!isFieldVisible(effectiveKey)) : false);
-    if (effectiveKey !== hiddenKey) {
+    if (orphan) {
+      // Uniform-edge orphan: keep original edge, tag for later port placement
+      const orphanEdge = { ...edge, data: { ...(edge?.data || {}), _orphan: true, _orphanLabel: edge?.data?.label || '' } };
+      edgeMeta.push({ edge: orphanEdge, hidden: false, srcId });
+    } else if (effectiveKey !== hiddenKey) {
       const substEdge = { ...edge, data: { ...(edge?.data || {}), field_key: effectiveKey.replace(/\./g, '::'), label: effectiveKey.split('.').pop(), _proxyKey: effectiveKey } };
       edgeMeta.push({ edge: substEdge, hidden, srcId });
     } else {
@@ -3249,21 +3363,26 @@ function applyNodeTypeVisibility(graphData) {
         key = className && fieldName ? `${className}.${fieldName}` : '';
       }
       if (key && !isFieldVisible(key)) {
-        // Self-mode + edge proxy target ref → keep as invisible spacer with port
-        const state = NODE_TYPE_VISIBILITY.get(key);
-        const baseM = key.match(/^(.+?)(\[.*\])?$/);
-        const baseKey = baseM ? baseM[1] : key;
-        const baseState = baseM ? NODE_TYPE_VISIBILITY.get(baseKey) : null;
-        const isSelf = (state === 'self') || (baseState === 'self');
-        if (isSelf && kind === 'ref' && EDGE_PROXY.has(baseKey)) {
-          const si = keptRows.length;
-          keptRows.push('');  // invisible spacer
-          keptRowNames.push(rowNames[i] || fieldName);
-          keptRowKinds.push('ref');  // keep as ref so edge has port
-          keptRowBindGroups.push(rowBindGroups[i] ?? null);
-          keptRowBindBlocks.push(rowBindBlocks[i] ?? null);
-          keptRowDeltaTypes.push(rowDeltaTypes[i] ?? null);
-          keptRefRowIndices.push(si);
+        const stDef2 = STRUCTURE_TYPES[VIS_CONFIG.structureType];
+        const useUniform2 = VIS_CONFIG.uniformEdgesEnabled && stDef2 && stDef2.uniformEdges;
+        // In uniform-edge mode, hidden ref rows are simply skipped (edges survive as orphans).
+        // In legacy EDGE_PROXY mode, self-hidden refs get spacer rows.
+        if (!useUniform2) {
+          const state = NODE_TYPE_VISIBILITY.get(key);
+          const baseM = key.match(/^(.+?)(\[.*\])?$/);
+          const baseKey = baseM ? baseM[1] : key;
+          const baseState = baseM ? NODE_TYPE_VISIBILITY.get(baseKey) : null;
+          const isSelf = (state === 'self') || (baseState === 'self');
+          if (isSelf && kind === 'ref' && EDGE_PROXY.has(baseKey)) {
+            const si = keptRows.length;
+            keptRows.push('');
+            keptRowNames.push(rowNames[i] || fieldName);
+            keptRowKinds.push('ref');
+            keptRowBindGroups.push(rowBindGroups[i] ?? null);
+            keptRowBindBlocks.push(rowBindBlocks[i] ?? null);
+            keptRowDeltaTypes.push(rowDeltaTypes[i] ?? null);
+            keptRefRowIndices.push(si);
+          }
         }
         continue;
       }
@@ -3285,7 +3404,11 @@ function applyNodeTypeVisibility(graphData) {
     const nodeVisible = originalInDegree.get(id) === 0 || connectedNodeIds.has(id);
     if (!nodeVisible) continue;
 
-    // ── Add all proxy rows (including array items) to refRowIndices ──
+    const stDef3 = STRUCTURE_TYPES[VIS_CONFIG.structureType];
+    const useUniform3 = VIS_CONFIG.uniformEdgesEnabled && stDef3 && stDef3.uniformEdges;
+
+    // ── Legacy EDGE_PROXY: proxy row addition & spacer interleaving ──
+    if (!useUniform3) {
     for (const [targetKey, rule] of EDGE_PROXY) {
       if (!targetKey.startsWith(className + '.')) continue;
       const origFKs = Array.isArray(style.rowFieldKeys) ? style.rowFieldKeys : [];
@@ -3354,6 +3477,7 @@ function applyNodeTypeVisibility(graphData) {
       for (const k of Object.keys(keptRefLabelMap)) delete keptRefLabelMap[k];
       Object.assign(keptRefLabelMap, newRefMap);
     }
+    } // end if (!useUniform3)
 
     // ── Title visibility ──
     const titleKey = `${className}.__title__`;
@@ -3410,30 +3534,30 @@ function applyNodeTypeVisibility(graphData) {
     filteredNodes.push(node);
   }
 
-  // ── Post-process proxy edges: update refIndex to match proxy row position ──
+  // ── Post-process proxy edges (legacy) ──
   const nodeByFilteredId = new Map(filteredNodes.map(n => [String(n.id), n]));
   for (const entry of edgeMeta) {
-    const proxyKey = entry.edge?.data?._proxyKey;
-    if (!proxyKey) continue;
-    const srcNode = nodeByFilteredId.get(entry.srcId);
-    if (!srcNode) continue;
-    const sn = srcNode.style || {};
-    const rows = sn.rows || [];
-    const rowFKs = sn.rowFieldKeys || [];
-    for (let i = 0; i < rows.length; i++) {
-      const fk = String(rowFKs[i] || '').trim();
-      let rk = '';
-      if (fk) { const p = fk.split('::'); rk = p.length === 2 ? `${p[0]}.${p[1]}` : fk.replace(/::/g, '.'); }
-      if (rk === proxyKey) {
-        entry.edge.data.refIndex = i;
-        break;
+      const proxyKey = entry.edge?.data?._proxyKey;
+      if (!proxyKey) continue;
+      const srcNode = nodeByFilteredId.get(entry.srcId);
+      if (!srcNode) continue;
+      const sn = srcNode.style || {};
+      const rows = sn.rows || [];
+      const rowFKs = sn.rowFieldKeys || [];
+      for (let i = 0; i < rows.length; i++) {
+        const fk = String(rowFKs[i] || '').trim();
+        let rk = '';
+        if (fk) { const p = fk.split('::'); rk = p.length === 2 ? `${p[0]}.${p[1]}` : fk.replace(/::/g, '.'); }
+        if (rk === proxyKey) {
+          entry.edge.data.refIndex = i;
+          break;
+        }
       }
     }
-  }
 
   const visibleNodeIds = new Set(filteredNodes.map((node) => String(node.id)));
   const visibleEdges = filteredEdges.filter((edge) => visibleNodeIds.has(String(edge.source)) && visibleNodeIds.has(String(edge.target)));
-  return { ...(working || {}), nodes: filteredNodes, edges: visibleEdges };
+  return { data: { ...(working || {}), nodes: filteredNodes, edges: visibleEdges }, edgeMeta };
 }
 
 function hideNode(nodeId, label, cascade = false) {
@@ -3547,9 +3671,18 @@ function renderStepImpl(ri, displayIndex) {
   hoveredFrameKey = null;
   const s = STEPS[ri];
   const rawGraph = applyStepHighlights(cloneGraphData(s.graph), ri);
-  const typeFilteredGraph = applyNodeTypeVisibility(rawGraph);
+  const visResult = applyNodeTypeVisibility(rawGraph);
+  const typeFilteredGraph = visResult.data;
   const adaptedGraph = adaptNodesForTextFlow(typeFilteredGraph);
   const graphData = filterHiddenNodes(adaptedGraph);
+
+  // Uniform-edge port placement (must run AFTER adaptNodesForTextFlow
+  // because it overwrites the ports array for vertical-layout nodes)
+  const stDef4 = STRUCTURE_TYPES[VIS_CONFIG.structureType];
+  if (VIS_CONFIG.uniformEdgesEnabled && stDef4 && stDef4.uniformEdges) {
+    const nById = new Map(graphData.nodes.map(function(n){ return [String(n.id), n]; }));
+    applyUniformEdgePorts(visResult.edgeMeta, graphData.nodes, nById);
+  }
   const frames = Array.isArray(s?.stack?.frames) ? s.stack.frames : [];
   if (frames.length) {
     const hasSelection = selectedFrameKey && frames.some((frame, idx) => frameKey(frame, idx) === selectedFrameKey);
@@ -3956,6 +4089,7 @@ function syncSettingsPanel() {
       VIS_CONFIG.showSubtitle = true;
       VIS_CONFIG.structureType = 'other';
       VIS_CONFIG.layerEdgeKeys = {};
+      VIS_CONFIG.uniformEdgesEnabled = true;
       saveVisConfig(VIS_CONFIG);
       persistProxy(); persistVisibility();
       try { localStorage.removeItem('dsvis:layerEdges'); } catch(_) {}
