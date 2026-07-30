@@ -164,12 +164,15 @@ def _resolve_object_fields(owner, obj, item_map, obj_id,
             _append_field(owner, attr, val)
         elif isinstance(val, (list, tuple, set, frozenset, dict, deque)):
             items = list(iter_container_items(attr, val))
-            # Keep an aggregate row for containers so UI presets and title-field
-            # substitution can target the logical field (for example
-            # ``BTreeNode.keys``) instead of only its expanded items
-            # (``BTreeNode.keys[0]``).  This is especially important for
-            # textbook-style B/B+ tree nodes whose keys are the node body.
-            _append_field(owner, attr, val)
+            # If ALL items are class objects this is a pure pointer array
+            # (e.g. ``children = [Node1, Node2]``).  Skip the aggregate row
+            # that would dump the entire list as text — each item already gets
+            # its own ref row below.
+            # Otherwise keep the aggregate row (e.g. BTree ``keys = [4, 8, 12]``
+            # where the items are primitives and the text matters).
+            all_refs = items and all(is_class_object(iv) for _, iv in items)
+            if not all_refs:
+                _append_field(owner, attr, val)
             if not items:
                 continue
             for item_name, item_val in items:

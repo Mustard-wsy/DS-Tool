@@ -2931,23 +2931,29 @@ function measureHorizontalNodeSize(name, subtitleText, rows) {
   for (const row of rows) {
     bodyRowCount += Math.max(1, wrapTextToChars(row, maxChars).length);
   }
-  const headerH = Math.max(NODE_VISUAL_LAYOUT.defaultHeaderH, wrappedHeader.length * 16) + (subtitleText ? 14 : 0);
+  const headerH = (wrappedHeader[0] === '' && !subtitleText) ? 0
+    : Math.max(NODE_VISUAL_LAYOUT.defaultHeaderH, wrappedHeader.length * 16) + (subtitleText ? 14 : 0);
   const height = NODE_VISUAL_LAYOUT.paddingY * 2 + headerH + Math.max(bodyRowCount, 1) * NODE_VISUAL_LAYOUT.rowH;
   return { cardW, height, headerH };
 }
 
 function buildHorizontalPorts(refRowIndices, headerH, height) {
+  // When title is hidden (headerH===0), entry ports go to the top-edge centre
+  // instead of the header centre.
+  const entryY = headerH === 0
+    ? NODE_VISUAL_LAYOUT.paddingY / Math.max(height, 1)
+    : (NODE_VISUAL_LAYOUT.paddingY + headerH / 2) / Math.max(height, 1);
   const ports = [
     {
       key: 'inL',
-      placement: [0, (NODE_VISUAL_LAYOUT.paddingY + headerH / 2) / Math.max(height, 1)],
+      placement: [0, entryY],
       r: 0,
       fill: 'transparent',
       stroke: 'transparent',
     },
     {
       key: 'inR',
-      placement: [1, (NODE_VISUAL_LAYOUT.paddingY + headerH / 2) / Math.max(height, 1)],
+      placement: [1, entryY],
       r: 0,
       fill: 'transparent',
       stroke: 'transparent',
