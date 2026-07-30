@@ -178,72 +178,21 @@ let autoRunActive = false;
 let autoRunPauseLine = null;
 let debugSessionStopped = false;
 
-// ── Presets ──
-const PRESETS_STORAGE_KEY = 'dsvis:presets';
-const ACTIVE_PRESET_KEY = 'dsvis:activePreset';
-const PROXY_STORAGE_KEY = 'dsvis:edgeProxy';
-const VISIBILITY_STORAGE_KEY = 'dsvis:visibility';
-
-const BUILTIN_PRESETS = [
-  {
-    id: 'btree',
-    name: 'B-Tree',
-    structureType: 'btree',
-    builtin: true,
-    description: 'keys 代理 children，含端点，TB 分层',
-    edgeProxy: { 'BTreeNode.children': { proxy: 'BTreeNode.keys', ratio: 'auto', includeEnds: true } },
-    visibility: { 'BTreeNode.children': 'self' },
-    titleField: { 'BTreeNode': 'BTreeNode.keys' },
-    layerEdges: ['children'],
-    layout: { rankdir: 'TB' },
-    showSubtitle: false
-  },
-  {
-    id: 'bplustree',
-    name: 'B+ Tree',
-    structureType: 'bplustree',
-    builtin: true,
-    description: 'keys 代理 children，含端点，TB 分层',
-    edgeProxy: { 'BPlusNode.children': { proxy: 'BPlusNode.keys', ratio: 'auto', includeEnds: true } },
-    visibility: { 'BPlusNode.children': 'self' },
-    titleField: { 'BPlusNode': 'BPlusNode.keys' },
-    layerEdges: ['children'],
-    layout: { rankdir: 'TB' },
-    showSubtitle: false
-  },
-  {
-    id: 'binarytree',
-    name: '二叉树',
-    structureType: 'binary-tree',
-    builtin: true,
-    description: 'left/right 指针分层，value 显示为标题',
-    edgeProxy: {},
-    visibility: {},
-    titleField: { 'Node': 'Node.val' },
-    layerEdges: ['left', 'right'],
-    layerEdgeKeys: { left: 'left', right: 'right' },
-    layout: { rankdir: 'TB' }
-  },
-  {
-    id: 'heap',
-    name: '堆',
-    structureType: 'heap',
-    builtin: true,
-    description: '数组展示，不隐藏字段',
-    edgeProxy: {},
-    visibility: {},
-    titleField: {},
-    layerEdges: [],
-    layout: { rankdir: 'TB' }
-  },
-];
-
-/* ========================================================================
- * Persistence & PageAgent Section
- * localStorage save/load helpers, preset management, vis-config state,
- * PageAgent CDN loading, and Agent API surface.  Consumed by the
- * settings panel and the AI assistant panel.
- * ======================================================================== */
+// ── Structure type definitions ──
+// Each type specifies what special parameters appear in the settings panel.
+// - layerFields: for tree types, the field labels that serve as hierarchy edges.
+// - proxyRules:  for BTree types, the proxy-from→proxy-to mappings.
+const STRUCTURE_TYPES = {
+  'binary-tree':  { name: '二叉树',       layerFields: ['left','right'], parentField: null,   proxyRules: null },
+  'nary-tree':    { name: 'N叉树',        layerFields: ['children'],      parentField: 'parent', proxyRules: null },
+  'btree':        { name: 'B-Tree',       layerFields: ['children'],      parentField: null,   proxyRules: { childField: 'children', keyField: 'keys' } },
+  'bplustree':    { name: 'B+ Tree',      layerFields: ['children'],      parentField: null,   proxyRules: { childField: 'children', keyField: 'keys' } },
+  'heap':         { name: '堆',           layerFields: [],                parentField: null,   proxyRules: null },
+  'graph':        { name: '图',           layerFields: [],                parentField: null,   proxyRules: null },
+  'linkedlist':   { name: '链表/栈/队列', layerFields: [],                parentField: null,   proxyRules: null },
+  'hashtable':    { name: '散列表',       layerFields: [],                parentField: null,   proxyRules: null },
+  'other':        { name: '其他',         layerFields: [],                parentField: null,   proxyRules: null },
+};
 
 // ── Persistence helpers ──
 function persistProxy() {
@@ -264,87 +213,45 @@ function loadVisibility() {
     if (raw) { const arr = JSON.parse(raw); for (const [k, v] of arr) NODE_TYPE_VISIBILITY.set(k, v); }
   } catch(_) {}
 }
-function persistPresets() {
-  const userPresets = JSON.parse(localStorage.getItem(PRESETS_STORAGE_KEY) || '[]').filter(p => !p.builtin);
-  try { localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(userPresets)); } catch(_) {}
-}
-function loadUserPresets() {
-  try { return JSON.parse(localStorage.getItem(PRESETS_STORAGE_KEY) || '[]'); } catch(_) { return []; }
-}
-function getAllPresets() {
-  return [...BUILTIN_PRESETS, ...loadUserPresets()];
-}
-function getActivePresetId() {
-  try { return localStorage.getItem(ACTIVE_PRESET_KEY) || ''; } catch(_) { return ''; }
-}
-function setActivePresetId(id) {
-  try { localStorage.setItem(ACTIVE_PRESET_KEY, id); } catch(_) {}
-}
 
-/** Apply a preset: set EDGE_PROXY, NODE_TYPE_VISIBILITY, TITLE_FIELD, and layout */
-function applyPreset(preset) {
-  EDGE_PROXY.clear();
-  if (preset.edgeProxy) {
-    for (const [k, v] of Object.entries(preset.edgeProxy)) EDGE_PROXY.set(k, v);
-  }
-  for (const [key] of NODE_TYPE_VISIBILITY) {
-    if (preset.visibility && preset.visibility[key] !== undefined) {
-      NODE_TYPE_VISIBILITY.set(key, preset.visibility[key]);
-    }
-  }
-  TITLE_FIELD = preset.titleField && Object.keys(preset.titleField).length
-    ? { className: Object.keys(preset.titleField)[0], key: Object.values(preset.titleField)[0] }
-    : null;
-  if (preset.layout) {
-    if (preset.layout.rankdir) VIS_CONFIG.textFlow = preset.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
-  }
-  if (preset.showSubtitle !== undefined) VIS_CONFIG.showSubtitle = preset.showSubtitle;
-  if (preset.structureType) VIS_CONFIG.structureType = preset.structureType;
-  if (preset.layerEdgeKeys) VIS_CONFIG.layerEdgeKeys = { ...preset.layerEdgeKeys };
-  LAYER_EDGES.clear();
-  if (Array.isArray(preset.layerEdges)) {
-    for (const le of preset.layerEdges) LAYER_EDGES.add(le);
-  }
-  setActivePresetId(preset.id);
-  persistProxy();
-  persistVisibility();
-  try { localStorage.setItem('dsvis:layerEdges', JSON.stringify(Array.from(LAYER_EDGES))); } catch(_) {}
-  try { localStorage.setItem('dsvis:titleField', JSON.stringify(TITLE_FIELD)); } catch(_) {}
-  applyVisConfig();
-  if (settingsPanelVisible) syncSettingsPanel();
-}
-
-/** Export current config as a preset JSON */
-function exportConfigAsPreset() {
+/** Export current config as JSON (for copy/import). */
+function exportCurrentConfig() {
   const proxyObj = Object.fromEntries(EDGE_PROXY);
   const visObj = Object.fromEntries(NODE_TYPE_VISIBILITY);
   const tf = TITLE_FIELD ? { [TITLE_FIELD.className]: TITLE_FIELD.key } : {};
-  return { id: 'exported', name: '我的配置', builtin: false,
+  return {
     structureType: VIS_CONFIG.structureType,
     edgeProxy: proxyObj, visibility: visObj, titleField: tf,
     layerEdges: Array.from(LAYER_EDGES),
     layerEdgeKeys: { ...VIS_CONFIG.layerEdgeKeys },
-    layout: { rankdir: VIS_CONFIG.textFlow === 'vertical' ? 'TB' : 'LR' } };
+    layout: { rankdir: VIS_CONFIG.textFlow === 'vertical' ? 'TB' : 'LR' },
+    showSubtitle: VIS_CONFIG.showSubtitle,
+  };
 }
 
-// ── Structure type definitions ──
-// Each type specifies what special parameters appear in the settings panel.
-// - layerFields: for tree types, the field labels that serve as hierarchy edges.
-// - proxyRules:  for BTree types, the proxy-from→proxy-to mappings.
-const STRUCTURE_TYPES = {
-  'binary-tree':  { name: '二叉树',       layerFields: ['left','right'], parentField: null,   proxyRules: null },
-  'nary-tree':    { name: 'N叉树',        layerFields: ['children'],      parentField: 'parent', proxyRules: null },
-  'btree':        { name: 'B-Tree',       layerFields: ['children'],      parentField: null,   proxyRules: { childField: 'children', keyField: 'keys' } },
-  'bplustree':    { name: 'B+ Tree',      layerFields: ['children'],      parentField: null,   proxyRules: { childField: 'children', keyField: 'keys' } },
-  'heap':         { name: '堆',           layerFields: [],                parentField: null,   proxyRules: null },
-  'graph':        { name: '图',           layerFields: [],                parentField: null,   proxyRules: null },
-  'linkedlist':   { name: '链表/栈/队列', layerFields: [],                parentField: null,   proxyRules: null },
-  'hashtable':    { name: '散列表',       layerFields: [],                parentField: null,   proxyRules: null },
-  'other':        { name: '其他',         layerFields: [],                parentField: null,   proxyRules: null },
-};
+/** Import a previously exported config. */
+function importConfig(jsonText) {
+  var cfg;
+  try { cfg = JSON.parse(jsonText); } catch(_) { throw new Error('无效的 JSON'); }
+  if (typeof cfg !== 'object' || !cfg) throw new Error('无效的配置');
+  if (cfg.edgeProxy) { EDGE_PROXY.clear(); for (var _k in cfg.edgeProxy) EDGE_PROXY.set(_k, cfg.edgeProxy[_k]); }
+  if (cfg.visibility) { for (var _vk in cfg.visibility) NODE_TYPE_VISIBILITY.set(_vk, cfg.visibility[_vk]); }
+  if (cfg.titleField) { var _tkeys = Object.keys(cfg.titleField); if (_tkeys.length) TITLE_FIELD = { className: _tkeys[0], key: cfg.titleField[_tkeys[0]] }; }
+  if (cfg.layout && cfg.layout.rankdir) VIS_CONFIG.textFlow = cfg.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
+  if (cfg.showSubtitle !== undefined) VIS_CONFIG.showSubtitle = cfg.showSubtitle;
+  if (cfg.structureType) VIS_CONFIG.structureType = cfg.structureType;
+  if (cfg.layerEdgeKeys) VIS_CONFIG.layerEdgeKeys = { ...cfg.layerEdgeKeys };
+  LAYER_EDGES.clear();
+  if (Array.isArray(cfg.layerEdges)) { for (var _le = 0; _le < cfg.layerEdges.length; _le++) LAYER_EDGES.add(cfg.layerEdges[_le]); }
+  persistProxy(); persistVisibility();
+  try { localStorage.setItem('dsvis:layerEdges', JSON.stringify(Array.from(LAYER_EDGES))); } catch(_) {}
+  try { localStorage.setItem('dsvis:titleField', JSON.stringify(TITLE_FIELD)); } catch(_) {}
+  saveVisConfig(VIS_CONFIG);
+  applyVisConfig();
+  if (settingsPanelVisible) syncSettingsPanel();
+}
 
-// Heuristic: match field names to left/right/children/parent patterns.
-// Returns { left: 'fieldName', right: 'fieldName' } or null.
+// ── Heuristic layer-field detection ──
 function autoDetectLayerFields(nodeFields, structType) {
   var def = STRUCTURE_TYPES[structType];
   if (!def || !def.layerFields || def.layerFields.length === 0) return null;
@@ -1465,14 +1372,6 @@ function applyCompactGridLayout(graphData, viewport = null) {
   };
 }
 
-function normalizeLayoutType(layoutTypeRaw) {
-  const t = String(layoutTypeRaw || '').trim().toLowerCase();
-  if (!t || t === 'default' || t === 'dagre') return 'default';
-  if (t === 'concentriclayout' || t === 'concentric') return 'concentric';
-  if (t === 'snakelayout' || t === 'snake') return 'snake';
-  return 'default';
-}
-
 // Post-dagre: enforce left-child-left, right-child-right for binary trees.
 // Runs after G6's dagre layout finishes, swapping sibling x positions if needed.
 function enforceLeftRightOrdering() {
@@ -1516,130 +1415,6 @@ function enforceLeftRightOrdering() {
       }
     }
   } catch (_) { /* best-effort */ }
-}
-
-function buildUndirectedAdj(graphData) {
-  const nodeIds = Array.isArray(graphData?.nodes) ? graphData.nodes.map((n) => String(n.id)) : [];
-  const adj = new Map(nodeIds.map((id) => [id, new Set()]));
-  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
-  for (const e of edges) {
-    const s = String(e?.source ?? '');
-    const t = String(e?.target ?? '');
-    if (!adj.has(s) || !adj.has(t) || s === t) continue;
-    adj.get(s).add(t);
-    adj.get(t).add(s);
-  }
-  return adj;
-}
-
-function getConnectedComponents(graphData) {
-  const adj = buildUndirectedAdj(graphData);
-  const seen = new Set();
-  const components = [];
-  for (const id of adj.keys()) {
-    if (seen.has(id)) continue;
-    const queue = [id];
-    seen.add(id);
-    const comp = [];
-    while (queue.length) {
-      const cur = queue.shift();
-      comp.push(cur);
-      for (const nxt of adj.get(cur) || []) {
-        if (seen.has(nxt)) continue;
-        seen.add(nxt);
-        queue.push(nxt);
-      }
-    }
-    components.push(comp.sort());
-  }
-  components.sort((a, b) => b.length - a.length);
-  return components;
-}
-
-function arrangeSnake(componentIds, originX, originY, gapX, gapY) {
-  const out = new Map();
-  const cols = Math.max(1, Math.ceil(Math.sqrt(componentIds.length)));
-  for (let i = 0; i < componentIds.length; i++) {
-    const row = Math.floor(i / cols);
-    const col = i % cols;
-    const snakeCol = row % 2 === 0 ? col : (cols - 1 - col);
-    out.set(componentIds[i], { x: originX + snakeCol * gapX, y: originY + row * gapY });
-  }
-  return out;
-}
-
-function arrangeConcentric(componentIds, adj, originX, originY, ringStep) {
-  const out = new Map();
-  if (!componentIds.length) return out;
-  const center = componentIds.slice().sort((a, b) => (adj.get(b)?.size || 0) - (adj.get(a)?.size || 0))[0];
-  const levelByNode = new Map([[center, 0]]);
-  const queue = [center];
-  while (queue.length) {
-    const cur = queue.shift();
-    const level = levelByNode.get(cur);
-    for (const nxt of (adj.get(cur) || [])) {
-      if (levelByNode.has(nxt)) continue;
-      levelByNode.set(nxt, level + 1);
-      queue.push(nxt);
-    }
-  }
-
-  const levels = new Map();
-  for (const id of componentIds) {
-    const lv = levelByNode.get(id);
-    const key = Number.isFinite(lv) ? lv : Number.MAX_SAFE_INTEGER;
-    if (!levels.has(key)) levels.set(key, []);
-    levels.get(key).push(id);
-  }
-
-  for (const [lv, ids] of levels.entries()) {
-    ids.sort();
-    if (lv === 0) {
-      out.set(ids[0], { x: originX, y: originY });
-      continue;
-    }
-    if (!Number.isFinite(lv) || lv >= Number.MAX_SAFE_INTEGER) {
-      const loose = arrangeSnake(ids, originX - ringStep, originY + ringStep, ringStep, Math.max(56, Math.floor(ringStep * 0.6)));
-      for (const [id, pos] of loose.entries()) out.set(id, pos);
-      continue;
-    }
-    const radius = ringStep * lv;
-    for (let i = 0; i < ids.length; i++) {
-      const theta = (Math.PI * 2 * i) / Math.max(1, ids.length);
-      out.set(ids[i], { x: originX + radius * Math.cos(theta), y: originY + radius * Math.sin(theta) });
-    }
-  }
-  return out;
-}
-
-function applyPresetLayout(graphData, presetType, viewport = null) {
-  const metrics = analyzeLayoutMetrics(graphData, viewport || getGraphSize());
-  const workingData = JSON.parse(JSON.stringify(graphData || { nodes: [], edges: [] }));
-  const nodeMap = new Map((workingData.nodes || []).map((n) => [String(n.id), n]));
-  const components = getConnectedComponents(workingData);
-  const compCols = Math.max(1, Math.ceil(Math.sqrt(Math.max(components.length, 1))));
-  const blockW = Math.max(metrics.maxW * 3.4, 360);
-  const blockH = Math.max(metrics.maxH * 3.2, 280);
-  const adj = buildUndirectedAdj(workingData);
-
-  components.forEach((comp, idx) => {
-    const row = Math.floor(idx / compCols);
-    const col = idx % compCols;
-    const originX = col * blockW;
-    const originY = row * blockH;
-    const local = presetType === 'snake'
-      ? arrangeSnake(comp, originX, originY, Math.max(metrics.maxW + metrics.boundaryGapX, 120), Math.max(metrics.maxH + metrics.boundaryGapY, 88))
-      : arrangeConcentric(comp, adj, originX, originY, Math.max(metrics.maxW + metrics.boundaryGapX, 110));
-    for (const [id, pos] of local.entries()) {
-      const node = nodeMap.get(String(id));
-      if (!node) continue;
-      node.style = node.style || {};
-      node.style.x = pos.x;
-      node.style.y = pos.y;
-    }
-  });
-
-  return { data: workingData, layout: { type: 'preset' } };
 }
 
 function prepareGraphForLayout(graphData, viewport = null) {
@@ -4095,108 +3870,7 @@ function syncSettingsPanel() {
   if (!list) return;
   list.innerHTML = '';
 
-  // ── Preset section ──
-  const presetGroup = document.createElement('div');
-  presetGroup.className = 'node-type-group preset-group';
-  const presetHeader = document.createElement('div');
-  presetHeader.className = 'node-type-group-header';
-  const presetTitle = document.createElement('span');
-  presetTitle.className = 'node-type-group-title';
-  presetTitle.textContent = '预设样式';
-  presetHeader.appendChild(presetTitle);
-  presetGroup.appendChild(presetHeader);
-
-  const presetItems = document.createElement('div');
-  presetItems.className = 'node-type-items preset-items';
-  presetItems.style.cssText = 'flex-wrap:wrap;gap:6px;align-items:center';
-
-  const allPresets = getAllPresets();
-  const activeId = getActivePresetId();
-
-  const presetSel = document.createElement('select');
-  presetSel.style.cssText = 'font-size:11px;min-width:100px';
-  const customOpt = document.createElement('option');
-  customOpt.value = ''; customOpt.textContent = '自定义';
-  if (!activeId) customOpt.selected = true;
-  presetSel.appendChild(customOpt);
-  const defaultOpt = document.createElement('option');
-  defaultOpt.value = '__default__'; defaultOpt.textContent = '↺ 默认';
-  presetSel.appendChild(defaultOpt);
-  for (const p of allPresets) {
-    const o = document.createElement('option');
-    o.value = p.id; o.textContent = (p.builtin ? '📦 ' : '💾 ') + p.name;
-    if (p.id === activeId) o.selected = true;
-    presetSel.appendChild(o);
-  }
-
-  const applyBtn = document.createElement('button');
-  applyBtn.textContent = '应用'; applyBtn.type = 'button';
-  applyBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #5b8ff9;background:#e8f0fe;border-radius:3px';
-  applyBtn.addEventListener('click', () => {
-    const pid = presetSel.value;
-    if (pid === '__default__') {
-      // Reset to factory defaults
-      EDGE_PROXY.clear();
-      LAYER_EDGES.clear();
-      TITLE_FIELD = null;
-      for (const [key] of NODE_TYPE_VISIBILITY) NODE_TYPE_VISIBILITY.set(key, 'visible');
-      VIS_CONFIG.textFlow = 'horizontal';
-      VIS_CONFIG.showSubtitle = true;
-      VIS_CONFIG.structureType = 'other';
-      VIS_CONFIG.layerEdgeKeys = {};
-      setActivePresetId('');
-      persistProxy(); persistVisibility();
-      try { localStorage.removeItem('dsvis:layerEdges'); } catch(_) {}
-      try { localStorage.removeItem('dsvis:titleField'); } catch(_) {}
-      applyVisConfig();
-      return;
-    }
-    if (!pid) {
-      // "自定义" — just mark as no active preset
-      setActivePresetId('');
-      return;
-    }
-    const preset = allPresets.find(p => p.id === pid);
-    if (preset) applyPreset(preset);
-  });
-
-  const exportBtn = document.createElement('button');
-  exportBtn.textContent = '导出'; exportBtn.type = 'button';
-  exportBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #aaa;background:#fafafa;border-radius:3px';
-  exportBtn.addEventListener('click', () => {
-    const data = exportConfigAsPreset();
-    const json = JSON.stringify(data, null, 2);
-    navigator.clipboard.writeText(json).then(() => alert('配置已复制到剪贴板')).catch(() => alert('复制失败:\n' + json));
-  });
-
-  const importBtn = document.createElement('button');
-  importBtn.textContent = '导入'; importBtn.type = 'button';
-  importBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #aaa;background:#fafafa;border-radius:3px';
-  importBtn.addEventListener('click', () => {
-    const text = prompt('粘贴预设 JSON:');
-    if (!text) return;
-    try {
-      const preset = JSON.parse(text);
-      if (!preset.id || !preset.name) throw new Error('缺少 id 或 name');
-      preset.builtin = false;
-      const userPresets = loadUserPresets().filter(p => p.id !== preset.id);
-      userPresets.push(preset);
-      localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(userPresets));
-      applyPreset(preset);
-      syncSettingsPanel();
-    } catch(e) {
-      alert('无效的 JSON: ' + e.message);
-    }
-  });
-
-  presetItems.appendChild(presetSel);
-  presetItems.appendChild(applyBtn);
-  presetItems.appendChild(exportBtn);
-  presetItems.appendChild(importBtn);
-  presetGroup.appendChild(presetItems);
-  list.appendChild(presetGroup);
-
-  // ── Structure type section ──
+  // ── Structure type section (replaces old preset system) ──
   (function() {
     var structGroup = document.createElement('div');
     structGroup.className = 'node-type-group';
@@ -4225,23 +3899,59 @@ function syncSettingsPanel() {
     structSel.addEventListener('change', function() {
       VIS_CONFIG.structureType = structSel.value;
       saveVisConfig(VIS_CONFIG);
-      // Rebuild the special-params section below
       buildStructureParams(structParamsDiv);
-      // Auto-detect if switching to a tree type
       autoApplyStructureDefaults();
     });
     structItems.appendChild(structSel);
 
-    // "应用默认" button
     var applyDefaultsBtn = document.createElement('button');
     applyDefaultsBtn.textContent = '应用默认'; applyDefaultsBtn.type = 'button';
     applyDefaultsBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #5b8ff9;background:#e8f0fe;border-radius:3px';
     applyDefaultsBtn.addEventListener('click', function() { autoApplyStructureDefaults(); });
     structItems.appendChild(applyDefaultsBtn);
 
+    var exportBtn = document.createElement('button');
+    exportBtn.textContent = '导出'; exportBtn.type = 'button';
+    exportBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #aaa;background:#fafafa;border-radius:3px';
+    exportBtn.addEventListener('click', function() {
+      var data = exportCurrentConfig();
+      var json = JSON.stringify(data, null, 2);
+      navigator.clipboard.writeText(json).then(function() { alert('配置已复制到剪贴板'); }).catch(function() { alert('复制失败:\n' + json); });
+    });
+    structItems.appendChild(exportBtn);
+
+    var importBtn = document.createElement('button');
+    importBtn.textContent = '导入'; importBtn.type = 'button';
+    importBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #aaa;background:#fafafa;border-radius:3px';
+    importBtn.addEventListener('click', function() {
+      var text = prompt('粘贴配置 JSON:');
+      if (!text) return;
+      try { importConfig(text); } catch(e) { alert('无效的配置: ' + e.message); }
+    });
+    structItems.appendChild(importBtn);
+
+    var resetBtn = document.createElement('button');
+    resetBtn.textContent = '重置'; resetBtn.type = 'button';
+    resetBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #e88;background:#fff5f5;border-radius:3px;color:#c00;';
+    resetBtn.addEventListener('click', function() {
+      EDGE_PROXY.clear();
+      LAYER_EDGES.clear();
+      TITLE_FIELD = null;
+      for (var _rkey of NODE_TYPE_VISIBILITY.keys()) NODE_TYPE_VISIBILITY.set(_rkey, 'visible');
+      VIS_CONFIG.textFlow = 'horizontal';
+      VIS_CONFIG.showSubtitle = true;
+      VIS_CONFIG.structureType = 'other';
+      VIS_CONFIG.layerEdgeKeys = {};
+      saveVisConfig(VIS_CONFIG);
+      persistProxy(); persistVisibility();
+      try { localStorage.removeItem('dsvis:layerEdges'); } catch(_) {}
+      try { localStorage.removeItem('dsvis:titleField'); } catch(_) {}
+      applyVisConfig();
+    });
+    structItems.appendChild(resetBtn);
+
     structGroup.appendChild(structItems);
 
-    // Type-specific parameter area (rebuilt when structure type changes)
     var structParamsDiv = document.createElement('div');
     structParamsDiv.id = 'structureParams';
     structParamsDiv.style.cssText = 'padding:4px 0;';
@@ -4656,7 +4366,7 @@ function createAgentAPI() {
         edgeProxy: Object.fromEntries(EDGE_PROXY),
         titleField: TITLE_FIELD ? { ...TITLE_FIELD } : null,
         hiddenNodes: Array.from(HIDDEN_NODES.keys()),
-        activePresetId: getActivePresetId(),
+        structureType: VIS_CONFIG.structureType,
         pageAgent: { ...loadPageAgentConfig(), apiKey: undefined },
         logLevel: DSVisLogger.level,
       };
@@ -4670,10 +4380,11 @@ function createAgentAPI() {
       };
     },
     applyPreset(id) {
-      const preset = getAllPresets().find((item) => item.id === id);
-      if (!preset) throw new Error(`Unknown preset: ${id}`);
-      applyPreset(preset);
-      DSVisLogger.info('agent', 'preset-applied', { id });
+      var st = (id || 'other').toLowerCase();
+      if (!STRUCTURE_TYPES[st]) throw new Error('Unknown type: ' + id);
+      VIS_CONFIG.structureType = st;
+      autoApplyStructureDefaults();
+      DSVisLogger.info('agent', 'structure-type-set', { type: st });
       return this.getPresentationConfig();
     },
     setTextFlow(flow) {
@@ -5366,14 +5077,15 @@ DSVisLogger.info('agent', 'agent-api-ready', { methods: Object.keys(window.DSVis
       throw new Error('面板名必须为 stack 或 code');
     },
   });
-  dsvis.define('presentation.applyPreset', {
-    description: '应用预设配置（需要先知道预设ID，可通过 getConfig 查看可用预设）',
-    params: { id: { type: 'string', description: '预设标识符' } },
+  dsvis.define('presentation.setStructureType', {
+    description: '设置数据结构类型，自动应用对应的布局和分层策略',
+    params: { type: { type: 'string', description: '数据类型: ' + Object.keys(STRUCTURE_TYPES).join(' | ') } },
     handler(args) {
-      const preset = getAllPresets().find(p => p.id === args.id);
-      if (!preset) throw new Error(`未知预设: ${args.id}。可用预设: ${getAllPresets().map(p => p.id).join(', ')}`);
-      applyPreset(preset);
-      return `已应用预设: ${preset.name || args.id}`;
+      var st = (args.type || 'other').toLowerCase();
+      if (!STRUCTURE_TYPES[st]) throw new Error('未知类型: ' + args.type + '。可用: ' + Object.keys(STRUCTURE_TYPES).join(', '));
+      VIS_CONFIG.structureType = st;
+      autoApplyStructureDefaults();
+      return '已设置结构类型: ' + STRUCTURE_TYPES[st].name + '，布局已自动更新。';
     },
   });
   dsvis.define('presentation.setFieldVisibility', {
@@ -5453,7 +5165,7 @@ DSVisLogger.info('agent', 'agent-api-ready', { methods: Object.keys(window.DSVis
         edgeProxy: Object.fromEntries(EDGE_PROXY),
         titleField: TITLE_FIELD,
         hiddenNodes: Array.from(HIDDEN_NODES.keys()),
-        presets: getAllPresets().map(p => ({ id: p.id, name: p.name, builtin: p.builtin })),
+        structureTypes: Object.keys(STRUCTURE_TYPES).map(function(k) { return { id: k, name: STRUCTURE_TYPES[k].name }; }),
       };
     },
   });
