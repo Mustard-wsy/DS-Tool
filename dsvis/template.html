@@ -1779,7 +1779,7 @@ function initGraph(data) {
         this.__prevVBindRunCount = vruns.length;
 
         // Field columns
-        const rowMode = st.rowDisplayMode || VIS_CONFIG.rowDisplayMode || 'both';
+        const rowMode = attributes.rowDisplayMode || VIS_CONFIG.rowDisplayMode || 'both';
         const showKey = rowMode !== 'value';
         const showVal = rowMode !== 'key';
         const visibleRows = (showKey ? 1 : 0) + (showVal ? 1 : 0);
