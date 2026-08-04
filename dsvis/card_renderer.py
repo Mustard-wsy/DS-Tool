@@ -84,6 +84,9 @@ class NodeStyle:
     show_subtitle: bool = False
     subtitle: str | None = None
     text_flow: str = "horizontal"  # "horizontal" | "vertical" (future)
+    row_names: list = field(default_factory=list)
+    row_kinds: list = field(default_factory=list)
+    row_field_keys: list = field(default_factory=list)
     # Vertical grid layout fields
     title_col_w: int = 0
     field_col_w: int = 0
@@ -97,14 +100,21 @@ class NodeStyle:
             "name": self.name,
             "headerHeight": self.header_height,
             "rows": self.rows,
+            "rowNames": self.row_names,
+            "rowKinds": self.row_kinds,
+            "rowFieldKeys": self.row_field_keys,
             "rowBindGroups": self.row_bind_groups,
             "rowBindBlocks": self.row_bind_blocks,
             "refRowIndices": self.ref_row_indices,
             "refLabelMap": self.ref_label_map,
             "sectionGap": self.section_gap,
             "ports": self.ports,
-            "textFlow": self.text_flow,
+            "className": self.subtitle if self.show_subtitle and self.subtitle else "",
         }
+        # Only emit textFlow when it differs from the default (horizontal).
+        # This lets the frontend's VIS_CONFIG switch between layouts.
+        if self.text_flow != "horizontal":
+            d["textFlow"] = self.text_flow
         if self.port_layout is not None:
             d["portLayout"] = {
                 "direction": self.port_layout.direction,
@@ -394,11 +404,16 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
             text_cfg=text_cfg,
         )
 
+        # Field keys follow the backend contract (graph_builder._make_field_key).
+        # The renderer passes them through without re-normalising the prefix.
         node_style = NodeStyle(
             size=(card_w, height),
             name=display_name,
             header_height=header_h,
             rows=display_rows,
+            row_names=[str(r.get("name", "")) for r in rows],
+            row_kinds=[str(r.get("kind", "field")) for r in rows],
+            row_field_keys=[str(r.get("field_key", "")) for r in rows],
             row_bind_groups=bind_groups,
             row_bind_blocks=bind_blocks,
             ref_row_indices=ref_row_indices,
@@ -445,11 +460,15 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
         if label and src_id in ref_index and label in ref_index[src_id]:
             ref_idx = ref_index[src_id][label]
 
+        edge_data = {"refIndex": ref_idx, "label": label}
+        fk = e.get("field_key")
+        if fk is not None:
+            edge_data["field_key"] = fk
         g6_data["edges"].append({
             "id": f"e{edge_counter}",
             "source": src_id,
             "target": dst_id,
-            "data": {"refIndex": ref_idx},
+            "data": edge_data,
             "style": {},
         })
         edge_counter += 1
@@ -461,16 +480,96 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
 # HTML rendering
 # ---------------------------------------------------------------------------
 
+def _derive_algorithm_name(source_lines, title):
+    """Derive a human-readable algorithm name from source code heuristics."""
+    source = "\n".join(source_lines) if source_lines else ""
+    source_lower = source.lower()
+
+    # Class-name heuristics: look for tree / heap / graph classes
+    import re
+    class_match = re.search(r'class\s+(\w*(?:Tree|Heap|Graph|Hash|Sort|List|Queue|Stack|Union|Find|DSU|Huffman|Prim|Kruskal|DFS|BFS|SCC|Topo)\w*)', source)
+    if class_match:
+        return class_match.group(1)
+
+    # Keyword heuristics
+    if 'avl' in source_lower and ('rotate' in source_lower or 'balance_factor' in source_lower):
+        return 'AVL'
+    if 'red_black' in source_lower or 'rb_tree' in source_lower or ('color' in source_lower and 'rotate' in source_lower and 'black' in source_lower):
+        return 'RBTree'
+    if 'b_plus_tree' in source_lower or 'bptree' in source_lower or 'BPlusTree' in source:
+        return 'BPlusTree'
+    if 'btree' in source_lower or 'b_tree' in source_lower or 'BTree' in source:
+        return 'BTree'
+    if 'binary_heap' in source_lower or 'binheap' in source_lower or ('heap' in source_lower and 'sift' in source_lower):
+        return 'BinaryHeap'
+    if 'huffman' in source_lower or 'huff' in source_lower:
+        return 'Huffman'
+    if 'prim' in source_lower and ('mst' in source_lower or 'minimum_spanning' in source_lower):
+        return 'Prim'
+    if 'dfs' in source_lower and 'bfs' in source_lower:
+        return 'DFS/BFS'
+    if 'dfs' in source_lower:
+        return 'DFS'
+    if 'bfs' in source_lower:
+        return 'BFS'
+    if 'scc' in source_lower or 'strongly_connected' in source_lower or 'tarjan' in source_lower or 'kosaraju' in source_lower:
+        return 'SCC'
+    if 'topo' in source_lower or 'topological' in source_lower:
+        return 'TopologicalSort'
+    if 'dsu' in source_lower or 'disjoint' in source_lower or 'union_find' in source_lower:
+        return 'DSU'
+    if 'bubble_sort' in source_lower or 'bubblesort' in source_lower:
+        return 'BubbleSort'
+    if 'merge_sort' in source_lower or 'mergesort' in source_lower:
+        return 'MergeSort'
+    if 'hash_open' in source_lower or 'open_addressing' in source_lower:
+        return 'HashOpenAddressing'
+    if 'hash_closed' in source_lower or 'closed_addressing' in source_lower or 'separate_chaining' in source_lower:
+        return 'HashClosedAddressing'
+    if 'hanoi' in source_lower or 'tower_of_hanoi' in source_lower:
+        return 'HanoiTower'
+    if 'gcd' in source_lower and ('euclid' in source_lower or 'gcd' in source_lower):
+        return 'GCD'
+    if 'priority_queue' in source_lower or 'priorityqueue' in source_lower:
+        return 'PriorityQueue'
+    if 'stack' in source_lower and ('push' in source_lower or 'pop' in source_lower):
+        return 'Stack'
+    if 'queue' in source_lower and 'enq' in source_lower:
+        return 'Queue'
+    if 'palindrome' in source_lower:
+        return 'Palindrome'
+
+    # Fallback: extract from title (strips "DSVis Debugger" prefix)
+    if title and title != 'DSVis Debugger':
+        clean = title.replace('DSVis Debugger', '').replace('(', '').replace(')', '').strip()
+        if clean:
+            return clean
+
+    return 'Algorithm'
+
 def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, display_indices=None):
     """Generate a self-contained HTML debugger page and open it in a browser.
 
-    *display_indices* is an optional list of indices into *steps* that
-    should be visible in the UI (step counter, Prev/Next).  All steps are
-    still available for breakpoint / line navigation.
+    Layout contract
+    ---------------
+    *layout* is normalised once via :func:`dsvis._normalize_layout` and
+    embedded as ``__LAYOUT__``.  The frontend consumes this value as-is;
+    there is no second normalisation pass.
+
+    Step payload contract
+    ---------------------
+    Each raw *step* dict (``lineno``, ``nodes``, ``edges``, ``stack``,
+    ``_visible``) is transformed here into a display-step payload
+    (``step``, ``lineno``, ``stack``, ``graph``).  *display_indices*
+    (computed by the scheduler) selects which display steps are visible
+    in the UI — all steps remain available for breakpoint / line
+    navigation.
     """
     from .dsvis import _normalize_layout  # deferred — avoids circular import
     from .runtime.config import breakpoints_enabled, get_text_flow
 
+    # breakpoints state is a pure presentation hint for the frontend —
+    # the scheduler already decided recording policy before reaching here.
     if display_indices is None:
         display_indices = list(range(len(steps)))
 
@@ -494,6 +593,7 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
         styles = f"{codicon_styles}\n{styles}"
     html = html.replace("__TITLE__", title)
     html = html.replace("__STYLES__", styles)
+    html = html.replace("__DSVIS_ALGO__", json.dumps(_derive_algorithm_name(source_lines, title)))
     html = html.replace("__STEPS__", json.dumps(step_payload, ensure_ascii=False))
     html = html.replace("__SOURCE_LINES__", json.dumps(source_lines, ensure_ascii=False))
     html = html.replace("__LAYOUT__", json.dumps(normalized_layout))

@@ -88,13 +88,12 @@ npm-debug.log
 yarn-error.log
 
 #SKILL
-AGENTS.md
-docs/
+# AGENTS.md
+# docs/
 
 #demo
 demo/
 
 .scratch/
 
-CONTEXT.md
-DESIGN.md
+# *.md

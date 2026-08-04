@@ -2,6 +2,8 @@ import random
 import dsvis
 #dsvis.disable_breakpoints()
 dsvis.set_mode("coarse")
+dsvis.set_layout("vertical")
+dsvis.set_text_flow("vertical")
 dsvis.auto()
 class BTreeNode:
 
@@ -11,7 +13,7 @@ class BTreeNode:
         self.children = []                              # 子节点
         self.keys = []                                  # 存储键
 
-        dsvis.bind_fields(self, keys=("A", 1), children=("A", 1))
+        #dsvis.bind_fields(self, keys=("A", 1), children=("A", 1))
 
 
 class BTree:

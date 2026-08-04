@@ -1,10 +1,16 @@
 """Graph builder — BFS traversal of runtime objects.
 
+Responsibilities
+---------------
+- Row-append helpers: construct field rows and ref rows with canonical
+  ``TypeName::fieldName`` keys (``_make_field_key``).
+- Bind-group resolution: ``_resolve_object_fields()`` owns the animation
+  policy that interleaves bound container fields.
+- Traversal: ``walk_graph()`` scans the root scope, processes pointer
+  watchers, and runs a BFS loop that delegates field resolution per object.
+
 The main entry point is ``walk_graph()`` which takes a root scope dict and
 returns ``(nodes, edges)`` ready for the card renderer.
-
-Bind-group animation logic lives in ``_resolve_object_fields()``,
-called as a post-processing step for each object visited during BFS.
 """
 
 from collections import deque
@@ -28,10 +34,32 @@ from .field_binding import get_bound_specs, get_instance_bound_specs
 # Row-append helpers (used during field resolution)
 # ---------------------------------------------------------------------------
 
+def _owner_field_prefix(owner):
+    """Stable field-key prefix used by UI presets and user settings.
+
+    Prefer the bare class name over the fully qualified runtime type because
+    scripts may run as ``__main__`` during visualization but as an imported
+    module during tests.
+    """
+    return owner.get('class_name') or owner.get('type', '')
+
+
+def _make_field_key(owner, item_name):
+    """Canonical ``TypeName::fieldName`` key shared across backend and frontend.
+
+    This is the single backend path for constructing field keys.  Both
+    ``card_renderer.py`` and ``template.html`` consume this format without
+    re-normalising the prefix.
+    """
+    return f"{_owner_field_prefix(owner)}::{item_name}"
+
+
 def _append_field(owner, item_name, item_val, *, bind_group=None, bind_block=None):
     """Append a plain (non-ref) row."""
+    field_key = _make_field_key(owner, item_name)
     row = {"name": item_name, "kind": "field",
-           "text": f"{item_name} = {short(item_val)}"}
+           "text": f"{item_name} = {short(item_val)}",
+           "field_key": field_key}
     if bind_group is not None:
         row["bind_group"] = bind_group
     if bind_block is not None:
@@ -46,14 +74,15 @@ def _append_ref_or_field(item_name, item_val, owner, obj_id, nodes, edges,
     if is_class_object(item_val):
         cid = _add_obj(item_val, format_typed_label(item_name, item_val))
         if cid:
-            row = {"name": item_name, "kind": "ref", "text": item_name}
+            field_key = _make_field_key(owner, item_name)
+            row = {"name": item_name, "kind": "ref", "text": item_name, "field_key": field_key}
             if bind_group is not None:
                 row["bind_group"] = bind_group
             if bind_block is not None:
                 row["bind_block"] = bind_block
             owner["rows"].append(row)
-            owner["refs"].append({"name": item_name})
-            edges.append({"src": obj_id, "dst": cid, "label": item_name})
+            owner["refs"].append({"name": item_name, "field_key": field_key})
+            edges.append({"src": obj_id, "dst": cid, "label": item_name, "field_key": field_key})
         else:
             _append_field(owner, item_name, item_val,
                           bind_group=bind_group, bind_block=bind_block)
@@ -135,9 +164,16 @@ def _resolve_object_fields(owner, obj, item_map, obj_id,
             _append_field(owner, attr, val)
         elif isinstance(val, (list, tuple, set, frozenset, dict, deque)):
             items = list(iter_container_items(attr, val))
+            # If ALL items are class objects this is a pure pointer array
+            # (e.g. ``children = [Node1, Node2]``).  Skip the aggregate row
+            # that would dump the entire list as text — each item already gets
+            # its own ref row below.
+            # Otherwise keep the aggregate row (e.g. BTree ``keys = [4, 8, 12]``
+            # where the items are primitives and the text matters).
+            all_refs = items and all(is_class_object(iv) for _, iv in items)
+            if not all_refs:
+                _append_field(owner, attr, val)
             if not items:
-                owner["rows"].append({"name": attr, "kind": "field",
-                                      "text": f"{attr} = {type(val).__name__}()"})
                 continue
             for item_name, item_val in items:
                 _append_ref_or_field(item_name, item_val, owner, obj_id,
@@ -179,7 +215,7 @@ def walk_graph(
             "id": node_id,
             "label": f"{pointer_name} -> {container_name}",
             "type": "Pointer",
-            "rows": [{"name": "value", "kind": "field", "text": text}],
+            "rows": [{"name": "value", "kind": "field", "text": text, "field_key": f"Pointer::value"}],
             "refs": [],
             "class_name": "Pointer",
             "is_class_object": False,
@@ -189,6 +225,7 @@ def walk_graph(
                 "name": "index",
                 "kind": "field",
                 "text": f"index = {short(pointer_value)}",
+                "field_key": f"Pointer::index",
             })
         nodes.append(n)
 
@@ -214,7 +251,7 @@ def walk_graph(
             "is_class_object": is_class_object(obj),
         }
         if value_text is not None:
-            n["rows"].append({"name": "value", "kind": "field", "text": value_text})
+            n["rows"].append({"name": "value", "kind": "field", "text": value_text, "field_key": f"{n.get('class_name') or n.get('type', '')}::value"})
         nodes.append(n)
         node_index[obj_id] = n
 
@@ -224,6 +261,7 @@ def walk_graph(
                 "name": "summary",
                 "kind": "field",
                 "text": f"size = {len(items)}",
+                "field_key": f"{n.get('class_name') or n.get('type', '')}::summary",
             })
             for item_name, item_val in items[:12]:
                 if is_primitive(item_val):
@@ -231,17 +269,20 @@ def walk_graph(
                         "name": item_name,
                         "kind": "field",
                         "text": f"{item_name} = {short(item_val)}",
+                        "field_key": f"{n.get('class_name') or n.get('type', '')}::{item_name}",
                     })
                 elif is_class_object(item_val):
                     cid = _add_obj(item_val, format_typed_label(item_name, item_val))
                     if cid:
+                        field_key = f"{n.get('class_name') or n.get('type', '')}::{item_name}"
                         n["rows"].append({
                             "name": item_name,
                             "kind": "ref",
                             "text": item_name,
+                            "field_key": field_key,
                         })
-                        n["refs"].append({"name": item_name})
-                        edges.append({"src": obj_id, "dst": cid, "label": item_name})
+                        n["refs"].append({"name": item_name, "field_key": field_key})
+                        edges.append({"src": obj_id, "dst": cid, "label": item_name, "field_key": field_key})
         q.append(obj)
         return obj_id
 
@@ -280,7 +321,7 @@ def walk_graph(
         except Exception:
             _add_pointer_node(pointer_name, container_name, pointer_value, "status = out_of_range_or_invalid")
 
-    # ---------- BFS ----------
+    # ---------- BFS (field resolution delegated to _resolve_object_fields) ----------
     while q:
         obj = q.popleft()
         obj_id = id(obj)
