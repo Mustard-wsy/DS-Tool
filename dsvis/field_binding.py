@@ -2,6 +2,9 @@
 
 Users call ``bind_fields(obj, keys=("A", 3), children=("A", 1))`` to
 declare that certain container fields should be animated together.
+
+This module is a compatibility layer consumed exclusively by
+``graph_builder._resolve_object_fields()``.
 """
 
 import weakref

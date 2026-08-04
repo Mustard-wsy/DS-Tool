@@ -1,5 +1,8 @@
 import random
 import dsvis
+dsvis.set_mode("coarse")
+dsvis.set_layout("vertical")
+dsvis.set_text_flow("vertical")
 dsvis.auto()
 random.seed(42)
 
@@ -31,18 +34,24 @@ class BPlusTree:
         new = BPlusNode(node.leaf)
 
         mid = t - 1
-        parent.keys.insert(i, node.keys[mid])
         parent.children.insert(i + 1, new)
 
-        new.keys = node.keys[mid+1:]
-        node.keys = node.keys[:mid]
-
         if node.leaf:
+            # B+ 树的分隔 key 必须仍保留在叶子层；父节点只保存
+            # 右侧叶子的最小 key 作为索引。旧实现把 mid key 从叶子
+            # 中移除，导致 find(mid_key) 走到右子树后找不到该 key。
+            new.keys = node.keys[mid:]
+            node.keys = node.keys[:mid]
+            parent.keys.insert(i, new.keys[0])
             new.next = node.next
             node.next = new
         else:
-            new.children = node.children[mid+1:]
-            node.children = node.children[:mid+1]
+            promoted = node.keys[mid]
+            new.keys = node.keys[mid + 1:]
+            node.keys = node.keys[:mid]
+            new.children = node.children[mid + 1:]
+            node.children = node.children[:mid + 1]
+            parent.keys.insert(i, promoted)
 
     def insert(self, key):
         root = self.root
