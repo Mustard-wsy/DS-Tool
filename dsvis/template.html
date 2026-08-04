@@ -2421,11 +2421,17 @@ function parseVerticalField(rowText, isRef) {
 }
 
 function adaptNodesForTextFlow(graphData) {
-  if (VIS_CONFIG.textFlow !== 'vertical') return graphData;
+  // Run whenever any node uses vertical text flow (from backend or global setting).
   const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  const hasVertical = VIS_CONFIG.textFlow === 'vertical' ||
+    nodes.some(n => (n.style || {}).textFlow === 'vertical');
+  if (!hasVertical) return graphData;
   for (const n of nodes) {
     n.style = n.style || {};
     const st = n.style;
+    // Use effective text flow: node override takes priority, else global setting
+    const effectiveFlow = st.textFlow || VIS_CONFIG.textFlow;
+    if (effectiveFlow !== 'vertical') continue;
     st.textFlow = 'vertical';
     const rows = Array.isArray(st.rows) ? st.rows : [];
     const refRowSet = new Set(Array.isArray(st.refRowIndices) ? st.refRowIndices : []);
@@ -3148,11 +3154,11 @@ function isFieldVisible(key) {
   if (!key) return true;
   const state = NODE_TYPE_VISIBILITY.get(key);
   if (state === 'self' || state === 'cascade' || state === false) return false;
-  // Check base key — both self and cascade hide children
+  // Check base key — only cascade hides children (self means only the parent)  
   const baseMatch = key.match(/^(.+?)\[.*\]$/);
   if (baseMatch) {
     const baseState = NODE_TYPE_VISIBILITY.get(baseMatch[1]);
-    if (baseState === 'self' || baseState === 'cascade' || baseState === false) return false;
+    if (baseState === 'cascade' || baseState === false) return false;
   }
   return true;
 }

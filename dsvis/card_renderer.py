@@ -109,9 +109,12 @@ class NodeStyle:
             "refLabelMap": self.ref_label_map,
             "sectionGap": self.section_gap,
             "ports": self.ports,
-            "textFlow": self.text_flow,
             "className": self.subtitle if self.show_subtitle and self.subtitle else "",
         }
+        # Only emit textFlow when it differs from the default (horizontal).
+        # This lets the frontend's VIS_CONFIG switch between layouts.
+        if self.text_flow != "horizontal":
+            d["textFlow"] = self.text_flow
         if self.port_layout is not None:
             d["portLayout"] = {
                 "direction": self.port_layout.direction,
