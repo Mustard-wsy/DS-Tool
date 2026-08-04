@@ -1,6 +1,9 @@
 import dsvis
 
 dsvis.set_mode("coarse")
+# 示例：预设隐藏某些字段（生成 HTML 时这些字段默认不可见）
+# dsvis.hide_field("AVLNode.height")
+# dsvis.hide_field("AVLNode.left")
 dsvis.auto()
 
 

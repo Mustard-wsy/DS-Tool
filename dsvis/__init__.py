@@ -9,6 +9,8 @@ from .dsvis import (
     auto,
     watch_vars,
     bind_fields,
+    hide_field,
+    show_field,
     set_mode,
     set_layout,
     set_text_flow,

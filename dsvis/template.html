@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <title>__TITLE__</title>
-<script src="https://unpkg.com/@antv/g6@5.0.51/dist/g6.min.js"></script>
+<script>__G6_JS__</script>
 <script src="https://cdn.jsdelivr.net/npm/page-agent@1.12.2/dist/iife/page-agent.demo.js?autoInit=false&showPanel=false" crossorigin="anonymous" defer></script>
 <style>
 __STYLES__
@@ -85,6 +85,14 @@ __STYLES__
             <option value="vertical">纵向</option>
           </select>
         </div>
+        <div class="settings-row">
+          <span>行显示</span>
+          <select id="settingsRowDisplay">
+            <option value="both">字段名 = 值</option>
+            <option value="key">仅字段名</option>
+            <option value="value">仅值</option>
+          </select>
+        </div>
         <div class="settings-note">同名字段在所有同类节点中共享可见性。</div>
         <div class="agent-settings-group">
           <div class="settings-row">
@@ -159,6 +167,7 @@ let selectedFrameKey = null;
 const BREAKPOINTS = new Set();
 let BREAKPOINTS_ENABLED = __BREAKPOINTS_ENABLED__;
 const DSVIS_ALGO = __DSVIS_ALGO__;
+const INITIAL_VISIBILITY = __INITIAL_VISIBILITY__;
 const HIDDEN_NODES = new Map();  // Map<nodeId, label> — hidden nodes
 const HIDDEN_NODES_CASCADE = new Set();  // nodeIds whose descendants also cascade-hide
 let hiddenPanelVisible = false;
@@ -194,6 +203,20 @@ const STRUCTURE_TYPES = {
   'other':        { name: '其他',         layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
 };
 
+// ── G6 availability check ──
+if (typeof G6 === 'undefined') {
+  (function showG6Error() {
+    var g = document.getElementById('graph');
+    if (g) {
+      g.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#c00;font-size:14px;text-align:center;padding:20px;">'
+        + '<div><p style="font-size:48px;margin:0 0 12px;">&#9888;</p>'
+        + '<p><b>G6 图形库加载失败</b></p>'
+        + '<p style="font-size:12px;color:#666;">请检查网络连接，确保可以访问 CDN（unpkg.com 或 jsdelivr.net）</p>'
+        + '<p style="font-size:12px;color:#666;">如使用代理/VPN，请尝试切换节点后刷新页面</p></div></div>';
+    }
+  })();
+}
+
 // ── Persistence helpers ──
 function persistProxy() {
   try { localStorage.setItem(PROXY_STORAGE_KEY, JSON.stringify([...EDGE_PROXY])); } catch(_) {}
@@ -208,6 +231,15 @@ function persistVisibility() {
   try { localStorage.setItem(VISIBILITY_STORAGE_KEY, JSON.stringify([...NODE_TYPE_VISIBILITY])); } catch(_) {}
 }
 function loadVisibility() {
+  // 1. Apply Python-script initial visibility (base defaults)
+  if (INITIAL_VISIBILITY && typeof INITIAL_VISIBILITY === 'object') {
+    for (var _ik in INITIAL_VISIBILITY) {
+      if (Object.prototype.hasOwnProperty.call(INITIAL_VISIBILITY, _ik)) {
+        NODE_TYPE_VISIBILITY.set(_ik, INITIAL_VISIBILITY[_ik]);
+      }
+    }
+  }
+  // 2. Apply localStorage overrides (UI changes persist across reloads)
   try {
     const raw = localStorage.getItem(VISIBILITY_STORAGE_KEY);
     if (raw) { const arr = JSON.parse(raw); for (const [k, v] of arr) NODE_TYPE_VISIBILITY.set(k, v); }
@@ -227,6 +259,7 @@ function exportCurrentConfig() {
     layout: { rankdir: VIS_CONFIG.textFlow === 'vertical' ? 'TB' : 'LR' },
     showSubtitle: VIS_CONFIG.showSubtitle,
     uniformEdgesEnabled: VIS_CONFIG.uniformEdgesEnabled,
+    rowDisplayMode: VIS_CONFIG.rowDisplayMode,
   };
 }
 
@@ -241,6 +274,7 @@ function importConfig(jsonText) {
   if (cfg.layout && cfg.layout.rankdir) VIS_CONFIG.textFlow = cfg.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
   if (cfg.showSubtitle !== undefined) VIS_CONFIG.showSubtitle = cfg.showSubtitle;
   if (cfg.uniformEdgesEnabled !== undefined) VIS_CONFIG.uniformEdgesEnabled = cfg.uniformEdgesEnabled;
+  if (cfg.rowDisplayMode) VIS_CONFIG.rowDisplayMode = cfg.rowDisplayMode;
   if (cfg.structureType) VIS_CONFIG.structureType = cfg.structureType;
   if (cfg.layerEdgeKeys) VIS_CONFIG.layerEdgeKeys = { ...cfg.layerEdgeKeys };
   LAYER_EDGES.clear();
@@ -300,7 +334,8 @@ const DEFAULT_VIS_CONFIG = {
   showSubtitle: true,
   structureType: 'other',
   layerEdgeKeys: {},
-  uniformEdgesEnabled: true,   // distribute orphaned edges evenly (tree types only)
+  uniformEdgesEnabled: true,
+  rowDisplayMode: 'both',  // 'both' | 'key' | 'value' — control what part of each field row is shown
 };
 const DEFAULT_PAGE_AGENT_CONFIG = {
   enabled: false,
@@ -1566,6 +1601,7 @@ function getGraphSize() {
 }
 
 function initGraph(data) {
+  if (typeof G6 === 'undefined') return;  // CDN not loaded — error already shown
   const { register, BaseNode } = G6;
 
   class CardNode extends BaseNode {
@@ -1743,16 +1779,24 @@ function initGraph(data) {
         this.__prevVBindRunCount = vruns.length;
 
         // Field columns
+        const rowMode = st.rowDisplayMode || VIS_CONFIG.rowDisplayMode || 'both';
+        const showKey = rowMode !== 'value';
+        const showVal = rowMode !== 'key';
+        const visibleRows = (showKey ? 1 : 0) + (showVal ? 1 : 0);
+
         for (let i = 0; i < numFields; i++) {
           const colX = gridLeft + titleColW + i * fieldColW;
           const isRef = gridRefs.includes(i);
 
-          // Vertical divider
-          this.upsert(`vdiv-${i}`, 'line', {
-            x1: colX, y1: gridTop,
-            x2: colX, y2: gridTop + 2 * gridRowH,
-            stroke: nodeStroke, lineWidth: 0.5, zIndex: 0
-          }, container);
+          // Vertical divider — skip the leftmost one when title column is hidden
+          // (otherwise it creates a visual line just inside the card's rounded border)
+          if (i !== 0 || titleColW !== 0) {
+            this.upsert(`vdiv-${i}`, 'line', {
+              x1: colX, y1: gridTop,
+              x2: colX, y2: gridTop + visibleRows * gridRowH,
+              stroke: nodeStroke, lineWidth: 0.5, zIndex: 0
+            }, container);
+          }
 
           const rowDeltaType = rowDeltaTypes[i] || null;
           const rowColor = rowDeltaType === 'added'
@@ -1761,28 +1805,45 @@ function initGraph(data) {
               ? DELTA_COLORS.changed.line
               : (isRef ? '#c97200' : '#333');
 
-          this.upsert(`vh-bg-${i}`, 'rect', {
-            x: colX, y: gridTop, width: fieldColW, height: gridRowH,
-            fill: 'transparent', stroke: 'none', zIndex: -1
-          }, container);
-          this.upsert(`vh-${i}`, 'text', {
-            x: colX + 3, y: gridTop + gridRowH / 2,
-            text: String(gridNames[i] || ''),
-            fontSize: 11, fill: rowColor,
-            fontWeight: (isRef || rowDeltaType) ? 600 : 400,
-            textBaseline: 'middle'
-          }, container);
+          let rowY = gridTop;
+          if (showKey) {
+            this.upsert(`vh-bg-${i}`, 'rect', {
+              x: colX, y: rowY, width: fieldColW, height: gridRowH,
+              fill: 'transparent', stroke: 'none', zIndex: -1
+            }, container);
+            this.upsert(`vh-${i}`, 'text', {
+              x: colX + 3, y: rowY + gridRowH / 2,
+              text: String(gridNames[i] || ''),
+              fontSize: 11, fill: rowColor,
+              fontWeight: (isRef || rowDeltaType) ? 600 : 400,
+              textBaseline: 'middle'
+            }, container);
+            rowY += gridRowH;
+          } else {
+            this.upsert(`vh-bg-${i}`, 'rect', {
+              x: -w/2, y: -h/2, width: 0, height: 0,
+              fill: 'transparent', stroke: 'transparent', zIndex: -99
+            }, container);
+            this.upsert(`vh-${i}`, 'text', {
+              x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+            }, container);
+          }
 
           // Data row cell
-          const dataY = gridTop + gridRowH;
-          const valText = isRef ? '' : String(gridValues[i] || '');
-          this.upsert(`vd-${i}`, 'text', {
-            x: colX + 3, y: dataY + gridRowH / 2,
-            text: valText,
-            fontSize: 11, fill: rowColor,
-            fontWeight: rowDeltaType ? 600 : 400,
-            textBaseline: 'middle'
-          }, container);
+          if (showVal) {
+            const valText = isRef ? '' : String(gridValues[i] || '');
+            this.upsert(`vd-${i}`, 'text', {
+              x: colX + 3, y: rowY + gridRowH / 2,
+              text: valText,
+              fontSize: 11, fill: rowColor,
+              fontWeight: rowDeltaType ? 600 : 400,
+              textBaseline: 'middle'
+            }, container);
+          } else {
+            this.upsert(`vd-${i}`, 'text', {
+              x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+            }, container);
+          }
         }
 
         // Cleanup old elements
@@ -1901,6 +1962,10 @@ function initGraph(data) {
         }
         this.__prevBindRunCount = runs.length;
 
+        // Compute horizontal row display mode
+        const hRowMode = (attributes.rowDisplayMode || VIS_CONFIG.rowDisplayMode || 'both');
+        const refRowSet = new Set(Array.isArray(attributes.refRowIndices) ? attributes.refRowIndices : []);
+
         rows.forEach((row, i) => {
           const bindGroup = rowBindGroups[i];
           const inRun = coveredByRun.has(i);
@@ -1918,8 +1983,20 @@ function initGraph(data) {
             : rowDeltaType === 'changed'
               ? DELTA_COLORS.changed.line
               : '#333';
+          // Apply rowDisplayMode to horizontal text
+          let displayText = row;
+          if (hRowMode !== 'both') {
+            const isRefRow = refRowSet.has(i);
+            if (isRefRow) {
+              displayText = (hRowMode === 'value') ? '' : row;  // refs have no value part
+            } else {
+              const eqIdx = row.indexOf(' = ');
+              if (hRowMode === 'key') displayText = eqIdx >= 0 ? row.substring(0, eqIdx) : row;
+              else if (hRowMode === 'value') displayText = eqIdx >= 0 ? row.substring(eqIdx + 3) : row;
+            }
+          }
           this.upsert(`r-${i}`, 'text', {
-            x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: row,
+            x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: displayText,
             fontSize:11, fill: rowColor, fontWeight: rowDeltaType ? 600 : 400, textBaseline:'top', zIndex: 2
           }, container);
         });
@@ -2452,9 +2529,14 @@ function adaptNodesForTextFlow(graphData) {
     const colW = Math.max(50, Math.min(130, Math.ceil(Math.max(1, ...parsed.map((x) => Math.max(String(x.name).length, String(x.value).length))) * 6 + 12)));
     const numFields = Math.max(1, parsed.length);
     const padX = 10, padY = 8, rowH = 20;
+    const effRowMode = st.rowDisplayMode || VIS_CONFIG.rowDisplayMode || 'both';
+    const effShowKey = effRowMode !== 'value';
+    const effShowVal = effRowMode !== 'key';
+    const visibleRows = (effShowKey ? 1 : 0) + (effShowVal ? 1 : 0);
+    st.rowDisplayMode = effRowMode;
     st.titleColW = titleW;
     st.fieldColW = colW;
-    st.size = [Math.max(120, padX * 2 + titleW + numFields * colW), padY * 2 + rowH * 2];
+    st.size = [Math.max(120, padX * 2 + titleW + numFields * colW), padY * 2 + rowH * visibleRows];
 
     // Ports: when title is hidden, entry ports go to the first field column centre
     const w = Number(st.size?.[0]) || 120;
@@ -2911,6 +2993,14 @@ function filterHiddenNodes(graphData) {
   const filteredEdges = edges
     .filter((e) => visibleIds.has(String(e.source)) && visibleIds.has(String(e.target)));
   return { ...(graphData || {}), nodes, edges: filteredEdges };
+}
+
+// ---- row display-mode helper ----
+function rowDisplayVisible(mode) {
+  // Return { showKey: boolean, showVal: boolean }
+  if (mode === 'key')   return { showKey: true,  showVal: false };
+  if (mode === 'value') return { showKey: false, showVal: true  };
+  return { showKey: true, showVal: true }; // 'both'
 }
 
 const NODE_VISUAL_LAYOUT = {
@@ -4009,6 +4099,8 @@ function toggleSettingsPanel() {
 function syncSettingsPanel() {
   const sel = document.getElementById('settingsTextFlow');
   if (sel) sel.value = VIS_CONFIG.textFlow;
+  const rowDisp = document.getElementById('settingsRowDisplay');
+  if (rowDisp) rowDisp.value = VIS_CONFIG.rowDisplayMode;
   const pageAgentConfig = loadPageAgentConfig();
   const agentEnabled = document.getElementById('pageAgentEnabled');
   const agentBaseURL = document.getElementById('pageAgentBaseURL');
@@ -4096,6 +4188,7 @@ function syncSettingsPanel() {
       VIS_CONFIG.structureType = 'other';
       VIS_CONFIG.layerEdgeKeys = {};
       VIS_CONFIG.uniformEdgesEnabled = true;
+      VIS_CONFIG.rowDisplayMode = 'both';
       saveVisConfig(VIS_CONFIG);
       persistProxy(); persistVisibility();
       try { localStorage.removeItem('dsvis:layerEdges'); } catch(_) {}
@@ -4398,6 +4491,8 @@ function syncSettingsPanel() {
 function applySettings() {
   const sel = document.getElementById('settingsTextFlow');
   if (sel) VIS_CONFIG.textFlow = sel.value;
+  const rowDisp = document.getElementById('settingsRowDisplay');
+  if (rowDisp) VIS_CONFIG.rowDisplayMode = rowDisp.value;
 
   const agentEnabled = document.getElementById('pageAgentEnabled');
   const agentBaseURL = document.getElementById('pageAgentBaseURL');

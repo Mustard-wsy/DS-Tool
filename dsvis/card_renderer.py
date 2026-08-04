@@ -566,7 +566,7 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
     navigation.
     """
     from .dsvis import _normalize_layout  # deferred — avoids circular import
-    from .runtime.config import breakpoints_enabled, get_text_flow
+    from .runtime.config import breakpoints_enabled, get_text_flow, get_field_visibility
 
     # breakpoints state is a pure presentation hint for the frontend —
     # the scheduler already decided recording policy before reaching here.
@@ -586,19 +586,23 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
 
     template_path = Path(__file__).parent / "template.html"
     styles_path = Path(__file__).parent / "styles.css"
+    g6_path = Path(__file__).parent / "g6.min.js"
     html = template_path.read_text(encoding="utf-8")
     styles = styles_path.read_text(encoding="utf-8")
+    g6_js = g6_path.read_text(encoding="utf-8") if g6_path.exists() else ""
     codicon_styles = _load_codicon_styles()
     if codicon_styles:
         styles = f"{codicon_styles}\n{styles}"
     html = html.replace("__TITLE__", title)
     html = html.replace("__STYLES__", styles)
+    html = html.replace("__G6_JS__", g6_js)
     html = html.replace("__DSVIS_ALGO__", json.dumps(_derive_algorithm_name(source_lines, title)))
     html = html.replace("__STEPS__", json.dumps(step_payload, ensure_ascii=False))
     html = html.replace("__SOURCE_LINES__", json.dumps(source_lines, ensure_ascii=False))
     html = html.replace("__LAYOUT__", json.dumps(normalized_layout))
     html = html.replace("__BREAKPOINTS_ENABLED__", json.dumps(breakpoints_enabled()))
     html = html.replace("__DISPLAY_INDICES__", json.dumps(display_indices))
+    html = html.replace("__INITIAL_VISIBILITY__", json.dumps(get_field_visibility(), ensure_ascii=False))
 
     fd, path = tempfile.mkstemp(suffix=".html")
     html_path = Path(path)
