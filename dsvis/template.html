@@ -1701,25 +1701,39 @@ function initGraph(data) {
         const gridRowH = 20;
         const gridTop = -h/2 + paddingY;
         const gridLeft = -w/2 + paddingX;
+        const rowMode = attributes.rowDisplayMode || VIS_CONFIG.rowDisplayMode || 'both';
+        const showKey = rowMode !== 'value';
+        const showVal = rowMode !== 'key';
+        const visibleRows = (showKey ? 1 : 0) + (showVal ? 1 : 0);
 
         // Grid separator lines
         const nodeStroke = attributes.stroke || DELTA_COLORS.unchanged.stroke;
-        // Horizontal divider between header and data rows (skip title col because it spans 2 rows)
-        this.upsert('grid-hdiv', 'line', {
-          x1: gridLeft + titleColW, y1: gridTop + gridRowH,
-          x2: gridLeft + titleColW + numFields * fieldColW, y2: gridTop + gridRowH,
-          stroke: nodeStroke, lineWidth: 0.5, zIndex: 0
-        }, container);
+        const gridBodyH = Math.max(1, visibleRows) * gridRowH;
+        if (visibleRows > 1) {
+          this.upsert('grid-hdiv', 'line', {
+            x1: gridLeft + titleColW, y1: gridTop + gridRowH,
+            x2: gridLeft + titleColW + numFields * fieldColW, y2: gridTop + gridRowH,
+            stroke: nodeStroke, lineWidth: 0.5, zIndex: 0
+          }, container);
+        } else {
+          this.upsert('grid-hdiv', 'line', {
+            x1: -w/2, y1: -h/2, x2: -w/2, y2: -h/2,
+            stroke: 'transparent', lineWidth: 0, zIndex: -99
+          }, container);
+        }
 
-        // Title cell (spans 2 rows)
+        // Title cell (spans the visible body rows)
         this.upsert('vtitle-bg', 'rect', {
-          x: gridLeft, y: gridTop, width: titleColW, height: 2 * gridRowH,
+          x: gridLeft, y: gridTop, width: titleColW, height: gridBodyH,
           fill: attributes.fill || DELTA_COLORS.unchanged.fill, stroke: 'none', radius: 0, zIndex: -1
         }, container);
         const titleLines = String(name).split('\n');
+        const titleLineGap = 12;
+        const titleBlockH = Math.max(titleLines.length, 1) * titleLineGap;
+        const titleStartY = gridTop + gridBodyH / 2 - titleBlockH / 2 + titleLineGap / 2;
         titleLines.forEach((line, ti) => {
           this.upsert(`vtitle-${ti}`, 'text', {
-            x: gridLeft + 4, y: gridTop + gridRowH - 2 - (titleLines.length - 1 - ti) * 12,
+            x: gridLeft + 4, y: titleStartY + ti * titleLineGap,
             text: line, fontSize: 12, fill: '#0f2c63', fontWeight: 700,
             textBaseline: 'middle'
           }, container);
@@ -1727,7 +1741,7 @@ function initGraph(data) {
         const prevVTitleLineCount = this.__prevVTitleLineCount || 0;
         for (let ti = titleLines.length; ti < prevVTitleLineCount; ti++) {
           this.upsert(`vtitle-${ti}`, 'text', {
-            x: gridLeft + 4, y: gridTop + gridRowH / 2,
+            x: gridLeft + 4, y: titleStartY,
             text: '', fontSize: 12, fill: 'transparent', textBaseline: 'middle'
           }, container);
         }
@@ -1765,7 +1779,7 @@ function initGraph(data) {
           const x = gridLeft + titleColW + run.start * fieldColW + 1;
           const width = Math.max((run.end - run.start + 1) * fieldColW - 2, 2);
           this.upsert(`vbind-block-${ri}`, 'rect', {
-            x, y: gridTop + 1, width, height: Math.max(2 * gridRowH - 2, 2), radius: 3,
+            x, y: gridTop + 1, width, height: Math.max(gridBodyH - 2, 2), radius: 3,
             fill: 'transparent', stroke: nodeStroke, lineWidth: vBindLineWidth, zIndex: 0
           }, container);
         });
@@ -1779,11 +1793,6 @@ function initGraph(data) {
         this.__prevVBindRunCount = vruns.length;
 
         // Field columns
-        const rowMode = attributes.rowDisplayMode || VIS_CONFIG.rowDisplayMode || 'both';
-        const showKey = rowMode !== 'value';
-        const showVal = rowMode !== 'key';
-        const visibleRows = (showKey ? 1 : 0) + (showVal ? 1 : 0);
-
         for (let i = 0; i < numFields; i++) {
           const colX = gridLeft + titleColW + i * fieldColW;
           const isRef = gridRefs.includes(i);
