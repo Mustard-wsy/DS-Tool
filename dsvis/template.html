@@ -1630,14 +1630,6 @@ function initGraph(data) {
         lineWidth: attributes.lineWidth || 1,
         zIndex: -1
       }, container);
-      // [DEBUG-vflow] — log keyShape bbox
-      if (textFlow === 'vertical' && !this.__vkeyShown) {
-        this.__vkeyShown = true;
-        console.log('[DEBUG-vflow] keyShape bbox',
-          'x:', -w/2, 'y:', -h/2, 'w:', w, 'h:', h,
-          'cardW:', w, 'cardH:', h,
-          'textFlow:', textFlow, 'name:', String(name).substring(0,30));
-      }
       const prevHeaderLineCount = this.__prevHeaderLineCount || 0;
       const subtitleText = attributes.subtitle || '';
       if (textFlow !== 'vertical') {
@@ -2034,11 +2026,6 @@ function initGraph(data) {
         }
       }
       this.__prevRowCount = rows.length;
-      // [DEBUG-vflow] — confirm function returns
-      if (textFlow === 'vertical' && !this.__vretShown) {
-        this.__vretShown = true;
-        console.log('[DEBUG-vflow] drawKeyShape returning key:', typeof key, 'isNull:', key === null);
-      }
       return key;
     }
   }
@@ -2202,7 +2189,12 @@ function updateEdgePorts(focusNodeId = null) {
     relatedNodeIds.add(e.target);
   }
   if (edgeUpdates.length > 0) {
-    graph.updateEdgeData(edgeUpdates);
+    try {
+      graph.updateEdgeData(edgeUpdates);
+    } catch (_e) {
+      // Edge was removed by a step transition before the port update ran —
+      // "Edge not found for id: …" is benign here, nothing to update.
+    }
   }
 
   const nodeIdsToRefresh = focusNodeId
@@ -2227,7 +2219,12 @@ function updateEdgePorts(focusNodeId = null) {
     });
   }
   if (nodeUpdates.length > 0) {
-    graph.updateNodeData(nodeUpdates);
+    try {
+      graph.updateNodeData(nodeUpdates);
+    } catch (_e) {
+      // Node was removed by a step transition before the port update ran —
+      // "Node not found for id: …" is benign here, nothing to update.
+    }
   }
   if (edgeUpdates.length > 0 || nodeUpdates.length > 0 || !focusNodeId) {
     graph.draw();
@@ -2521,6 +2518,9 @@ function adaptNodesForTextFlow(graphData) {
     st.textFlow = 'vertical';
     const rows = Array.isArray(st.rows) ? st.rows : [];
     const refRowSet = new Set(Array.isArray(st.refRowIndices) ? st.refRowIndices : []);
+    // Note: ref fields keep their column in every row mode. Dropping them in
+    // value-only mode was tried (2026-08-06) but it removed the ref ports /
+    // blue pointer dots and made left/right edges share one anchor — reverted.
     const parsed = rows.map((r, i) => parseVerticalField(r, refRowSet.has(i)));
     st.gridNames = parsed.map((x) => x.name);
     st.gridValues = parsed.map((x) => x.value);
