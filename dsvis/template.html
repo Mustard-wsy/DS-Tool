@@ -2547,12 +2547,13 @@ function adaptNodesForTextFlow(graphData) {
     st.fieldColW = colW;
     st.size = [Math.max(120, padX * 2 + titleW + numFields * colW), padY * 2 + rowH * visibleRows];
 
-    // Ports: when title is hidden, entry ports go to the first field column centre
+    // Ports: when the title is hidden, the incoming edge attaches at the whole
+    // node's horizontal centre instead of the (now-collapsed) title column.
     const w = Number(st.size?.[0]) || 120;
     const h = Number(st.size?.[1]) || 56;
     const entryCenterX = titleVisible
       ? (padX + titleW / 2) / Math.max(w, 1)
-      : (padX + colW / 2) / Math.max(w, 1);
+      : 0.5;
     const topEdgeY = 0;
     const bottomEdgeY = 1;
 

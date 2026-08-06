@@ -89,6 +89,20 @@ if self.title_col_w:
 "Node/Edge not found for id"。这些是过渡期的良性错误，已用
 `try/catch` 包裹 `updateNodeData` / `updateEdgeData` 静默处理。
 
+## 行为变更（2026-08-06）：标题隐藏时入边端口移到节点中心
+
+标题列折叠后，入边端口 `inT`/`inB` 不再停在首字段列中心，而是移到
+**整个节点的水平中心（x=0.5）**，使入边视觉上指向节点整体而非
+已消失的标题列。改动位于 `adaptNodesForTextFlow()` 的 `entryCenterX`：
+
+```js
+const entryCenterX = titleVisible
+  ? (padX + titleW / 2) / Math.max(w, 1)  // 标题可见 → 标题列中心
+  : 0.5;                                   // 标题隐藏 → 节点中心
+```
+
+ref 端口（`pt<row>` / `pb<row>`）仍锚定各自字段列中心，不受影响。
+
 ## 相关实现
 
 - `dsvis/card_renderer.py`：`build_g6_data()` 尊重初始可见性并保留 `titleColW = 0`
