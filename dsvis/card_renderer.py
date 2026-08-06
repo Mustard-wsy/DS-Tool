@@ -124,7 +124,7 @@ class NodeStyle:
         if self.show_subtitle and self.subtitle:
             d["showSubtitle"] = True
             d["subtitle"] = self.subtitle
-        if self.title_col_w:
+        if self.title_col_w is not None:
             d["titleColW"] = self.title_col_w
             d["fieldColW"] = self.field_col_w
             d["gridNames"] = self.grid_names
@@ -357,10 +357,17 @@ def _layout_node(name, rows, subtitle_text, text_flow, text_cfg):
     return _layout_horizontal_node(name, rows, subtitle_text, text_cfg)
 
 
-def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
+def build_g6_data(nodes, edges, layout=None, text_flow="horizontal", field_visibility=None):
     """Convert internal graph representation to G6 card format.
 
     *text_flow* sets the default text flow for all cards ("horizontal" | "vertical").
+
+    *field_visibility* is the ``get_field_visibility()`` dict
+    (``"ClassName.fieldName" -> "visible"|"self"|"cascade"``).  When a node's
+    ``__title__`` pseudo-field is hidden, the vertical layout collapses the
+    title column by serializing ``titleColW: 0`` instead of the natural
+    header width — so the generated payload is self-consistent with the
+    initial visibility (the frontend also recomputes it defensively).
     """
     g6_data: dict = {"nodes": [], "edges": []}
 
@@ -370,6 +377,7 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
 
     is_vertical = rankdir == "TB"
     text_cfg = TextLayoutConfig()
+    field_visibility = field_visibility or {}
 
     id_to_name: dict[str, str] = {}
     class_count: dict[str, int] = {}
@@ -393,6 +401,18 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
          ref_row_indices, ref_label_map) = layout_result[:9]
         # Vertical grid extras (unpacked only when present)
         grid_extras = layout_result[9:] if len(layout_result) > 9 else ()
+
+        # Collapse the title column when the backend knows the title is hidden.
+        # This only affects vertical-grid nodes (horizontal cards carry no grid extras).
+        title_col_w = grid_extras[0] if len(grid_extras) > 0 else 0
+        title_hidden = field_visibility.get(f"{cls}.__title__") in ("self", "cascade")
+        if title_hidden and len(grid_extras) > 0:
+            title_col_w = 0
+            # Keep the card width self-consistent: drop the title column width.
+            field_col_w = grid_extras[1] if len(grid_extras) > 1 else 0
+            num_fields = max(len(grid_extras[2]) if len(grid_extras) > 2 else 0, 1)
+            card_w = max(text_cfg.min_card_w,
+                         text_cfg.padding_x * 2 + title_col_w + num_fields * field_col_w)
 
         # ── ports + port layout descriptor ──
         use_vertical_ports = is_vertical or (text_flow == "vertical")
@@ -424,7 +444,7 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
             show_subtitle=bool(subtitle_text),
             subtitle=subtitle_text,
             text_flow=text_flow,
-            title_col_w=grid_extras[0] if len(grid_extras) > 0 else 0,
+            title_col_w=title_col_w,
             field_col_w=grid_extras[1] if len(grid_extras) > 1 else 0,
             grid_names=grid_extras[2] if len(grid_extras) > 2 else [],
             grid_values=grid_extras[3] if len(grid_extras) > 3 else [],
@@ -581,7 +601,13 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
             "step": idx,
             "lineno": step.get("lineno"),
             "stack": step.get("stack", {"globals": [], "frames": []}),
-            "graph": build_g6_data(step.get("nodes", []), step.get("edges", []), normalized_layout, text_flow),
+            "graph": build_g6_data(
+                step.get("nodes", []),
+                step.get("edges", []),
+                normalized_layout,
+                text_flow,
+                field_visibility=get_field_visibility(),
+            ),
         })
 
     template_path = Path(__file__).parent / "template.html"
