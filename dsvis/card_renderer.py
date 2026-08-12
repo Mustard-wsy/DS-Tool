@@ -586,6 +586,7 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
     navigation.
     """
     from .dsvis import _normalize_layout  # deferred — avoids circular import
+    from .graph_viewer import build_graph_viewer_data
     from .runtime.config import breakpoints_enabled, get_text_flow, get_field_visibility
 
     # breakpoints state is a pure presentation hint for the frontend —
@@ -597,17 +598,21 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
     normalized_layout = _normalize_layout(layout)
     step_payload = []
     for idx, step in enumerate(steps, start=1):
+        step_nodes = step.get("nodes", [])
+        step_edges = step.get("edges", [])
         step_payload.append({
             "step": idx,
             "lineno": step.get("lineno"),
             "stack": step.get("stack", {"globals": [], "frames": []}),
             "graph": build_g6_data(
-                step.get("nodes", []),
-                step.get("edges", []),
+                step_nodes,
+                step_edges,
                 normalized_layout,
                 text_flow,
                 field_visibility=get_field_visibility(),
             ),
+            # Independent graph-displayer payload (structureType='graph').
+            "graphView": build_graph_viewer_data(step_nodes, step_edges),
         })
 
     template_path = Path(__file__).parent / "template.html"

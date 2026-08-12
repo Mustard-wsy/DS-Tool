@@ -336,6 +336,13 @@ const DEFAULT_VIS_CONFIG = {
   layerEdgeKeys: {},
   uniformEdgesEnabled: true,
   rowDisplayMode: 'both',  // 'both' | 'key' | 'value' — control what part of each field row is shown
+  // Independent graph-displayer settings (structureType === 'graph').
+  graphViewer: {
+    valueField: '',     // '' = auto (backend priority list)
+    edgeValueField: '', // '' = auto
+    direction: 'auto',  // 'auto' | 'directed' | 'undirected'
+    radius: 24,
+  },
 };
 const DEFAULT_PAGE_AGENT_CONFIG = {
   enabled: false,
@@ -356,6 +363,10 @@ function loadVisConfig() {
       if (key in parsed && typeof parsed[key] === typeof DEFAULT_VIS_CONFIG[key]) {
         merged[key] = parsed[key];
       }
+    }
+    // Deep-merge the graph-viewer object so individual fields fall back cleanly.
+    if (parsed.graphViewer && typeof parsed.graphViewer === 'object') {
+      merged.graphViewer = { ...DEFAULT_VIS_CONFIG.graphViewer, ...parsed.graphViewer };
     }
     return merged;
   } catch (_) {
@@ -480,6 +491,77 @@ function buildFieldSelect(fields, selectedValue) {
     sel.appendChild(o);
   }
   return sel;
+}
+
+/** Build the independent graph-viewer settings section (structureType='graph'). */
+function buildGraphViewerSettings(container) {
+  const gv = VIS_CONFIG.graphViewer || {};
+  const group = document.createElement('div');
+  group.className = 'node-type-group';
+  group.style.cssText = 'border-left:3px solid #7cd675;';
+  const header = document.createElement('div');
+  header.className = 'node-type-group-header';
+  const title = document.createElement('span');
+  title.className = 'node-type-group-title';
+  title.textContent = '图查看器';
+  header.appendChild(title);
+  group.appendChild(header);
+  const items = document.createElement('div');
+  items.className = 'node-type-items';
+  items.style.cssText = 'flex-direction:column;align-items:stretch;gap:6px;';
+
+  const ri = currentRaw != null ? currentRaw : toReal(current);
+  const curGv = STEPS[ri] && STEPS[ri].graphView;
+  const vertexFields = [], edgeFields = [], seenV = {}, seenE = {};
+  for (const n of (curGv && curGv.nodes) || []) {
+    for (const f of (n.fields || [])) { if (!seenV[f]) { seenV[f] = 1; vertexFields.push(f); } }
+  }
+  for (const e of (curGv && curGv.edges) || []) {
+    for (const f of (e.fields || [])) { if (!seenE[f]) { seenE[f] = 1; edgeFields.push(f); } }
+  }
+
+  const makeRow = (label, control) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;';
+    const lab = document.createElement('span');
+    lab.textContent = label;
+    lab.style.cssText = 'min-width:70px;';
+    row.appendChild(lab);
+    row.appendChild(control);
+    return row;
+  };
+  const onChange = (cb) => (evt) => { cb(evt.target.value); saveVisConfig(VIS_CONFIG); applyVisConfig(); };
+
+  const vfSel = buildFieldSelect(vertexFields, gv.valueField);
+  vfSel.addEventListener('change', onChange((v) => { VIS_CONFIG.graphViewer.valueField = v; }));
+  items.appendChild(makeRow('顶点值字段', vfSel));
+
+  const efSel = buildFieldSelect(edgeFields, gv.edgeValueField);
+  efSel.addEventListener('change', onChange((v) => { VIS_CONFIG.graphViewer.edgeValueField = v; }));
+  items.appendChild(makeRow('边值字段', efSel));
+
+  const dirSel = document.createElement('select');
+  dirSel.style.cssText = 'font-size:10px;min-width:80px;';
+  const dirOpts = [['auto', '自动检测'], ['directed', '强制有向'], ['undirected', '强制无向']];
+  for (const [v, label] of dirOpts) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = label;
+    if (v === gv.direction) o.selected = true;
+    dirSel.appendChild(o);
+  }
+  dirSel.addEventListener('change', onChange((v) => { VIS_CONFIG.graphViewer.direction = v; }));
+  items.appendChild(makeRow('方向', dirSel));
+
+  const radInput = document.createElement('input');
+  radInput.type = 'number';
+  radInput.min = '10'; radInput.max = '60'; radInput.step = '1';
+  radInput.value = gv.radius || 24;
+  radInput.style.cssText = 'font-size:10px;width:70px;';
+  radInput.addEventListener('change', onChange((v) => { VIS_CONFIG.graphViewer.radius = Math.max(10, Math.min(60, Number(v) || 24)); }));
+  items.appendChild(makeRow('节点半径', radInput));
+
+  group.appendChild(items);
+  container.appendChild(group);
 }
 
 /** Apply default layer-edge auto-detection and rebuild LAYER_EDGES */
@@ -1481,9 +1563,22 @@ function prepareGraphForLayout(graphData, viewport = null) {
   let layoutData = graphData;
   if (LAYER_EDGES.size > 0) {
     const allEdges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+    // A container field is stored with indexed ref labels ("children[0]",
+    // field_key "Type::children[0]") while the layer edge is the bare field
+    // name ("children").  Match both the exact name and any indexed variant so
+    // a B-tree/n-ary tree keeps its tree layout instead of falling back to grid.
+    const matchesLayerEdge = (label, fk) => {
+      if (LAYER_EDGES.has(label) || LAYER_EDGES.has(fk)) return true;
+      for (const le of LAYER_EDGES) {
+        if (label.startsWith(le + '[')) return true;
+        if (fk && (fk.includes('::' + le + '[') || fk.includes('.' + le + '['))) return true;
+      }
+      return false;
+    };
     const layerEdges = allEdges.filter(e => {
       const label = String(e?.data?.label || '').trim();
-      return LAYER_EDGES.has(label) || LAYER_EDGES.has(e?.data?.field_key || '');
+      const fk = String(e?.data?.field_key || '').trim();
+      return matchesLayerEdge(label, fk);
     });
     const layerNodeIds = new Set();
     for (const e of layerEdges) {
@@ -2122,6 +2217,246 @@ function initGraph(data) {
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════
+// Independent graph viewer (structureType === 'graph')
+// A minimal "graph displayer": circle nodes showing the vertex value, edges
+// with weight labels and direction. Deliberately decoupled from the card
+// pipeline (no ports, no field visibility, no dagre).
+// ════════════════════════════════════════════════════════════════════════
+let __dsvisGraphNodeRegistered = false;
+
+function registerGraphNodeType() {
+  if (__dsvisGraphNodeRegistered || typeof G6 === 'undefined') return;
+  const { register, BaseNode } = G6;
+  class GraphNodeShape extends BaseNode {
+    drawKeyShape(attributes, container) {
+      const r = Number(attributes.r) || 24;
+      const raw = attributes.value != null ? String(attributes.value) : '';
+      const text = raw.length > 8 ? raw.slice(0, 8) + '…' : raw;
+      const highlight = !!attributes.highlight;
+      const key = this.upsert('key', 'circle', {
+        x: 0, y: 0, r,
+        fill: highlight ? '#ffe8d0' : '#ffffff',
+        stroke: highlight ? '#ff6a00' : '#5b8ff9',
+        lineWidth: highlight ? 3 : 1.5,
+        zIndex: -1,
+      }, container);
+      this.upsert('value', 'text', {
+        x: 0, y: 0, text,
+        fontSize: r > 30 ? 12 : 10,
+        fill: '#333',
+        textAlign: 'center',
+        textBaseline: 'middle',
+      }, container);
+      return key;
+    }
+  }
+  register('node', 'graph-node', GraphNodeShape);
+  __dsvisGraphNodeRegistered = true;
+}
+
+function graphViewEdgeSig(e) {
+  // Collapsed undirected edges → order-independent key.
+  const a = String(e.source), b = String(e.target);
+  return a < b ? `${a}|${b}|${e.value}` : `${b}|${a}|${e.value}`;
+}
+
+function graphViewDiff(ri, gv) {
+  const nodes = new Set(), edges = new Set();
+  if (ri <= 0 || !STEPS[ri - 1]) return { nodes, edges };
+  const prev = STEPS[ri - 1].graphView || { nodes: [], edges: [] };
+  const prevNodeIds = new Set((prev.nodes || []).map((n) => String(n.id)));
+  const prevEdgeKeys = new Set((prev.edges || []).map(graphViewEdgeSig));
+  for (const n of gv.nodes || []) {
+    if (!prevNodeIds.has(String(n.id))) nodes.add(String(n.id));
+  }
+  for (const e of gv.edges || []) {
+    if (!prevEdgeKeys.has(graphViewEdgeSig(e))) edges.add(graphViewEdgeSig(e));
+  }
+  return { nodes, edges };
+}
+
+function graphViewerStripQuotes(s) {
+  const t = String(s).trim();
+  if (t.length >= 2 && t[0] === t[t.length - 1] && (t[0] === "'" || t[0] === '"')) return t.slice(1, -1);
+  return t;
+}
+
+function graphViewerFieldValue(cardNode, fieldName) {
+  if (!cardNode) return null;
+  const rows = Array.isArray(cardNode.style?.rows) ? cardNode.style.rows : [];
+  for (const r of rows) {
+    if (r.kind !== 'field') continue;
+    const m = /^([^=]+)=\s*(.*)$/.exec(String(r.text || ''));
+    const name = m ? m[1].trim() : String(r.name || '').trim();
+    if (name === fieldName) {
+      return m ? graphViewerStripQuotes(m[2]) : null;
+    }
+  }
+  return null;
+}
+
+function buildGraphViewerG6Data(gv, highlight, cardNodes) {
+  const cfg = VIS_CONFIG.graphViewer || {};
+  const cardById = new Map((cardNodes || []).map((n) => [String(n.id), n]));
+  const directed = cfg.direction === 'auto'
+    ? !gv.undirected
+    : cfg.direction === 'directed';
+  const highlightNodes = (highlight && highlight.nodes) || new Set();
+  const highlightEdges = (highlight && highlight.edges) || new Set();
+  const nodes = (gv.nodes || []).map((n) => {
+    let value = n.value;
+    if (cfg.valueField) {
+      const v = graphViewerFieldValue(cardById.get(String(n.id)), cfg.valueField);
+      if (v != null) value = v;
+    }
+    return {
+      id: String(n.id),
+      type: 'graph-node',
+      style: {
+        r: Number(cfg.radius) || 24,
+        value,
+        highlight: highlightNodes.has(String(n.id)),
+      },
+    };
+  });
+  const edges = (gv.edges || []).map((e, i) => {
+    let value = e.value;
+    if (cfg.edgeValueField && e.edgeId) {
+      const v = graphViewerFieldValue(cardById.get(String(e.edgeId)), cfg.edgeValueField);
+      if (v != null) value = v;
+    }
+    const sig = graphViewEdgeSig(e);
+    const active = highlightEdges.has(sig);
+    return {
+      id: `ge${i}`,
+      source: String(e.source),
+      target: String(e.target),
+      style: {
+        stroke: active ? '#ff6a00' : '#a0a0a0',
+        lineWidth: active ? 3 : 1.5,
+        endArrow: directed ? { fill: '#a0a0a0' } : false,
+        labelText: value != null && value !== '' ? String(value) : '',
+        labelFontSize: 11,
+        labelFill: '#666',
+        labelPlacement: 'center',
+        labelOffset: [0, -8],
+      },
+    };
+  });
+  return { nodes, edges };
+}
+
+function initGraphViewer(data) {
+  if (typeof G6 === 'undefined') return;
+  registerGraphNodeType();
+  const size = getGraphSize();
+  graph = new G6.Graph({
+    container: 'graph',
+    width: size.width,
+    height: size.height,
+    autoResize: true,
+    animation: { duration: 80, easing: 'linear' },
+    data,
+    layout: {
+      type: 'force',
+      preventOverlap: true,
+      nodeSize: Number(VIS_CONFIG.graphViewer.radius) * 2 || 48,
+      linkDistance: 110,
+      nodeStrength: -220,
+    },
+    node: { type: 'graph-node' },
+    behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element'],
+  });
+  graph._dsvisMode = 'graph';
+  graph.on('node:click', (evt) => {
+    const nodeId = evt?.target?.id || evt?.item?.id || evt?.data?.id;
+    if (nodeId) showGraphNodeDetails(String(nodeId));
+  });
+  graph.render();
+  if (typeof graph.fitView === 'function') {
+    graph.fitView({ padding: 40, onlyOutOfViewer: false });
+  }
+}
+
+function renderGraphStep(ri, s) {
+  const gv = (s && s.graphView) || { nodes: [], edges: [], undirected: false };
+  const highlight = graphViewDiff(ri, gv);
+  const cardNodes = (s && s.graph && s.graph.nodes) || [];
+  const data = buildGraphViewerG6Data(gv, highlight, cardNodes);
+  if (!graph || graph._dsvisMode !== 'graph') {
+    if (graph) resetGraphInstance();
+    initGraphViewer(data);
+  } else {
+    try {
+      graph.setData(data);
+      graph.render();
+    } catch (_e) {
+      // G6's transition diff may briefly reference elements removed by a step
+      // change ("Node/Edge not found for id: …") — benign, render stays correct.
+    }
+  }
+}
+
+function showGraphNodeDetails(nodeId) {
+  const ri = currentRaw != null ? currentRaw : toReal(current);
+  const cur = STEPS[ri];
+  const cardNode = (cur?.graph?.nodes || []).find((n) => String(n.id) === String(nodeId));
+  const gvNode = (cur?.graphView?.nodes || []).find((n) => String(n.id) === String(nodeId));
+  const title = gvNode && gvNode.value != null ? String(gvNode.value) : (cardNode?.style?.name || nodeId);
+  const rows = cardNode?.style?.rows || [];
+  const menu = document.getElementById('nodeContextMenu');
+  if (!menu) return;
+  menu.innerHTML = '';
+  const t = document.createElement('div');
+  t.style.cssText = 'padding:6px 12px;font-weight:700;font-size:12px;color:#0f2c63;border-bottom:1px solid #eee;';
+  t.textContent = title;
+  menu.appendChild(t);
+  if (!rows.length) {
+    const e = document.createElement('div');
+    e.style.cssText = 'padding:6px 12px;font-size:11px;color:#888;';
+    e.textContent = '（无字段数据）';
+    menu.appendChild(e);
+  }
+  for (const row of rows) {
+    const d = document.createElement('div');
+    d.style.cssText = 'padding:4px 12px;font-size:11px;white-space:nowrap;';
+    d.textContent = String(row.text || row.name || '');
+    menu.appendChild(d);
+  }
+  menu.style.display = 'block';
+  const g = document.getElementById('graph');
+  const rect = g ? g.getBoundingClientRect() : { right: 300, top: 80 };
+  menu.style.left = (rect.right - 240) + 'px';
+  menu.style.top = (rect.top + 16) + 'px';
+  const close = (e) => {
+    if (e.type === 'keydown' && e.key === 'Escape') { menu.style.display = 'none'; cleanup(); }
+    else if (e.type === 'click' && !menu.contains(e.target)) { menu.style.display = 'none'; cleanup(); }
+  };
+  const cleanup = () => {
+    document.removeEventListener('click', close);
+    document.removeEventListener('keydown', close);
+  };
+  document.addEventListener('click', close);
+  document.addEventListener('keydown', close);
+}
+
+// G6 v5 throws "Node/Edge not found for id: …" when a step transition removes
+// elements and its internal diff briefly references them. The render stays
+// correct — these are benign, so swallow them globally (both the synchronous
+// uncaught errors and the promise rejections).
+function _dsvisIsG6NotFoundError(msg) {
+  return /Node not found for id|Edge not found for id/.test(msg || '');
+}
+window.addEventListener('unhandledrejection', (evt) => {
+  const reason = evt && evt.reason;
+  const msg = String((reason && reason.message) || reason || '');
+  if (_dsvisIsG6NotFoundError(msg)) evt.preventDefault();
+});
+window.addEventListener('error', (evt) => {
+  if (_dsvisIsG6NotFoundError(String(evt && evt.message || ''))) evt.preventDefault();
+});
+
 function buildPortStyles(node, usedPorts) {
   const ports = Array.isArray(node?.style?.ports) ? node.style.ports : [];
   return ports.map((p) => {
@@ -2572,6 +2907,77 @@ function adaptNodesForTextFlow(graphData) {
   }
   return graphData;
 }
+
+/**
+ * B-tree / B+ tree display mode (structureType 'btree' / 'bplustree').
+ * Turns a vertical-grid B-tree node into a compact "keys row" node:
+ *   - hides the `children` columns (rows) but KEEPS the child edges;
+ *   - shows only the key values in a single row;
+ *   - child pointers (ports) emit from the gaps between keys (including
+ *     before the first and after the last key) — the classic B-tree look.
+ * Edges are remapped so each `children[i]` edge lands on its gap port.
+ */
+function adaptBTreeNodes(graphData) {
+  const stDef = STRUCTURE_TYPES[VIS_CONFIG.structureType];
+  if (!stDef || !stDef.proxyRules || !stDef.proxyRules.keyField) return graphData;
+  const keyField = String(stDef.proxyRules.keyField);
+  const childField = String(stDef.proxyRules.childField || 'children');
+  const keyRe = new RegExp('^' + keyField + '\\[\\d+\\]$');
+  const childReIdx = new RegExp('^' + childField + '\\[(\\d+)\\]$');
+  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+  for (const n of (graphData?.nodes || [])) {
+    const st = n.style;
+    if (!st || (st.textFlow || VIS_CONFIG.textFlow) !== 'vertical') continue;
+    const rows = Array.isArray(st.rows) ? st.rows : [];
+    const refRowSet = new Set(Array.isArray(st.refRowIndices) ? st.refRowIndices : []);
+    const names = Array.isArray(st.rowNames) ? st.rowNames : [];
+    const keyCols = [];
+    let childCount = 0;
+    rows.forEach((r, i) => {
+      const rawName = String(names[i] ?? (r && r.name) ?? '');
+      if (keyRe.test(rawName)) keyCols.push(i);
+      if (childReIdx.test(rawName)) childCount++;
+    });
+    if (!keyCols.length || !childCount) continue;
+    const keyValues = keyCols.map((i) => parseVerticalField(rows[i], refRowSet.has(i)).value);
+    const numKeys = keyValues.length;
+    const padX = 10, padY = 8, rowH = 20;
+    const colW = Math.max(50, Math.min(130, Math.ceil(Math.max(1, ...keyValues.map((v) => Math.max(4, String(v).length))) * 6 + 12)));
+    const w = Math.max(120, padX * 2 + numKeys * colW);
+    const h = padY * 2 + rowH; // single value row
+    st.titleColW = 0;
+    st.fieldColW = colW;
+    st.gridNames = keyValues.map(() => '');
+    st.gridValues = keyValues.slice();
+    st.gridRefs = [];
+    st.rowDisplayMode = 'value';
+    st.rows = keyValues.slice();
+    st.size = [w, h];
+    // Ports: entry at node centre-top/bottom, children at key gaps (0..numKeys).
+    const ports = [
+      { key: 'inT', placement: [0.5, 0], r: 0, fill: 'transparent', stroke: 'transparent' },
+      { key: 'inB', placement: [0.5, 1], r: 0, fill: 'transparent', stroke: 'transparent' },
+    ];
+    const refEntries = [];
+    for (let i = 0; i <= numKeys; i++) {
+      const frac = (padX + i * colW) / w;
+      ports.push({ key: 'pt' + i, placement: [frac, 0], r: 0, fill: 'transparent', stroke: 'transparent' });
+      ports.push({ key: 'pb' + i, placement: [frac, 1], r: 0, fill: 'transparent', stroke: 'transparent' });
+      refEntries.push({ idx: i, ports: ['pb' + i, 'pt' + i] });
+    }
+    st.ports = ports;
+    st.portLayout = { direction: 'TB', entry: ['inT', 'inB'], ref: refEntries };
+    // Remap child edges → refIndex = child index (gap 0..numKeys).
+    for (const e of edges) {
+      if (String(e.source) !== String(n.id)) continue;
+      const label = String(e?.data?.label || '');
+      const m = label.match(childReIdx);
+      if (m) e.data.refIndex = parseInt(m[1], 10);
+    }
+  }
+  return graphData;
+}
+
 function cloneGraphData(data) {
   return JSON.parse(JSON.stringify(data || { nodes: [], edges: [] }));
 }
@@ -3776,10 +4182,21 @@ function renderStepImpl(ri, displayIndex) {
   hoveredLine = null;
   hoveredFrameKey = null;
   const s = STEPS[ri];
+
+  // ── Independent graph-displayer mode ──
+  if (VIS_CONFIG.structureType === 'graph') {
+    renderGraphStep(ri, s);
+    renderStackPanel(s.stack, displayIndex);
+    syncCodeHighlights(true);
+    syncStackHighlights();
+    return;
+  }
+
   const rawGraph = applyStepHighlights(cloneGraphData(s.graph), ri);
   const visResult = applyNodeTypeVisibility(rawGraph);
   const typeFilteredGraph = visResult.data;
   const adaptedGraph = adaptNodesForTextFlow(typeFilteredGraph);
+  adaptBTreeNodes(adaptedGraph);
   const graphData = filterHiddenNodes(adaptedGraph);
 
   // Uniform-edge port placement (must run AFTER adaptNodesForTextFlow
@@ -3800,7 +4217,9 @@ function renderStepImpl(ri, displayIndex) {
   }
   renderStackPanel(s.stack, displayIndex);
 
-  if (!graph) {
+  // Reset when coming from the independent graph-viewer mode.
+  if (!graph || graph._dsvisMode === 'graph') {
+    if (graph) resetGraphInstance();
     initGraph(graphData);
   } else {
     const prepared = prepareGraphForLayout(graphData, getGraphSize());
@@ -4199,6 +4618,7 @@ function syncSettingsPanel() {
       VIS_CONFIG.layerEdgeKeys = {};
       VIS_CONFIG.uniformEdgesEnabled = true;
       VIS_CONFIG.rowDisplayMode = 'both';
+      VIS_CONFIG.graphViewer = { ...DEFAULT_VIS_CONFIG.graphViewer };
       saveVisConfig(VIS_CONFIG);
       persistProxy(); persistVisibility();
       try { localStorage.removeItem('dsvis:layerEdges'); } catch(_) {}
@@ -4217,6 +4637,12 @@ function syncSettingsPanel() {
     list.appendChild(structGroup);
     buildStructureParams(structParamsDiv);
   })();
+
+  // ── Independent graph viewer: only show graph-specific options ──
+  if (VIS_CONFIG.structureType === 'graph') {
+    buildGraphViewerSettings(list);
+    return;
+  }
 
   if (!NODE_TYPE_REGISTRY.size) {
     const empty = document.createElement('div');
