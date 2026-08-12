@@ -114,9 +114,6 @@ __STYLES__
           <div class="settings-note">同时配置 URL、Token、模型时使用你的 OpenAI-compatible API；否则使用 PageAgent 默认测试接口。生产环境不要在前端保存真实密钥。</div>
         </div>
         <div id="nodeTypeList"></div>
-        <div class="settings-actions">
-          <button id="settingsApplyBtn" type="button">应用</button>
-        </div>
       </div>
     </div>
   </div>
@@ -4924,12 +4921,8 @@ function syncSettingsPanel() {
   }
 }
 
-function applySettings() {
-  const sel = document.getElementById('settingsTextFlow');
-  if (sel) VIS_CONFIG.textFlow = sel.value;
-  const rowDisp = document.getElementById('settingsRowDisplay');
-  if (rowDisp) VIS_CONFIG.rowDisplayMode = rowDisp.value;
-
+/** Save the current PageAgent form values and reload the agent. */
+function applyPageAgentSettingsImmediate() {
   const agentEnabled = document.getElementById('pageAgentEnabled');
   const agentBaseURL = document.getElementById('pageAgentBaseURL');
   const agentApiKey = document.getElementById('pageAgentApiKey');
@@ -4942,8 +4935,28 @@ function applySettings() {
     language: 'zh-CN',
   });
   reloadDsvisAgent();
-  applyVisConfig();
 }
+
+// Every setting now applies immediately (no Apply button). Previously these
+// were deferred to the removed 「应用」 button.
+(function bindImmediateSettings() {
+  const flowSel = document.getElementById('settingsTextFlow');
+  if (flowSel) flowSel.addEventListener('change', () => {
+    VIS_CONFIG.textFlow = flowSel.value;
+    saveVisConfig(VIS_CONFIG);
+    applyVisConfig();
+  });
+  const rowDisp = document.getElementById('settingsRowDisplay');
+  if (rowDisp) rowDisp.addEventListener('change', () => {
+    VIS_CONFIG.rowDisplayMode = rowDisp.value;
+    saveVisConfig(VIS_CONFIG);
+    applyVisConfig();
+  });
+  for (const id of ['pageAgentEnabled', 'pageAgentBaseURL', 'pageAgentApiKey', 'pageAgentModel']) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', applyPageAgentSettingsImmediate);
+  }
+})();
 
 const settingsBtn = document.getElementById('settingsBtn');
 if (settingsBtn) {
@@ -4979,10 +4992,6 @@ if (pageAgentBtn) {
 const settingsCloseBtn = document.getElementById('settingsCloseBtn');
 if (settingsCloseBtn) {
   settingsCloseBtn.addEventListener('click', toggleSettingsPanel);
-}
-const settingsApplyBtn = document.getElementById('settingsApplyBtn');
-if (settingsApplyBtn) {
-  settingsApplyBtn.addEventListener('click', applySettings);
 }
 function normalizeAgentFieldKey(fieldKey) {
   return String(fieldKey || '').replace(/::/g, '.').trim();
