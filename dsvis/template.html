@@ -189,7 +189,7 @@ let debugSessionStopped = false;
 // - layerFields: for tree types, the field labels that serve as hierarchy edges.
 // - proxyRules:  for BTree types, the proxy-from→proxy-to mappings.
 const STRUCTURE_TYPES = {
-  'binary-tree':  { name: '二叉树',       layerFields: ['left','right'], parentField: null,   proxyRules: null, uniformEdges: true },
+  'binary-tree':  { name: '二叉树',       layerFields: ['left','right'], parentField: 'parent', proxyRules: null, uniformEdges: true },
   'nary-tree':    { name: 'N叉树',        layerFields: ['children'],      parentField: 'parent', proxyRules: null, uniformEdges: true },
   'btree':        { name: 'B-Tree',       layerFields: ['children'],      parentField: null,   proxyRules: { childField: 'children', keyField: 'keys' }, uniformEdges: true },
   'bplustree':    { name: 'B+ Tree',      layerFields: ['children'],      parentField: null,   proxyRules: { childField: 'children', keyField: 'keys' }, uniformEdges: true },
@@ -333,6 +333,7 @@ const DEFAULT_VIS_CONFIG = {
   layerEdgeKeys: {},
   uniformEdgesEnabled: true,
   rowDisplayMode: 'both',  // 'both' | 'key' | 'value' — control what part of each field row is shown
+  parentFieldKey: '',     // '' = use STRUCTURE_TYPES[type].parentField (e.g. 'parent')
   // Independent graph-displayer settings (structureType === 'graph').
   graphViewer: {
     valueField: '',     // '' = auto (backend priority list)
@@ -430,6 +431,18 @@ function buildStructureParams(container) {
       applyVisConfig();
     });
     row.appendChild(rightSel);
+
+    var parentLabel = document.createElement('span');
+    parentLabel.textContent = ' 父指针:';
+    parentLabel.style.marginLeft = '8px';
+    row.appendChild(parentLabel);
+    var parentSel = buildFieldSelect(allFields, getEffectiveParentField() || '');
+    parentSel.addEventListener('change', function() {
+      VIS_CONFIG.parentFieldKey = parentSel.value || '';
+      saveVisConfig(VIS_CONFIG);
+      applyVisConfig();
+    });
+    row.appendChild(parentSel);
 
     container.appendChild(row);
   }
@@ -2473,6 +2486,19 @@ function resolvePortsForEdge(e, nodeMap) {
   const tgt = nodeMap.get(e.target);
   if (!src || !tgt) return null;
 
+  // ── Parent-pointer special routing (hidden parent cell) ──
+  if (e.data && e.data._parentCenter) {
+    const pc = e.data._parentCenterPorts;
+    if (pc && pc.sourcePort && pc.targetPort) {
+      const srcPorts = new Set((src?.style?.ports || []).map((p) => p.key));
+      const tgtPorts = new Set((tgt?.style?.ports || []).map((p) => p.key));
+      if (srcPorts.has(pc.sourcePort) && tgtPorts.has(pc.targetPort)) {
+        return { sourcePort: pc.sourcePort, targetPort: pc.targetPort };
+      }
+    }
+    return null;
+  }
+
   // ── Uniform-edge mode: direct port name ──
   if (e.data && e.data._uniformPort) {
     const pl = src?.style?.portLayout;
@@ -2893,6 +2919,10 @@ function adaptNodesForTextFlow(graphData) {
       { key: 'inT', placement: [entryCenterX, topEdgeY], r: 0, fill: 'transparent', stroke: 'transparent' },
       { key: 'inB', placement: [entryCenterX, bottomEdgeY], r: 0, fill: 'transparent', stroke: 'transparent' },
     ];
+    // Centre ports — used by parent-pointer edges (hidden parent cell) to
+    // anchor at the node's horizontal midpoint.
+    st.ports.push({ key: 'cT', placement: [0.5, 0], r: 0, fill: 'transparent', stroke: 'transparent' });
+    st.ports.push({ key: 'cB', placement: [0.5, 1], r: 0, fill: 'transparent', stroke: 'transparent' });
     const refEntries = [];
     st.gridRefs.forEach((rowIdx) => {
       const cellCenterX = (padX + titleW + rowIdx * colW + colW / 2) / Math.max(w, 1);
@@ -2969,7 +2999,17 @@ function adaptBTreeNodes(graphData) {
       if (String(e.source) !== String(n.id)) continue;
       const label = String(e?.data?.label || '');
       const m = label.match(childReIdx);
-      if (m) e.data.refIndex = parseInt(m[1], 10);
+      if (m) {
+        e.data.refIndex = parseInt(m[1], 10);
+        // A self-hidden `children[i]` row orphans the edge (uniform placement).
+        // In btree mode the child pointer must still emit from the key-gap port,
+        // so undo the orphan marker — applyUniformEdgePorts then leaves it alone.
+        if (e.data._orphan) {
+          delete e.data._orphan;
+          delete e.data._uniformPort;
+          delete e.data._orphanLabel;
+        }
+      }
     }
   }
   return graphData;
@@ -3535,6 +3575,19 @@ function buildHorizontalPorts(refRowIndices, headerH, height) {
  * the render pipeline (renderStepImpl) and the settings UI.
  * ======================================================================== */
 
+/** For a member key like `Type.keys[0]`, return the base group key `Type.keys`. */
+function baseKeyOfFieldKey(key) {
+  const m = String(key || '').match(/^(.*)\.([^.\[]+)\[[^\]]+\]$/);
+  return m ? `${m[1]}.${m[2]}` : null;
+}
+
+/** Base name of the structure's parent-pointer field (config override wins). */
+function getEffectiveParentField() {
+  if (VIS_CONFIG.parentFieldKey) return VIS_CONFIG.parentFieldKey;
+  const def = STRUCTURE_TYPES[VIS_CONFIG.structureType];
+  return (def && def.parentField) || null;
+}
+
 function buildNodeTypeRegistry() {
   if (nodeTypeRegistryBuilt) return;
   NODE_TYPE_REGISTRY.clear();
@@ -3606,6 +3659,60 @@ function buildNodeTypeRegistry() {
       }
     }
   }
+
+  // ── Synthesize container groups from `X[i]` members ──
+  // Non-empty containers now expand to `X[i]` rows only (the aggregate `X`
+  // row is gone). Re-derive the `X` group so the settings panel keeps a
+  // master toggle that hides/shows every `X[i]` member.
+  for (const [className, group] of NODE_TYPE_REGISTRY.entries()) {
+    const groups = new Map();
+    for (const f of group) {
+      const base = baseKeyOfFieldKey(f.key);
+      if (base && !groups.has(base)) {
+        const idx = base.lastIndexOf('.');
+        groups.set(base, {
+          key: base,
+          className: base.slice(0, idx),
+          fieldName: base.slice(idx + 1),
+          kind: 'container',
+          isGroup: true,
+        });
+      }
+    }
+    for (const [gk, gf] of groups) {
+      const existing = group.find((e) => e.key === gk);
+      if (existing) {
+        // A real field row may already exist (e.g. `keys = []` from an empty
+        // array at some step). Upgrade it to a group so the master toggle
+        // controls every member.
+        existing.isGroup = true;
+      } else {
+        group.push(gf);
+      }
+      if (!NODE_TYPE_VISIBILITY.has(gk)) {
+        NODE_TYPE_VISIBILITY.set(gk, 'visible');
+      }
+    }
+    // Reorder so each container group sits immediately before its members;
+    // all other fields (plain rows, title) keep their original relative order.
+    const groupMap = new Map(group.filter((f) => f.isGroup).map((f) => [f.key, f]));
+    const ordered = [];
+    const emitted = new Set();
+    for (const f of group) {
+      if (f.isGroup) continue;
+      const base = baseKeyOfFieldKey(f.key);
+      if (base && groupMap.has(base) && !emitted.has(base)) {
+        ordered.push(groupMap.get(base));
+        emitted.add(base);
+      }
+      ordered.push(f);
+    }
+    for (const [gk, gf] of groupMap) {
+      if (!emitted.has(gk)) ordered.push(gf);
+    }
+    NODE_TYPE_REGISTRY.set(className, ordered);
+  }
+
   nodeTypeRegistryBuilt = true;
 }
 
@@ -3769,6 +3876,7 @@ function applyNodeTypeVisibility(graphData) {
     let effectiveKey = hiddenKey;
     let forceVisible = false;
     let orphan = false;
+    let parentCenter = false;
     if (hiddenKey && !isFieldVisible(hiddenKey)) {
       const state = NODE_TYPE_VISIBILITY.get(hiddenKey);
       const baseMatch = hiddenKey.match(/^(.+?)\[.*\]$/);
@@ -3777,9 +3885,13 @@ function applyNodeTypeVisibility(graphData) {
                         (baseState === 'cascade' || baseState === false);
 
       const stDef = STRUCTURE_TYPES[VIS_CONFIG.structureType];
-      const useUniform = VIS_CONFIG.uniformEdgesEnabled && stDef && stDef.uniformEdges;
-
-      if (useUniform) {
+      const parentField = getEffectiveParentField();
+      if (parentField && !isCascade && hiddenKey.endsWith('.' + parentField)) {
+        // Parent-pointer cell self-hidden → special centre / double-headed
+        // routing (scenarios resolved in the post-pass below).
+        forceVisible = true;
+        parentCenter = true;
+      } else if (VIS_CONFIG.uniformEdgesEnabled && stDef && stDef.uniformEdges) {
         // ── Uniform-edge mode: orphaned edges survive, positioned uniformly ──
         if (!isCascade) {
           forceVisible = true;
@@ -3817,7 +3929,11 @@ function applyNodeTypeVisibility(graphData) {
       }
     }
     const hidden = forceVisible ? false : (effectiveKey ? (!isFieldVisible(effectiveKey)) : false);
-    if (orphan) {
+    if (parentCenter) {
+      // Parent pointer: keep the edge, resolve its routing in the post-pass.
+      const pcEdge = { ...edge, data: { ...(edge?.data || {}), _parentCenter: true, _orphanLabel: edge?.data?.label || '' } };
+      edgeMeta.push({ edge: pcEdge, hidden: false, srcId });
+    } else if (orphan) {
       // Uniform-edge orphan: keep original edge, tag for later port placement
       const orphanEdge = { ...edge, data: { ...(edge?.data || {}), _orphan: true, _orphanLabel: edge?.data?.label || '' } };
       edgeMeta.push({ edge: orphanEdge, hidden: false, srcId });
@@ -3826,6 +3942,33 @@ function applyNodeTypeVisibility(graphData) {
       edgeMeta.push({ edge: substEdge, hidden, srcId });
     } else {
       edgeMeta.push({ edge, hidden, srcId });
+    }
+  }
+
+  // ── Parent-pointer routing post-pass ──
+  // Resolve the hidden-parent-cell scenarios:
+  //   - reverse tree edge (left/right) VISIBLE → parent edge routes between the
+  //     node centres (child top-centre → parent bottom-centre).
+  //   - reverse tree edge ALSO self-hidden → both the tree edge and the parent
+  //     edge share one centre line (parent bottom-centre ↔ child top-entry),
+  //     i.e. a double-headed arrow.
+  for (const pen of edgeMeta) {
+    const pe = pen.edge;
+    if (!pe?.data?._parentCenter) continue;
+    const childId = String(pe.source);
+    const parentId = String(pe.target);
+    const revEntry = edgeMeta.find((en) =>
+      String(en.edge?.source) === parentId && String(en.edge?.target) === childId);
+    const revIsOrphan = revEntry && revEntry.edge?.data?._orphan;
+    if (revIsOrphan) {
+      // Scenario 4: double-headed arrow on the shared centre line.
+      pe.data._parentCenterPorts = { sourcePort: 'inT', targetPort: 'cB' };
+      revEntry.edge.data._orphan = false;
+      revEntry.edge.data._parentCenter = true;
+      revEntry.edge.data._parentCenterPorts = { sourcePort: 'cB', targetPort: 'inT' };
+    } else {
+      // Scenario 2: parent edge at the node centres.
+      pe.data._parentCenterPorts = { sourcePort: 'cT', targetPort: 'cB' };
     }
   }
 
@@ -4667,19 +4810,24 @@ function syncSettingsPanel() {
     items.className = 'node-type-items';
     for (const field of fields) {
       const state = NODE_TYPE_VISIBILITY.get(field.key);
-      const isVisible = state === 'visible' || state === true || state === undefined;
+      // Members use effective visibility (considers the parent group's state),
+      // so when `keys` is hidden via its group toggle, `keys[i]` show hidden too.
+      const effVisible = isFieldVisible(field.key);
       const isSelf = state === 'self';
-      const isCascade = state === 'cascade' || state === false;
-      const cssClass = isVisible ? 'visible' : (isSelf ? 'self-hidden' : 'cascade-hidden');
-      const stateLabel = isVisible ? '显示' : (isSelf ? '仅自身隐藏' : '隐藏+子项');
-      
+      let cssClass = effVisible ? 'visible' : (isSelf ? 'self-hidden' : 'cascade-hidden');
+      const stateLabel = effVisible ? '显示' : (isSelf ? '仅自身隐藏' : '隐藏+子项');
+      if (field.isGroup) {
+        cssClass += ' node-type-group-btn';
+      }
       const item = document.createElement('button');
       item.type = 'button';
       item.className = `node-type-item ${cssClass}`;
       item.textContent = field.fieldName;
       item.title = `左键切换 | ${stateLabel} | ${field.key}`;
       
-      // Left-click: cycle visible → self → cascade → visible
+      // Left-click: standard 3-state cycle (visible → self → cascade → visible).
+      // Container groups follow the same cycle; 'cascade' hides every member
+      // via base-key cascading in isFieldVisible().
       item.addEventListener('click', () => toggleNodeFieldVisible(field.key));
       
       // Right-click: context menu
@@ -6133,6 +6281,8 @@ function hideViaContextMenu(cascade) {
   const menu = document.getElementById('nodeContextMenu');
   if (!menu) return;
   if (menu._fieldKey) {
+    // Container groups behave like normal fields: 'self' hides the aggregate
+    // row (empty arrays), 'cascade' additionally hides every member.
     setNodeFieldVisible(menu._fieldKey, cascade ? 'cascade' : 'self');
   } else if (menu._nodeId) {
     hideNode(menu._nodeId, menu._nodeLabel, cascade);
