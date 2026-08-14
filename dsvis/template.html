@@ -2959,13 +2959,16 @@ function adaptBTreeNodes(graphData) {
     const refRowSet = new Set(Array.isArray(st.refRowIndices) ? st.refRowIndices : []);
     const names = Array.isArray(st.rowNames) ? st.rowNames : [];
     const keyCols = [];
-    let childCount = 0;
     rows.forEach((r, i) => {
       const rawName = String(names[i] ?? (r && r.name) ?? '');
       if (keyRe.test(rawName)) keyCols.push(i);
-      if (childReIdx.test(rawName)) childCount++;
     });
-    if (!keyCols.length || !childCount) continue;
+    // In btree mode any node with `keys[i]` rows is a B-tree node (the
+    // container `BTree` has none and is skipped). Do NOT require `children[i]`
+    // rows: they may be stripped by applyNodeTypeVisibility when the user
+    // self-hides `children`, yet the child pointers must still emit from the
+    // key gaps.
+    if (!keyCols.length) continue;
     const keyValues = keyCols.map((i) => parseVerticalField(rows[i], refRowSet.has(i)).value);
     const numKeys = keyValues.length;
     const padX = 10, padY = 8, rowH = 20;
