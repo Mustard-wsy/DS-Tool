@@ -53,3 +53,39 @@
 - `dsvis/template.html`：`renderStepImpl` 图模式分支、`graph-node` 圆节点、
   force 布局、边方向/权重标签、步进高亮、点击浮层、图查看器设置面板
 - `scripts/test_graph_viewer.py`：后端回归测试（有向无权 / 无向带权 / 无向无权）
+
+## 修订（2026-08-15）：力布局 `force` → `d3-force`
+
+**问题**：图模式下节点全部挤在一起完全重合并持续颤动。
+
+**根因**：`initGraphViewer` 使用 `layout: { type: 'force' }`。在 G6 v5 中
+`'force'` 解析到自定义力布局（id="force"），实测它
+- 不分离节点（最小节点间距 ≈ 1px，节点重叠）；
+- 模拟永不收敛（持续颤动）；
+- 步骤切换时 `setData + render` 复用已塌缩的位置 → 节点缩成窄条。
+
+**决策**：改用 d3 版力布局 `type: 'd3-force'`。
+
+**补充（2026-08-15）：d3-force 必须用嵌套选项**
+`d3-force` 只识别**嵌套**对象 `link`/`manyBody`/`collide`/`center`；顶层的
+`linkDistance`/`nodeStrength`/`preventOverlap`/`nodeSize` 会被**静默忽略**
+（`setSimulation` 只按 `t.link`/`t.manyBody`/`t.collide` 是否存在来建力）。
+此前把 `linkDistance/nodeStrength` 放顶层 → 这些力根本没生效（仅默认弱力，
+节点最小间距被压到 ~22px，拥挤）。正确配置：
+
+```js
+layout: {
+  type: 'd3-force',
+  link:    { distance: 170, strength: 0.4 },
+  manyBody:{ strength: -350 },
+  collide: { radius: (节点半径)+12, strength: 0.8 },  // 最小间距 ≈ 2×radius
+  center:  { x: w/2, y: h/2 },
+}
+```
+
+**验证**（scc 有向 / prim 无向）：
+- 节点正确分离（最小间距 ≈ 72px = 2×collide radius），x/y 双轴散开、居中；
+- 约 1.2s 后收敛、位置冻结（无颤动）；步骤切换后仍保持散开；
+- **缩放无关性**：布局距离在 world 坐标，不受相机 zoom 影响；`fitView` 仅在
+  图包围盒超过画布时才缩小（小图 zoom≈1，屏显=world 距离）。
+- 回归 `test_title_collapse.py` / `test_graph_viewer.py` 通过。

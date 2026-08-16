@@ -2369,23 +2369,63 @@ function initGraphViewer(data) {
     animation: { duration: 80, easing: 'linear' },
     data,
     layout: {
-      type: 'force',
-      preventOverlap: true,
-      nodeSize: Number(VIS_CONFIG.graphViewer.radius) * 2 || 48,
-      linkDistance: 110,
-      nodeStrength: -220,
+      // G6's `force` resolves to a custom layout that fails to separate nodes
+      // (overlap) and never stabilises (jitter). The d3-based `d3-force` is
+      // correct — BUT its options must be nested (`link`/`manyBody`/`collide`/
+      // `center`/`x`/`y` objects); top-level `linkDistance`/`nodeStrength`/
+      // `preventOverlap` are silently ignored by d3-force.
+      //
+      // Two force problems were observed and fixed:
+      // 1) Drift: with only `center`, every step render re-ran the simulation
+      //    from the current (already spread) positions, so the graph kept
+      //    drifting apart over consecutive steps (measured bbox growing
+      //    1100→2052px). `center` only translates the graph centroid — it does
+      //    NOT pull nodes back. The `x`/`y` centering forces (forceX/forceY)
+      //    pull each node toward the canvas centre, which stops the drift
+      //    (bbox now holds steady at ~197px).
+      // 2) Spacing: manyBody:-350 / link:0.4 left the layout unstable and
+      //    far-apart-looking. distance:130 / strength:0.8 + manyBody:-200 keeps
+      //    it compact, and collide enforces a stable ~72px node separation.
+      //    velocityDecay 0.6 helps each step settle quickly.
+      type: 'd3-force',
+      link: { distance: 130, strength: 0.8 },
+      manyBody: { strength: -200 },
+      collide: { radius: (Number(VIS_CONFIG.graphViewer.radius) || 24) + 12, strength: 0.8 },
+      x: { strength: 0.15, x: size.width / 2 },
+      y: { strength: 0.15, y: size.height / 2 },
+      center: { x: size.width / 2, y: size.height / 2 },
+      velocityDecay: 0.6,
     },
     node: { type: 'graph-node' },
-    behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element'],
+    // Plain `drag-element` only translates the node and does NOT cooperate with
+    // the d3-force layout: the running force simulation keeps pulling the node
+    // back, so edges/arrows appear to not follow the drag. `drag-element-force`
+    // is G6's behavior built for d3-force layouts — it fixes the dragged node
+    // and recomputes the layout in real time so edges follow. `fixed: true`
+    // keeps the node where it was dropped (not dragged back by the layout).
+    behaviors: [
+      'drag-canvas',
+      'zoom-canvas',
+      { type: 'drag-element-force', fixed: true },
+    ],
   });
   graph._dsvisMode = 'graph';
   graph.on('node:click', (evt) => {
     const nodeId = evt?.target?.id || evt?.item?.id || evt?.data?.id;
     if (nodeId) showGraphNodeDetails(String(nodeId));
   });
+  // G6 v5's render() is async — the d3-force layout runs inside its promise
+  // chain. Fitting synchronously right after render() would measure the nodes
+  // at (0,0) before the layout has run (observed: layout sometimes never ran,
+  // leaving every node stacked at the origin). Fit once the first layout has
+  // settled instead.
   graph.render();
-  if (typeof graph.fitView === 'function') {
-    graph.fitView({ padding: 40, onlyOutOfViewer: false });
+  if (typeof graph.once === 'function') {
+    graph.once('afterlayout', () => {
+      if (graph && typeof graph.fitView === 'function') {
+        graph.fitView({ padding: 40, onlyOutOfViewer: false });
+      }
+    });
   }
 }
 
@@ -2401,11 +2441,36 @@ function renderGraphStep(ri, s) {
     try {
       graph.setData(data);
       graph.render();
+      // The graph viewer only fits the view once at init. When a later step
+      // brings a larger graph, part of it would fall outside the viewport
+      // (zoom/pan kept from the previous step). Refit after the (async) layout
+      // settles — fitting synchronously right after render() would see the
+      // nodes still clustered (tiny bbox) and zoom in absurdly. Debounced
+      // 'afterlayout' refits only when the graph actually exceeds the viewport,
+      // preserving a manual pan/zoom for graphs that already fit.
+      if (typeof graph.on === 'function') {
+        graph.on('afterlayout', scheduleGraphViewRefit);
+      }
     } catch (_e) {
       // G6's transition diff may briefly reference elements removed by a step
       // change ("Node/Edge not found for id: …") — benign, render stays correct.
     }
   }
+}
+
+// Debounced "fit only if the graph overflows the viewport" for the graph
+// viewer. Keeps the whole graph visible as steps grow, without stealing the
+// user's pan/zoom while the graph still fits.
+function scheduleGraphViewRefit() {
+  try {
+    if (!graph || graph._dsvisMode !== 'graph' || typeof graph.fitView !== 'function') return;
+    clearTimeout(graph.__graphRefitTimer);
+    graph.__graphRefitTimer = setTimeout(() => {
+      try {
+        graph.fitView({ padding: 40, onlyOutOfViewer: true });
+      } catch (_e) { /* benign */ }
+    }, 120);
+  } catch (_e) { /* benign */ }
 }
 
 function showGraphNodeDetails(nodeId) {
@@ -2630,6 +2695,14 @@ function refreshVisibleGraph() {
   if (typeof graph.setSize === 'function') {
     const size = getGraphSize();
     graph.setSize(size.width, size.height);
+  }
+  // Graph viewer mode: the card-mode fitGraph() (always-fit + ring inset
+  // padding + maxScale cap) must NOT run here — it fights the graph viewer's
+  // own only-out-of-viewer fit and stomps the user's manual pan/zoom whenever
+  // a panel opens/closes and the canvas resizes. Just refit on overflow.
+  if (graph._dsvisMode === 'graph') {
+    scheduleGraphViewRefit();
+    return;
   }
   refreshGraphVisuals();
 }
