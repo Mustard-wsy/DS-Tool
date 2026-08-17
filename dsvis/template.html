@@ -736,6 +736,10 @@ function autoApplyStructureDefaults() {
   var def = STRUCTURE_TYPES[st];
   if (!def) return;
 
+  // Make sure the field registry exists before reading field names / applying
+  // per-structure default field visibility.
+  buildNodeTypeRegistry();
+
   // Collect field names
   var allFields = [];
   var seen2 = {};
@@ -746,6 +750,9 @@ function autoApplyStructureDefaults() {
       if (!seen2[fn]) { seen2[fn] = true; allFields.push(fn); }
     }
   }
+
+  // B-tree: non-keys/non-children fields (t, leaf, …) default to hidden.
+  applyBTreeMetaDefaults();
 
   var detected = autoDetectLayerFields(allFields, st);
   if (detected) VIS_CONFIG.layerEdgeKeys = detected;
@@ -1950,7 +1957,10 @@ function initGraph(data) {
         const gridNames = Array.isArray(attributes.gridNames) ? attributes.gridNames : [];
         const gridValues = Array.isArray(attributes.gridValues) ? attributes.gridValues : [];
         const gridRefs = Array.isArray(attributes.gridRefs) ? attributes.gridRefs : [];
-        const numFields = Math.max(gridNames.length, 1);
+        // B-tree nodes (titleColW collapsed to 0) may have zero key cells when
+        // the key list is empty (split-in-progress new root). Allow numFields 0
+        // there so no empty grid cell is drawn; other vertical nodes keep >= 1.
+        const numFields = (titleColW === 0) ? gridNames.length : Math.max(gridNames.length, 1);
         const rowDeltaTypes = Array.isArray(attributes.rowDeltaTypes) ? attributes.rowDeltaTypes : [];
 
         const gridRowH = 20;
@@ -3201,6 +3211,38 @@ function adaptNodesForTextFlow(graphData) {
  *     before the first and after the last key) — the classic B-tree look.
  * Edges are remapped so each `children[i]` edge lands on its gap port.
  */
+
+/**
+ * B-tree default field visibility: for node classes that own a `keys` list,
+ * hide every non-keys/non-children field (t, leaf, …) by default so the node
+ * shows only the key row + child pointers. The style panel can still toggle
+ * them back to 'visible' — they then render as normal field rows above the
+ * keys (see adaptBTreeNodes / drawKeyShape). Only *unset* fields are touched;
+ * the container class (BTree) keeps its fields.
+ */
+function applyBTreeMetaDefaults() {
+  const st = VIS_CONFIG.structureType;
+  if (st !== 'btree' && st !== 'bplustree') return;
+  const stDef = STRUCTURE_TYPES[st];
+  if (!stDef || !stDef.proxyRules || !stDef.proxyRules.keyField) return;
+  const keyField = String(stDef.proxyRules.keyField);
+  const childField = String(stDef.proxyRules.childField || 'children');
+  for (const [className, group] of NODE_TYPE_REGISTRY.entries()) {
+    const hasKeyField = group.some((f) =>
+      f.fieldName === keyField || String(f.fieldName).startsWith(keyField + '['));
+    if (!hasKeyField) continue; // container class (BTree) keeps its fields
+    for (const f of group) {
+      const nm = String(f.fieldName || '');
+      if (nm === keyField || nm.startsWith(keyField + '[') ||
+          nm === childField || nm.startsWith(childField + '[') ||
+          nm === '__title__') continue;
+      if (!NODE_TYPE_VISIBILITY.has(f.key)) {
+        NODE_TYPE_VISIBILITY.set(f.key, 'self');
+      }
+    }
+  }
+}
+
 function adaptBTreeNodes(graphData) {
   const stDef = STRUCTURE_TYPES[VIS_CONFIG.structureType];
   if (!stDef || !stDef.proxyRules || !stDef.proxyRules.keyField) return graphData;
@@ -3216,38 +3258,80 @@ function adaptBTreeNodes(graphData) {
     const refRowSet = new Set(Array.isArray(st.refRowIndices) ? st.refRowIndices : []);
     const names = Array.isArray(st.rowNames) ? st.rowNames : [];
     const keyCols = [];
+    let bareKeyIdx = -1;
     rows.forEach((r, i) => {
       const rawName = String(names[i] ?? (r && r.name) ?? '');
       if (keyRe.test(rawName)) keyCols.push(i);
+      else if (rawName === keyField) bareKeyIdx = i;
     });
     // In btree mode any node with `keys[i]` rows is a B-tree node (the
-    // container `BTree` has none and is skipped). Do NOT require `children[i]`
-    // rows: they may be stripped by applyNodeTypeVisibility when the user
-    // self-hides `children`, yet the child pointers must still emit from the
-    // key gaps.
-    if (!keyCols.length) continue;
+    // container `BTree` has none and is skipped). A bare `keys` row appears
+    // when the key list is empty (a split-in-progress new root); it must ALSO
+    // be treated as a B-tree node, otherwise the bare `keys`/`children`
+    // columns render as empty grid cells in the generic card renderer. Do NOT
+    // require `children[i]` rows: they may be stripped by
+    // applyNodeTypeVisibility when the user self-hides `children`, yet the
+    // child pointers must still emit from the key gaps.
+    if (!keyCols.length && bareKeyIdx < 0) continue;
     const keyValues = keyCols.map((i) => parseVerticalField(rows[i], refRowSet.has(i)).value);
     const numKeys = keyValues.length;
     const padX = 10, padY = 8, rowH = 20;
     const colW = Math.max(50, Math.min(130, Math.ceil(Math.max(1, ...keyValues.map((v) => Math.max(4, String(v).length))) * 6 + 12)));
-    const w = Math.max(120, padX * 2 + numKeys * colW);
-    const h = padY * 2 + rowH; // single value row
+    // Meta fields: visible non-keys/non-children fields (t, leaf, …). They
+    // default to hidden (applyBTreeMetaDefaults sets 'self'); when the user
+    // toggles one visible the node renders like a binary-tree grid — a field
+    // name row above the value row, each field in its own column, with the
+    // keys as bare value cells (no field name).
+    const rowFieldKeysArr = Array.isArray(st.rowFieldKeys) ? st.rowFieldKeys : [];
+    const metaFields = [];
+    rows.forEach((r, i) => {
+      const rawName = String(names[i] ?? (r && r.name) ?? '');
+      if (keyRe.test(rawName) || rawName === keyField || childReIdx.test(rawName) || rawName === childField) return;
+      const fk = rowFieldKeysArr[i]
+        ? String(rowFieldKeysArr[i]).replace(/::/g, '.')
+        : `${String(st.className || '')}.${rawName}`;
+      if (!isFieldVisible(fk)) return;
+      const val = parseVerticalField(rows[i], refRowSet.has(i)).value;
+      metaFields.push({ name: rawName, value: val });
+    });
+    const hasMeta = metaFields.length > 0;
+    const gridNames = [];
+    const gridValues = [];
+    for (const mf of metaFields) { gridNames.push(mf.name); gridValues.push(mf.value); }
+    for (const kv of keyValues) { gridNames.push(''); gridValues.push(kv); }
+    const numCells = metaFields.length + numKeys;
+    const w = Math.max(120, padX * 2 + numCells * colW);
+    const h = padY * 2 + (hasMeta ? 2 : 1) * rowH; // name+value rows or value-only
     st.titleColW = 0;
     st.fieldColW = colW;
-    st.gridNames = keyValues.map(() => '');
-    st.gridValues = keyValues.slice();
+    st.gridNames = gridNames;
+    st.gridValues = gridValues;
     st.gridRefs = [];
-    st.rowDisplayMode = 'value';
-    st.rows = keyValues.slice();
+    st.rowDisplayMode = hasMeta ? 'both' : 'value';
+    st.rows = gridValues.slice();
+    delete st.metaFields;
+    delete st.btreeMeta;
     st.size = [w, h];
     // Ports: entry at node centre-top/bottom, children at key gaps (0..numKeys).
+    // During a split the new root may briefly hold more children than keys
+    // (children are inserted before the mid key is promoted), so size the port
+    // list to the larger of (keys + 1) and (child count).
+    let maxChildIdx = -1;
+    rows.forEach((r, i) => {
+      const m = String(names[i] ?? (r && r.name) ?? '').match(childReIdx);
+      if (m) maxChildIdx = Math.max(maxChildIdx, parseInt(m[1], 10));
+    });
+    const portCount = Math.max(numKeys + 1, maxChildIdx + 1);
     const ports = [
       { key: 'inT', placement: [0.5, 0], r: 0, fill: 'transparent', stroke: 'transparent' },
       { key: 'inB', placement: [0.5, 1], r: 0, fill: 'transparent', stroke: 'transparent' },
     ];
     const refEntries = [];
-    for (let i = 0; i <= numKeys; i++) {
-      const frac = (padX + i * colW) / w;
+    // Key-gap ports sit between the keys; when meta columns precede the keys,
+    // the gap x must be offset past them.
+    const gapOffset = metaFields.length;
+    for (let i = 0; i < portCount; i++) {
+      const frac = (padX + (gapOffset + i) * colW) / w;
       ports.push({ key: 'pt' + i, placement: [frac, 0], r: 0, fill: 'transparent', stroke: 'transparent' });
       ports.push({ key: 'pb' + i, placement: [frac, 1], r: 0, fill: 'transparent', stroke: 'transparent' });
       refEntries.push({ idx: i, ports: ['pb' + i, 'pt' + i] });
@@ -3973,6 +4057,8 @@ function buildNodeTypeRegistry() {
     NODE_TYPE_REGISTRY.set(className, ordered);
   }
 
+  // B-tree: hide non-keys/non-children fields (t, leaf, …) by default.
+  applyBTreeMetaDefaults();
   nodeTypeRegistryBuilt = true;
 }
 
