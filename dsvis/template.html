@@ -249,6 +249,7 @@ function exportCurrentConfig() {
   const visObj = Object.fromEntries(NODE_TYPE_VISIBILITY);
   const tf = TITLE_FIELD ? { [TITLE_FIELD.className]: TITLE_FIELD.key } : {};
   return {
+    version: 1,
     structureType: VIS_CONFIG.structureType,
     edgeProxy: proxyObj, visibility: visObj, titleField: tf,
     layerEdges: Array.from(LAYER_EDGES),
@@ -257,10 +258,14 @@ function exportCurrentConfig() {
     showSubtitle: VIS_CONFIG.showSubtitle,
     uniformEdgesEnabled: VIS_CONFIG.uniformEdgesEnabled,
     rowDisplayMode: VIS_CONFIG.rowDisplayMode,
+    // Extra knobs that were missing from the export (graph viewer + parent
+    // pointer field) so a copied style fully restores the page it came from.
+    parentFieldKey: VIS_CONFIG.parentFieldKey,
+    graphViewer: { ...(VIS_CONFIG.graphViewer || {}) },
   };
 }
 
-/** Import a previously exported config. */
+/** Import a previously exported config (merge: only keys present in the JSON are applied). */
 function importConfig(jsonText) {
   var cfg;
   try { cfg = JSON.parse(jsonText); } catch(_) { throw new Error('无效的 JSON'); }
@@ -274,6 +279,10 @@ function importConfig(jsonText) {
   if (cfg.rowDisplayMode) VIS_CONFIG.rowDisplayMode = cfg.rowDisplayMode;
   if (cfg.structureType) VIS_CONFIG.structureType = cfg.structureType;
   if (cfg.layerEdgeKeys) VIS_CONFIG.layerEdgeKeys = { ...cfg.layerEdgeKeys };
+  if (cfg.parentFieldKey !== undefined) VIS_CONFIG.parentFieldKey = cfg.parentFieldKey;
+  if (cfg.graphViewer && typeof cfg.graphViewer === 'object') {
+    VIS_CONFIG.graphViewer = { ...(VIS_CONFIG.graphViewer || {}), ...cfg.graphViewer };
+  }
   LAYER_EDGES.clear();
   if (Array.isArray(cfg.layerEdges)) { for (var _le = 0; _le < cfg.layerEdges.length; _le++) LAYER_EDGES.add(cfg.layerEdges[_le]); }
   persistProxy(); persistVisibility();
@@ -282,6 +291,116 @@ function importConfig(jsonText) {
   saveVisConfig(VIS_CONFIG);
   applyVisConfig();
   if (settingsPanelVisible) syncSettingsPanel();
+}
+
+// ── Style copy / import UI helpers ──
+
+/** Lightweight non-blocking toast at the bottom of the page. */
+function showToast(msg, isError) {
+  let el = document.getElementById('dsvisToast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'dsvisToast';
+    el.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:30000;padding:8px 16px;border-radius:6px;font-size:12px;color:#fff;background:rgba(0,0,0,0.78);box-shadow:0 2px 8px rgba(0,0,0,0.2);pointer-events:none;opacity:0;transition:opacity .2s;max-width:80vw;white-space:pre-wrap;';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.background = isError ? 'rgba(200,40,40,0.9)' : 'rgba(0,0,0,0.78)';
+  el.style.opacity = '1';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.opacity = '0'; }, 2400);
+}
+
+/** Copy the current style JSON to the clipboard (with a readable fallback). */
+function copyCurrentStyle() {
+  const data = exportCurrentConfig();
+  const json = JSON.stringify(data, null, 2);
+  const done = () => showToast('样式已复制到剪贴板');
+  const fail = () => {
+    // Clipboard unavailable (e.g. non-secure context) — show a copyable modal.
+    showStyleModal(json, false);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(json).then(done, fail);
+  } else {
+    fail();
+  }
+}
+
+/**
+ * Modal for pasting (import) or manually copying (fallback) style JSON.
+ * A multiline textarea replaces the old prompt() so long pretty-printed JSON
+ * pastes cleanly instead of being mangled by the browser's single-line prompt.
+ */
+function showStyleModal(initialText, isImport) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:25000;background:rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;';
+  const box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:8px;padding:14px;width:min(580px,92vw);box-shadow:0 6px 24px rgba(0,0,0,0.25);box-sizing:border-box;';
+  const title = document.createElement('div');
+  title.textContent = isImport ? '粘贴样式 JSON' : '复制样式（手动复制下方内容）';
+  title.style.cssText = 'font-weight:700;font-size:13px;margin-bottom:8px;color:#0f2c63;';
+  const ta = document.createElement('textarea');
+  ta.placeholder = isImport ? '粘贴从其他页面复制的样式 JSON…' : '';
+  ta.value = initialText || '';
+  ta.style.cssText = 'width:100%;height:200px;font-family:monospace;font-size:11px;padding:8px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box;resize:vertical;';
+  if (!isImport) ta.readOnly = true;
+  const err = document.createElement('div');
+  err.style.cssText = 'color:#c00;font-size:11px;margin-top:6px;min-height:14px;';
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:10px;';
+  const cancel = document.createElement('button');
+  cancel.textContent = '取消'; cancel.type = 'button';
+  cancel.style.cssText = 'padding:6px 14px;font-size:12px;cursor:pointer;border:1px solid #ccc;background:#fff;border-radius:6px;';
+  const ok = document.createElement('button');
+  ok.textContent = isImport ? '导入' : '关闭'; ok.type = 'button';
+  ok.style.cssText = 'padding:6px 14px;font-size:12px;cursor:pointer;border:none;background:#5b8ff9;color:#fff;border-radius:6px;';
+  btnRow.appendChild(cancel);
+  btnRow.appendChild(ok);
+  box.appendChild(title);
+  box.appendChild(ta);
+  box.appendChild(err);
+  box.appendChild(btnRow);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  cancel.addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  ok.addEventListener('click', () => {
+    if (!isImport) { close(); return; }
+    const text = ta.value.trim();
+    if (!text) { close(); return; }
+    try {
+      importConfig(text);
+      close();
+      showToast('样式已导入并应用');
+    } catch (e) {
+      err.textContent = '导入失败: ' + e.message;
+    }
+  });
+  setTimeout(() => ta.focus(), 0);
+}
+
+/** Reset all style/config back to the built-in defaults. */
+function resetAllStyle() {
+  EDGE_PROXY.clear();
+  LAYER_EDGES.clear();
+  TITLE_FIELD = null;
+  for (var _rkey of NODE_TYPE_VISIBILITY.keys()) NODE_TYPE_VISIBILITY.set(_rkey, 'visible');
+  VIS_CONFIG.textFlow = 'horizontal';
+  VIS_CONFIG.showSubtitle = true;
+  VIS_CONFIG.structureType = 'other';
+  VIS_CONFIG.layerEdgeKeys = {};
+  VIS_CONFIG.uniformEdgesEnabled = true;
+  VIS_CONFIG.rowDisplayMode = 'both';
+  VIS_CONFIG.parentFieldKey = '';
+  VIS_CONFIG.graphViewer = { ...DEFAULT_VIS_CONFIG.graphViewer };
+  saveVisConfig(VIS_CONFIG);
+  persistProxy(); persistVisibility();
+  try { localStorage.removeItem('dsvis:layerEdges'); } catch(_) {}
+  try { localStorage.removeItem('dsvis:titleField'); } catch(_) {}
+  applyVisConfig();
+  showToast('样式已重置为默认');
 }
 
 // ── Heuristic layer-field detection ──
@@ -4778,6 +4897,47 @@ function syncSettingsPanel() {
   if (!list) return;
   list.innerHTML = '';
 
+  // ── Style copy / import / reset (available in every mode, incl. graph) ──
+  (function() {
+    var styleGroup = document.createElement('div');
+    styleGroup.className = 'node-type-group';
+    styleGroup.style.cssText = 'border-left:3px solid #9b59b6;';
+    var styleHeader = document.createElement('div');
+    styleHeader.className = 'node-type-group-header';
+    var styleTitle = document.createElement('span');
+    styleTitle.className = 'node-type-group-title';
+    styleTitle.textContent = '样式';
+    styleHeader.appendChild(styleTitle);
+    styleGroup.appendChild(styleHeader);
+    var styleItems = document.createElement('div');
+    styleItems.className = 'node-type-items';
+    styleItems.style.cssText = 'flex-wrap:wrap;gap:6px;align-items:center';
+
+    var copyBtn = document.createElement('button');
+    copyBtn.textContent = '复制样式'; copyBtn.type = 'button';
+    copyBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #5b8ff9;background:#e8f0fe;border-radius:3px';
+    copyBtn.title = '一键复制当前完整样式 JSON，可粘贴到其他页面导入';
+    copyBtn.addEventListener('click', copyCurrentStyle);
+    styleItems.appendChild(copyBtn);
+
+    var importBtn = document.createElement('button');
+    importBtn.textContent = '导入样式'; importBtn.type = 'button';
+    importBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #5b8ff9;background:#e8f0fe;border-radius:3px';
+    importBtn.title = '粘贴从其他页面复制的样式 JSON 并应用';
+    importBtn.addEventListener('click', function() { showStyleModal('', true); });
+    styleItems.appendChild(importBtn);
+
+    var resetBtn = document.createElement('button');
+    resetBtn.textContent = '重置'; resetBtn.type = 'button';
+    resetBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #e88;background:#fff5f5;border-radius:3px;color:#c00;';
+    resetBtn.title = '将所有样式恢复为内置默认';
+    resetBtn.addEventListener('click', resetAllStyle);
+    styleItems.appendChild(resetBtn);
+
+    styleGroup.appendChild(styleItems);
+    list.appendChild(styleGroup);
+  })();
+
   // ── Structure type section (replaces old preset system) ──
   (function() {
     var structGroup = document.createElement('div');
@@ -4817,49 +4977,6 @@ function syncSettingsPanel() {
     applyDefaultsBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #5b8ff9;background:#e8f0fe;border-radius:3px';
     applyDefaultsBtn.addEventListener('click', function() { autoApplyStructureDefaults(); });
     structItems.appendChild(applyDefaultsBtn);
-
-    var exportBtn = document.createElement('button');
-    exportBtn.textContent = '导出'; exportBtn.type = 'button';
-    exportBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #aaa;background:#fafafa;border-radius:3px';
-    exportBtn.addEventListener('click', function() {
-      var data = exportCurrentConfig();
-      var json = JSON.stringify(data, null, 2);
-      navigator.clipboard.writeText(json).then(function() { alert('配置已复制到剪贴板'); }).catch(function() { alert('复制失败:\n' + json); });
-    });
-    structItems.appendChild(exportBtn);
-
-    var importBtn = document.createElement('button');
-    importBtn.textContent = '导入'; importBtn.type = 'button';
-    importBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #aaa;background:#fafafa;border-radius:3px';
-    importBtn.addEventListener('click', function() {
-      var text = prompt('粘贴配置 JSON:');
-      if (!text) return;
-      try { importConfig(text); } catch(e) { alert('无效的配置: ' + e.message); }
-    });
-    structItems.appendChild(importBtn);
-
-    var resetBtn = document.createElement('button');
-    resetBtn.textContent = '重置'; resetBtn.type = 'button';
-    resetBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #e88;background:#fff5f5;border-radius:3px;color:#c00;';
-    resetBtn.addEventListener('click', function() {
-      EDGE_PROXY.clear();
-      LAYER_EDGES.clear();
-      TITLE_FIELD = null;
-      for (var _rkey of NODE_TYPE_VISIBILITY.keys()) NODE_TYPE_VISIBILITY.set(_rkey, 'visible');
-      VIS_CONFIG.textFlow = 'horizontal';
-      VIS_CONFIG.showSubtitle = true;
-      VIS_CONFIG.structureType = 'other';
-      VIS_CONFIG.layerEdgeKeys = {};
-      VIS_CONFIG.uniformEdgesEnabled = true;
-      VIS_CONFIG.rowDisplayMode = 'both';
-      VIS_CONFIG.graphViewer = { ...DEFAULT_VIS_CONFIG.graphViewer };
-      saveVisConfig(VIS_CONFIG);
-      persistProxy(); persistVisibility();
-      try { localStorage.removeItem('dsvis:layerEdges'); } catch(_) {}
-      try { localStorage.removeItem('dsvis:titleField'); } catch(_) {}
-      applyVisConfig();
-    });
-    structItems.appendChild(resetBtn);
 
     structGroup.appendChild(structItems);
 
