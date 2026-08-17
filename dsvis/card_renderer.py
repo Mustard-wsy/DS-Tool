@@ -5,10 +5,62 @@ Also handles HTML generation (``render_debugger()``).
 
 import base64
 import json
+import os
+import socket
+import subprocess
+import sys
 import tempfile
+import time
 import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# Local style server (see runtime/style_server.py). Fixed port so a running
+# server is reused across script runs; the frontend persists styles to
+# <cwd>/.dsvis/<script>.json instead of the browser's localStorage on C:.
+STYLE_SERVER_PORT = 8765
+
+
+def _read_style_config(source_file):
+    """Load the persisted per-script style from <cwd>/.dsvis/<stem>.json."""
+    if not source_file:
+        return None
+    style_file = Path.cwd() / ".dsvis" / f"{Path(source_file).stem}.json"
+    if not style_file.exists():
+        return None
+    try:
+        return json.loads(style_file.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _ensure_style_server():
+    """Return the style server port if it is reachable (starting a detached
+    server on first use), else None."""
+    try:
+        with socket.create_connection(("127.0.0.1", STYLE_SERVER_PORT), timeout=0.4):
+            return STYLE_SERVER_PORT
+    except OSError:
+        pass
+    try:
+        server_script = Path(__file__).resolve().parent / "runtime" / "style_server.py"
+        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        subprocess.Popen(
+            [sys.executable, str(server_script), "--port", str(STYLE_SERVER_PORT)],
+            cwd=str(Path.cwd()),
+            creationflags=creationflags,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(25):
+            try:
+                with socket.create_connection(("127.0.0.1", STYLE_SERVER_PORT), timeout=0.3):
+                    return STYLE_SERVER_PORT
+            except OSError:
+                time.sleep(0.1)
+    except Exception:
+        pass
+    return None
 def _load_codicon_styles() -> str:
     """Return codicon CSS with the font embedded as a data URI.
 
@@ -567,7 +619,7 @@ def _derive_algorithm_name(source_lines, title):
 
     return 'Algorithm'
 
-def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, display_indices=None):
+def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, display_indices=None, source_file=None):
     """Generate a self-contained HTML debugger page and open it in a browser.
 
     Layout contract
@@ -575,6 +627,14 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
     *layout* is normalised once via :func:`dsvis._normalize_layout` and
     embedded as ``__LAYOUT__``.  The frontend consumes this value as-is;
     there is no second normalisation pass.
+
+    Style persistence
+    -----------------
+    *source_file* (the user script being visualised) selects the per-script
+    style file ``<cwd>/.dsvis/<stem>.json``.  When present it is embedded as
+    ``__STYLE_CONFIG__`` so the page opens with the previously saved style;
+    ``__STYLE_SERVER__`` carries the localhost port the frontend uses to save
+    styles back to that file (never the browser's localStorage on C:).
 
     Step payload contract
     ---------------------
@@ -634,6 +694,18 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
     html = html.replace("__BREAKPOINTS_ENABLED__", json.dumps(breakpoints_enabled()))
     html = html.replace("__DISPLAY_INDICES__", json.dumps(display_indices))
     html = html.replace("__INITIAL_VISIBILITY__", json.dumps(get_field_visibility(), ensure_ascii=False))
+
+    # Style persistence: embed the saved style (if any) and the local style
+    # server port so the page can load + persist per-script styles to disk.
+    style_config = _read_style_config(source_file)
+    style_port = _ensure_style_server()
+    style_server = None
+    if style_port is not None:
+        style_server = {"port": style_port}
+        if source_file:
+            style_server["script"] = Path(source_file).name
+    html = html.replace("__STYLE_CONFIG__", json.dumps(style_config, ensure_ascii=False))
+    html = html.replace("__STYLE_SERVER__", json.dumps(style_server, ensure_ascii=False))
 
     fd, path = tempfile.mkstemp(suffix=".html")
     html_path = Path(path)

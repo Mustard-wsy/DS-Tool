@@ -165,6 +165,11 @@ const BREAKPOINTS = new Set();
 let BREAKPOINTS_ENABLED = __BREAKPOINTS_ENABLED__;
 const DSVIS_ALGO = __DSVIS_ALGO__;
 const INITIAL_VISIBILITY = __INITIAL_VISIBILITY__;
+// Persisted per-script style (loaded by the backend from <cwd>/.dsvis/<script>.json)
+// — authoritative over localStorage so styles live in the project, not on C:.
+const FILE_STYLE = __STYLE_CONFIG__ || null;
+// Local style server ({port, script}) the frontend uses to persist styles to disk.
+const STYLE_SERVER = __STYLE_SERVER__ || null;
 const HIDDEN_NODES = new Map();  // Map<nodeId, label> — hidden nodes
 const HIDDEN_NODES_CASCADE = new Set();  // nodeIds whose descendants also cascade-hide
 let hiddenPanelVisible = false;
@@ -217,8 +222,14 @@ if (typeof G6 === 'undefined') {
 // ── Persistence helpers ──
 function persistProxy() {
   try { localStorage.setItem(PROXY_STORAGE_KEY, JSON.stringify([...EDGE_PROXY])); } catch(_) {}
+  scheduleStyleAutosave();
 }
 function loadProxy() {
+  // Persisted per-script style file wins over localStorage.
+  if (FILE_STYLE && FILE_STYLE.edgeProxy) {
+    for (const _k in FILE_STYLE.edgeProxy) EDGE_PROXY.set(_k, FILE_STYLE.edgeProxy[_k]);
+    return;
+  }
   try {
     const raw = localStorage.getItem(PROXY_STORAGE_KEY);
     if (raw) { const arr = JSON.parse(raw); for (const [k, v] of arr) EDGE_PROXY.set(k, v); }
@@ -226,9 +237,17 @@ function loadProxy() {
 }
 function persistVisibility() {
   try { localStorage.setItem(VISIBILITY_STORAGE_KEY, JSON.stringify([...NODE_TYPE_VISIBILITY])); } catch(_) {}
+  scheduleStyleAutosave();
 }
 function loadVisibility() {
-  // 1. Apply Python-script initial visibility (base defaults)
+  // 1. Persisted per-script style file (authoritative — not localStorage).
+  if (FILE_STYLE && FILE_STYLE.visibility) {
+    for (const _fk in FILE_STYLE.visibility) {
+      NODE_TYPE_VISIBILITY.set(_fk, FILE_STYLE.visibility[_fk]);
+    }
+    return;
+  }
+  // 2. Apply Python-script initial visibility (base defaults)
   if (INITIAL_VISIBILITY && typeof INITIAL_VISIBILITY === 'object') {
     for (var _ik in INITIAL_VISIBILITY) {
       if (Object.prototype.hasOwnProperty.call(INITIAL_VISIBILITY, _ik)) {
@@ -236,7 +255,7 @@ function loadVisibility() {
       }
     }
   }
-  // 2. Apply localStorage overrides (UI changes persist across reloads)
+  // 3. Apply localStorage overrides (UI changes persist across reloads)
   try {
     const raw = localStorage.getItem(VISIBILITY_STORAGE_KEY);
     if (raw) { const arr = JSON.parse(raw); for (const [k, v] of arr) NODE_TYPE_VISIBILITY.set(k, v); }
@@ -470,24 +489,41 @@ const DEFAULT_PAGE_AGENT_CONFIG = {
 };
 
 function loadVisConfig() {
+  const merged = { ...DEFAULT_VIS_CONFIG };
+  // 1. Persisted per-script style file (authoritative — lives in the project,
+  //    not the browser's localStorage on C:).
+  if (FILE_STYLE) {
+    if (FILE_STYLE.layout && FILE_STYLE.layout.rankdir) {
+      merged.textFlow = FILE_STYLE.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
+    }
+    if (FILE_STYLE.showSubtitle !== undefined) merged.showSubtitle = FILE_STYLE.showSubtitle;
+    if (FILE_STYLE.structureType) merged.structureType = FILE_STYLE.structureType;
+    if (FILE_STYLE.layerEdgeKeys) merged.layerEdgeKeys = { ...FILE_STYLE.layerEdgeKeys };
+    if (FILE_STYLE.uniformEdgesEnabled !== undefined) merged.uniformEdgesEnabled = FILE_STYLE.uniformEdgesEnabled;
+    if (FILE_STYLE.rowDisplayMode) merged.rowDisplayMode = FILE_STYLE.rowDisplayMode;
+    if (FILE_STYLE.parentFieldKey !== undefined) merged.parentFieldKey = FILE_STYLE.parentFieldKey;
+    if (FILE_STYLE.graphViewer && typeof FILE_STYLE.graphViewer === 'object') {
+      merged.graphViewer = { ...DEFAULT_VIS_CONFIG.graphViewer, ...FILE_STYLE.graphViewer };
+    }
+    return merged;
+  }
+  // 2. Fallback: localStorage (backwards compatible for pages generated before
+  //    the style-file feature).
   try {
     const raw = localStorage.getItem(VIS_CONFIG_STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_VIS_CONFIG };
+    if (!raw) return merged;
     const parsed = JSON.parse(raw);
-    // Merge: only accept known keys, fall back to defaults for missing/invalid
-    const merged = { ...DEFAULT_VIS_CONFIG };
     for (const key of Object.keys(DEFAULT_VIS_CONFIG)) {
       if (key in parsed && typeof parsed[key] === typeof DEFAULT_VIS_CONFIG[key]) {
         merged[key] = parsed[key];
       }
     }
-    // Deep-merge the graph-viewer object so individual fields fall back cleanly.
     if (parsed.graphViewer && typeof parsed.graphViewer === 'object') {
       merged.graphViewer = { ...DEFAULT_VIS_CONFIG.graphViewer, ...parsed.graphViewer };
     }
     return merged;
   } catch (_) {
-    return { ...DEFAULT_VIS_CONFIG };
+    return merged;
   }
 }
 
@@ -495,6 +531,7 @@ function saveVisConfig(config) {
   try {
     localStorage.setItem(VIS_CONFIG_STORAGE_KEY, JSON.stringify(config));
   } catch (_) { /* storage unavailable — silently ignore */ }
+  scheduleStyleAutosave();
 }
 
 // ── Structure type helpers ──
@@ -903,11 +940,13 @@ async function reloadDsvisAgent() {
 function applyVisConfig() {
   saveVisConfig(VIS_CONFIG);
   resetGraphInstance();
-  if (currentRaw != null) {
-    renderStepRaw(currentRaw);
-  } else {
-    renderStep(current);
-  }
+  // Rebuild synchronously (not via the rAF-scheduled renderStep) so there is no
+  // window between destroying the old graph and creating the new one — avoids
+  // stale/partial frames (blank columns / leftover dividers) when switching
+  // display modes.
+  const ri = currentRaw != null ? currentRaw : toReal(current);
+  const di = currentRaw != null ? current : toDisplay(ri);
+  renderStepImpl(ri, di);
 }
 
 /** Re-render current step without destroying the graph (for settings changes). */
@@ -2014,12 +2053,20 @@ function initGraph(data) {
           const isRef = gridRefs.includes(i);
 
           // Vertical divider — skip the leftmost one when title column is hidden
-          // (otherwise it creates a visual line just inside the card's rounded border)
+          // (otherwise it creates a visual line just inside the card's rounded border).
+          // When the title column is collapsed we must ALSO hide any divider that
+          // a previous render drew there: incremental updates reuse shapes, and the
+          // stale divider would linger as an extra separator line.
           if (i !== 0 || titleColW !== 0) {
             this.upsert(`vdiv-${i}`, 'line', {
               x1: colX, y1: gridTop,
               x2: colX, y2: gridTop + visibleRows * gridRowH,
               stroke: nodeStroke, lineWidth: 0.5, zIndex: 0
+            }, container);
+          } else {
+            this.upsert(`vdiv-${i}`, 'line', {
+              x1: -w/2, y1: -h/2, x2: -w/2, y2: -h/2,
+              stroke: 'transparent', lineWidth: 0, zIndex: -99
             }, container);
           }
 
@@ -3947,6 +3994,7 @@ function toggleNodeFieldVisible(key) {
   } else {
     NODE_TYPE_VISIBILITY.set(key, 'self');
   }
+  persistVisibility();
   syncSettingsPanel();
   renderStep(current);
 }
@@ -3966,6 +4014,7 @@ function toggleBindGroup(className, groupName) {
   for (const key of entry.fields) {
     NODE_TYPE_VISIBILITY.set(key, newState);
   }
+  persistVisibility();
   syncSettingsPanel();
   renderStep(current);
 }
@@ -4575,26 +4624,40 @@ function renderStepImpl(ri, displayIndex) {
     if (graph) resetGraphInstance();
     initGraph(graphData);
   } else {
-    const prepared = prepareGraphForLayout(graphData, getGraphSize());
-    const nextLayout = prepared.layout;
-    // Tag node data with a render epoch so G6 always sees a change
-    // even when VIS_CONFIG (external) is the only thing that changed.
-    const now = Date.now();
-    for (const n of (prepared.data.nodes || [])) {
-      if (n.style) n.style._renderEpoch = now;
+    // Row-display-mode / text-flow changes can leave stale grid columns and
+    // separator lines behind on the incremental setData+render path (blank
+    // columns, extra dividers). A full rebuild clears them — equivalent to
+    // going back to the first step and returning to the current one. Track the
+    // last mode on the instance so only actual changes force a rebuild.
+    const rowModeChanged = graph._dsvisLastRowMode !== undefined && graph._dsvisLastRowMode !== VIS_CONFIG.rowDisplayMode;
+    const flowChanged = graph._dsvisLastTextFlow !== undefined && graph._dsvisLastTextFlow !== VIS_CONFIG.textFlow;
+    graph._dsvisLastRowMode = VIS_CONFIG.rowDisplayMode;
+    graph._dsvisLastTextFlow = VIS_CONFIG.textFlow;
+    if (rowModeChanged || flowChanged) {
+      resetGraphInstance();
+      initGraph(graphData);
+    } else {
+      const prepared = prepareGraphForLayout(graphData, getGraphSize());
+      const nextLayout = prepared.layout;
+      // Tag node data with a render epoch so G6 always sees a change
+      // even when VIS_CONFIG (external) is the only thing that changed.
+      const now = Date.now();
+      for (const n of (prepared.data.nodes || [])) {
+        if (n.style) n.style._renderEpoch = now;
+      }
+      if (typeof graph.setOptions === 'function' && nextLayout.type !== 'preset') {
+        graph.setOptions({ layout: nextLayout });
+      } else if (typeof graph.setLayout === 'function' && nextLayout.type !== 'preset') {
+        graph.setLayout(nextLayout);
+      }
+      graph.setData(prepared.data);
+      if (typeof graph.once === 'function') {
+        graph.once('afterlayout', refreshGraphVisuals);
+        graph.once('afterlayout', enforceLeftRightOrdering);
+        graph.once('afterrender', refreshGraphVisuals);
+      }
+      graph.render();
     }
-    if (typeof graph.setOptions === 'function' && nextLayout.type !== 'preset') {
-      graph.setOptions({ layout: nextLayout });
-    } else if (typeof graph.setLayout === 'function' && nextLayout.type !== 'preset') {
-      graph.setLayout(nextLayout);
-    }
-    graph.setData(prepared.data);
-    if (typeof graph.once === 'function') {
-      graph.once('afterlayout', refreshGraphVisuals);
-      graph.once('afterlayout', enforceLeftRightOrdering);
-      graph.once('afterrender', refreshGraphVisuals);
-    }
-    graph.render();
   }
 
   syncCodeHighlights(true);
@@ -6505,21 +6568,73 @@ document.getElementById('ctxHideCascade')?.addEventListener('click', () => hideV
 
 updateResizeHandleState();
 
-// Load persisted config
+// Load persisted config — per-script style file wins, localStorage is the fallback.
 loadProxy();
 loadVisibility();
-try {
-  const leRaw = localStorage.getItem('dsvis:layerEdges');
-  if (leRaw) { LAYER_EDGES = new Set(JSON.parse(leRaw)); }
-} catch(_) {}
-try {
-  const tfRaw = localStorage.getItem('dsvis:titleField');
-  if (tfRaw) { TITLE_FIELD = JSON.parse(tfRaw); }
-} catch(_) {}
+if (FILE_STYLE && Array.isArray(FILE_STYLE.layerEdges)) {
+  LAYER_EDGES = new Set(FILE_STYLE.layerEdges);
+} else {
+  try {
+    const leRaw = localStorage.getItem('dsvis:layerEdges');
+    if (leRaw) { LAYER_EDGES = new Set(JSON.parse(leRaw)); }
+  } catch(_) {}
+}
+if (FILE_STYLE && FILE_STYLE.titleField) {
+  const _tkeys = Object.keys(FILE_STYLE.titleField);
+  if (_tkeys.length) TITLE_FIELD = { className: _tkeys[0], key: FILE_STYLE.titleField[_tkeys[0]] };
+} else {
+  try {
+    const tfRaw = localStorage.getItem('dsvis:titleField');
+    if (tfRaw) { TITLE_FIELD = JSON.parse(tfRaw); }
+  } catch(_) {}
+}
+
+// ── Automatic style persistence ──
+// Every style change is written back to <cwd>/.dsvis/<script>.json automatically
+// (debounced) and flushed on page hide — no explicit save button needed. Saves
+// are suppressed until the page has finished initialising so loading a saved
+// style never immediately overwrites it.
+
+let __styleAutosaveReady = false;
+let __styleAutosaveTimer = null;
+
+function __styleAutosavePayload() {
+  if (!STYLE_SERVER || !STYLE_SERVER.port) return null;
+  return JSON.stringify({ script: STYLE_SERVER.script || '', style: exportCurrentConfig() });
+}
+
+function __styleAutosaveSend() {
+  const body = __styleAutosavePayload();
+  if (!body) return;
+  fetch(`http://127.0.0.1:${STYLE_SERVER.port}/style`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+    keepalive: true,
+  }).catch(() => {});
+}
+
+/** Debounced auto-save after any style change. */
+function scheduleStyleAutosave() {
+  if (!STYLE_SERVER || !STYLE_SERVER.port) return;
+  if (!__styleAutosaveReady) return; // suppress writes while initialising
+  clearTimeout(__styleAutosaveTimer);
+  __styleAutosaveTimer = setTimeout(__styleAutosaveSend, 600);
+}
+
+// Flush any pending save when the page is closed / navigated away.
+window.addEventListener('pagehide', () => {
+  if (!STYLE_SERVER || !STYLE_SERVER.port || !__styleAutosaveReady) return;
+  clearTimeout(__styleAutosaveTimer);
+  __styleAutosaveSend();
+});
 
 renderAllCode();
 computeStepDiffs();
 renderStep(0);
+// Enable automatic style persistence once the page has finished initialising,
+// so loading a saved style never immediately overwrites it.
+setTimeout(() => { __styleAutosaveReady = true; }, 500);
 </script>
 </body>
 </html>
