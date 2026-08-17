@@ -2244,6 +2244,9 @@ function registerGraphNodeType() {
       const raw = attributes.value != null ? String(attributes.value) : '';
       const text = raw.length > 8 ? raw.slice(0, 8) + '…' : raw;
       const highlight = !!attributes.highlight;
+      // Nodes keep their normal, fully opaque look — connected/disconnected is
+      // only used for z-index layering (connected nodes sit above disconnected
+      // ones, set in buildGraphViewerG6Data), not for dimming.
       const key = this.upsert('key', 'circle', {
         x: 0, y: 0, r,
         fill: highlight ? '#ffe8d0' : '#ffffff',
@@ -2314,12 +2317,22 @@ function buildGraphViewerG6Data(gv, highlight, cardNodes) {
     : cfg.direction === 'directed';
   const highlightNodes = (highlight && highlight.nodes) || new Set();
   const highlightEdges = (highlight && highlight.edges) || new Set();
+  // Connection degree per node — used only to layer nodes by z-index (connected
+  // nodes render above disconnected ones) so that as edges appear the connected
+  // subgraph is never hidden behind still-disconnected nodes. No visual dimming
+  // is applied; all nodes keep their normal look.
+  const degree = new Map();
+  for (const e of gv.edges || []) {
+    degree.set(String(e.source), (degree.get(String(e.source)) || 0) + 1);
+    degree.set(String(e.target), (degree.get(String(e.target)) || 0) + 1);
+  }
   const nodes = (gv.nodes || []).map((n) => {
     let value = n.value;
     if (cfg.valueField) {
       const v = graphViewerFieldValue(cardById.get(String(n.id)), cfg.valueField);
       if (v != null) value = v;
     }
+    const connected = (degree.get(String(n.id)) || 0) > 0;
     return {
       id: String(n.id),
       type: 'graph-node',
@@ -2327,6 +2340,11 @@ function buildGraphViewerG6Data(gv, highlight, cardNodes) {
         r: Number(cfg.radius) || 24,
         value,
         highlight: highlightNodes.has(String(n.id)),
+        connected,
+        // Connected nodes render above disconnected ones (higher zIndex), so
+        // as edges appear the connected part never gets hidden behind the
+        // still-disconnected nodes.
+        zIndex: connected ? 2 : 0,
       },
     };
   });
