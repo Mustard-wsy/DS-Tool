@@ -1165,6 +1165,55 @@ function resetGraphInstance() {
   graph = null;
 }
 
+// ── Frame freeze (avoid the white blink while a dagre tree rebuilds) ──
+// Move the current canvases into an absolutely-positioned overlay inside the
+// #graph container BEFORE the graph is destroyed. G6's destroy() only removes
+// the canvases it still manages inside the container, so moving the nodes out
+// preserves their rendered pixels (a pixel copy would NOT work — G6 renders to
+// WebGL canvases whose drawing buffers can't be read back). The viewport keeps
+// showing the previous step until the new layout is ready, then the overlay is
+// removed together with the old canvases. Returns the overlay element, or null
+// when there was nothing to freeze (e.g. first render).
+function freezeGraphFrame() {
+  const container = document.getElementById('graph');
+  if (!container) return null;
+  const canvases = Array.from(container.querySelectorAll('canvas'));
+  if (!canvases.length) return null;
+  // Reuse an existing overlay so every rebuild still registers a fresh
+  // unfreeze (avoids a stale overlay getting stuck during rapid stepping).
+  const existing = document.getElementById('__dsvis_freeze__');
+  if (existing) return existing;
+  const overlay = document.createElement('div');
+  overlay.id = '__dsvis_freeze__';
+  // Mirror the container's grid stacking so the moved layers overlay exactly
+  // like the originals (same width/height/grid-area from their inline styles).
+  overlay.style.cssText = 'position:absolute;inset:0;display:grid;isolation:isolate;z-index:9999;pointer-events:none;overflow:hidden;';
+  for (const c of canvases) {
+    overlay.appendChild(c);  // move, don't copy — keeps the rendered pixels
+  }
+  container.appendChild(overlay);
+  return overlay;
+}
+
+/** Remove the frozen-frame overlay created by freezeGraphFrame(). */
+function unfreezeGraphFrame() {
+  const ov = document.getElementById('__dsvis_freeze__');
+  if (!ov) return;
+  // Best-effort: release any WebGL contexts held by the moved canvases so
+  // rapid stepping doesn't accumulate contexts (G6's destroy() can't reach
+  // canvases that were moved out of the container).
+  for (const c of Array.from(ov.querySelectorAll('canvas'))) {
+    try {
+      const gl = c.getContext('webgl2') || c.getContext('webgl');
+      if (gl && typeof gl.getExtension === 'function') {
+        const ext = gl.getExtension('WEBGL_lose_context');
+        if (ext && typeof ext.loseContext === 'function') ext.loseContext();
+      }
+    } catch (_) { /* best-effort */ }
+  }
+  ov.remove();
+}
+
 const VIS_CONFIG = loadVisConfig();
 // On first load, auto-detect structure type if set to 'other'
 if (VIS_CONFIG.structureType === 'other') {
@@ -5518,21 +5567,41 @@ function renderStepImpl(ri, displayIndex) {
     graph._dsvisLastRowMode = VIS_CONFIG.rowDisplayMode;
     graph._dsvisLastTextFlow = VIS_CONFIG.textFlow;
     // G6's dagre layout is history-dependent: its internal node map is ordered
-    // by *first-seen* id, so stepping one step at a time (nodes added/removed
-    // incrementally) can lay out the SAME step differently than a direct
-    // "jump from step 0" (nodes added in bulk). That made nodes land in
-    // different ranks / overlap / blank cards appearing mid-playback. Tree
+    // by *first-seen* id, and on an in-place setData it reuses the previous
+    // layout result as input, so stepping one step at a time (nodes
+    // added/removed incrementally) can lay out the SAME step differently than
+    // a direct "jump from step 0" (nodes added in bulk) — nodes landed in
+    // different ranks, overlapped, or blank cards appeared mid-playback. Tree
     // structures that run dagre (B-Tree / B+ / n-ary) therefore rebuild the
     // graph on every step so G6 always lays out from the deterministic data
-    // order — stepping then matches a fresh "jump" render exactly. Structures
-    // with a pre-positioned (layout:null) or grid layout keep the incremental
-    // path and its position animation.
+    // order — stepping then matches a fresh "jump" render exactly.
+    //
+    // The rebuild destroys the canvas, which would blank the viewport for a
+    // frame or two while the new layout runs. To avoid that visual flash we
+    // freeze the current frame as an overlay (freezeGraphFrame) before
+    // destroying, then lift it (unfreezeGraphFrame) once the new step has
+    // laid out and fitted — the previous frame persists right up to the moment
+    // the new one is ready instead of a white blink.
     const isDagreTree = VIS_CONFIG.structureType === 'btree' ||
       VIS_CONFIG.structureType === 'bplustree' ||
       VIS_CONFIG.structureType === 'nary-tree';
     if (rowModeChanged || flowChanged || isDagreTree) {
+      const freeze = freezeGraphFrame();
       resetGraphInstance();
       initGraph(graphData);
+      // Lift the frozen frame once the new step has laid out and fitted.
+      if (freeze && typeof graph?.once === 'function') {
+        const liftFreeze = () => {
+          requestAnimationFrame(() => requestAnimationFrame(() => unfreezeGraphFrame()));
+        };
+        graph.once('afterlayout', liftFreeze);
+        graph.once('afterrender', liftFreeze);
+        // Safety net: never leave a stale overlay behind even if a layout
+        // event is missed during rapid stepping.
+        setTimeout(() => unfreezeGraphFrame(), 3000);
+      } else if (freeze) {
+        unfreezeGraphFrame();
+      }
     } else {
       const prepared = prepareGraphForLayout(graphData, getGraphSize());
       const nextLayout = prepared.layout;

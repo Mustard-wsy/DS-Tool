@@ -10,7 +10,7 @@
     "BTreeNode.leaf": "self",
     "BTreeNode.children": "visible",
     "BTreeNode.keys": "visible",
-    "BTree.root": "self",
+    "BTree.root": "visible",
     "BTreeNode.keys[0]": "visible",
     "BTreeNode.keys[1]": "visible",
     "BTreeNode.keys[2]": "visible",
@@ -36,6 +36,7 @@
   "showSubtitle": true,
   "uniformEdgesEnabled": true,
   "rowDisplayMode": "value",
+  "pointerRep": "sequential",
   "parentFieldKey": "",
   "graphViewer": {
     "valueField": "id",
