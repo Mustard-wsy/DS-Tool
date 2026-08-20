@@ -1718,27 +1718,13 @@ function applyCompactGridLayout(graphData, viewport = null) {
 
 // Post-dagre: enforce left-child-left, right-child-right for binary trees.
 // Runs after G6's dagre layout finishes, swapping sibling x positions if needed.
-function applyTextbookLayout() {
-  // G6 v5: node data lives on graph.getData() with x/y in node.style (the
-  // old graph.getNodes()/getEdges() v4 API does not exist here). G6's
-  // incremental layout keeps already-placed nodes where they were, so on
-  // step-by-step playback dagre can leave whole subtrees out of order.
-  //
-  // Instead of patching sibling x values (which left whole subtrees out of
-  // order — leaf layer became rl,rr,ll,lr) or reusing dagre's skewed x
-  // spacing (which made some children fly far off-centre), lay the tree out
-  // "textbook" style: leaves are evenly spaced in pre-order (ll, lr, rl,
-  // rr), internal nodes sit exactly at the midpoint of their children, and
-  // y stays on the dagre rank. translateElementTo(…, true) keeps the layout
-  // animation AND produces a balanced, parent-centred tree.
-  var leftKey = VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.left;
-  var rightKey = VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.right;
-  if (!leftKey && !rightKey) return;
-
-  var data = graph.getData ? graph.getData() : { nodes: [], edges: [] };
-  var nodes = Array.isArray(data.nodes) ? data.nodes : [];
-  var edges = Array.isArray(data.edges) ? data.edges : [];
-
+// Pure layout calculator shared by the pre-position pass (prepareGraphForLayout,
+// which then disables G6's layout so nodes render directly in place) and the
+// afterlayout correction (applyTextbookLayout). Produces "textbook" binary tree
+// positions: leaves evenly spaced in pre-order (ll, lr, rl, rr), internal nodes
+// at the midpoint of their children, rows stacked at a fixed rank gap, and
+// non-tree nodes (containers) pinned above the root. Returns { id: [x, y] }.
+function computeTextbookPositions(nodes, edges, leftKey, rightKey) {
   var children = {};
   var hasParent = {};
   for (var _ei = 0; _ei < edges.length; _ei++) {
@@ -1750,44 +1736,45 @@ function applyTextbookLayout() {
     if (rightKey && label === rightKey) { if (!children[src]) children[src] = []; children[src].push(tgt); hasParent[tgt] = true; }
   }
 
-  // Roots = nodes that own left/right children but have no left/right
-  // parent (the container node is not part of the binary tree).
+  // Roots = nodes that own left/right children but have no left/right parent.
   var roots = [];
   for (var _ni = 0; _ni < nodes.length; _ni++) {
     var nid = String(nodes[_ni].id);
     if ((children[nid] || []).length && !hasParent[nid]) roots.push(nid);
   }
-  if (!roots.length) roots.push(String(nodes[0].id));
+  if (!roots.length) {
+    if (!nodes.length) return null;
+    roots.push(String(nodes[0].id));
+  }
 
-  // Only the tree nodes (roots + descendants) influence the horizontal
-  // spacing, so a wide container node does not inflate the gap.
   var inTree = {};
+  // Cycle guard: during AVL rotations the captured left/right edges can form a
+  // temporary cycle (a node briefly points back at an ancestor). Without the
+  // visited check these DFS passes blow the stack.
   var collect = function(id) {
+    if (inTree[id]) return;
     inTree[id] = true;
     var ch = children[id] || [];
     for (var _c = 0; _c < ch.length; _c++) collect(ch[_c]);
   };
   for (var _r = 0; _r < roots.length; _r++) collect(roots[_r]);
 
-  var yOf = {};
+  // Only tree nodes influence the horizontal spacing (container excluded).
   var maxW = 60;
   for (var _ni2 = 0; _ni2 < nodes.length; _ni2++) {
-    var nd = nodes[_ni2];
-    var id2 = String(nd.id);
-    yOf[id2] = nd.style && nd.style.y != null ? nd.style.y : 0;
-    if (inTree[id2]) {
-      var sz = nd.style && nd.style.size;
+    if (inTree[String(nodes[_ni2].id)]) {
+      var sz = nodes[_ni2].style && nodes[_ni2].style.size;
       if (sz && sz[0] > maxW) maxW = sz[0];
     }
   }
 
-  // Leaf count per subtree (post-order) → total leaves for horizontal spacing.
   var leafCount = {};
   var dfsCount = function(id) {
+    if (leafCount[id] != null) return; // memo + cycle guard
     var ch = children[id] || [];
     if (!ch.length) { leafCount[id] = 1; return; }
     var t = 0;
-    for (var _ci = 0; _ci < ch.length; _ci++) { dfsCount(ch[_ci]); t += leafCount[ch[_ci]]; }
+    for (var _ci = 0; _ci < ch.length; _ci++) { dfsCount(ch[_ci]); t += leafCount[ch[_ci]] || 0; }
     leafCount[id] = t;
   };
   for (var _ri = 0; _ri < roots.length; _ri++) dfsCount(roots[_ri]);
@@ -1799,36 +1786,42 @@ function applyTextbookLayout() {
   var pos = {};
   var slot = 0;
   var assign = function(id) {
+    if (pos[id] != null) return; // cycle guard
     var ch = children[id] || [];
     if (!ch.length) {
-      pos[id] = (slot - (totalLeaves - 1) / 2) * SPACING;
-      slot++;
+      pos[id] = (slot - (totalLeaves - 1) / 2) * SPACING; slot++;
     } else {
       for (var _ci2 = 0; _ci2 < ch.length; _ci2++) assign(ch[_ci2]);
-      pos[id] = (pos[ch[0]] + pos[ch[ch.length - 1]]) / 2;
+      var p0 = pos[ch[0]], p1 = pos[ch[ch.length - 1]];
+      if (p0 != null && p1 != null) pos[id] = (p0 + p1) / 2;
+      else { pos[id] = (slot - (totalLeaves - 1) / 2) * SPACING; slot++; }
     }
   };
   for (var _ri3 = 0; _ri3 < roots.length; _ri3++) assign(roots[_ri3]);
 
-  var updates = {};
-  for (var _ni3 = 0; _ni3 < nodes.length; _ni3++) {
-    var nd2 = nodes[_ni3];
-    var id3 = String(nd2.id);
-    if (pos[id3] != null) updates[id3] = [pos[id3], yOf[id3]];
+  // Row y from root depth at a fixed rank gap (no dagre dependency).
+  var ROW_GAP = 124;
+  var CONTAINER_GAP = 140;
+  var depth = {};
+  var queue = [];
+  for (var _r4 = 0; _r4 < roots.length; _r4++) { depth[roots[_r4]] = 0; queue.push(roots[_r4]); }
+  while (queue.length) {
+    var idq = queue.shift();
+    var chq = children[idq] || [];
+    for (var _c5 = 0; _c5 < chq.length; _c5++) {
+      if (depth[chq[_c5]] == null) { depth[chq[_c5]] = depth[idq] + 1; queue.push(chq[_c5]); }
+    }
   }
 
-  // Non-tree nodes (containers / currently-unlinked nodes) are left where
-  // dagre put them, which on early playback steps can overlap the tree: e.g.
-  // a HuffmanTree container stays orphaned (its `root` pointer is only
-  // assigned after the whole merge loop) while the HuffmanNode tree is being
-  // laid out beneath it. Pin them one rank above the tree root, horizontally
-  // spread and centred on the root, so they never collide with the tree.
+  var result = {};
+  for (var _ni3 = 0; _ni3 < nodes.length; _ni3++) {
+    var id3 = String(nodes[_ni3].id);
+    if (pos[id3] != null) result[id3] = [pos[id3], (depth[id3] != null ? depth[id3] : 0) * ROW_GAP];
+  }
+
+  // Non-tree nodes (containers / not-yet-linked nodes) sit one rank above the
+  // root, spread horizontally around the root's x.
   var treeRootX = roots.length && pos[roots[0]] != null ? pos[roots[0]] : 0;
-  var minTreeY = Infinity;
-  for (var _pi in pos) { if (yOf[_pi] < minTreeY) minTreeY = yOf[_pi]; }
-  if (!isFinite(minTreeY)) minTreeY = 0;
-  var TOP_RANK_GAP = 140;
-  var topY = minTreeY - TOP_RANK_GAP;
   var nonTree = [];
   for (var _n4 = 0; _n4 < nodes.length; _n4++) {
     if (!inTree[String(nodes[_n4].id)]) nonTree.push(nodes[_n4]);
@@ -1842,10 +1835,33 @@ function applyTextbookLayout() {
     var ntGap = ntW + 30;
     for (var _nt2 = 0; _nt2 < nonTree.length; _nt2++) {
       var nx = treeRootX + (_nt2 - (nonTree.length - 1) / 2) * ntGap;
-      updates[String(nonTree[_nt2].id)] = [nx, topY];
+      result[String(nonTree[_nt2].id)] = [nx, -CONTAINER_GAP];
     }
   }
+  return result; // { id: [x, y] }
+}
 
+function applyTextbookLayout() {
+  // G6 v5: node data lives on graph.getData() with x/y in node.style (the
+  // old graph.getNodes()/getEdges() v4 API does not exist here). Recompute the
+  // textbook positions and animate into place with translateElementTo(…, true)
+  // so the layout animation is kept. When the pre-position pass already placed
+  // the nodes (prepareGraphForLayout + disabled layout), this is a no-op.
+  var leftKey = VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.left;
+  var rightKey = VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.right;
+  if (!leftKey && !rightKey) return;
+  var data = graph.getData ? graph.getData() : { nodes: [], edges: [] };
+  var posMap = computeTextbookPositions(
+    Array.isArray(data.nodes) ? data.nodes : [],
+    Array.isArray(data.edges) ? data.edges : [],
+    leftKey, rightKey
+  );
+  if (!posMap) return;
+  var updates = {};
+  for (var _i = 0; _i < data.nodes.length; _i++) {
+    var id = String(data.nodes[_i].id);
+    if (posMap[id]) updates[id] = posMap[id];
+  }
   if (Object.keys(updates).length && typeof graph.translateElementTo === 'function') {
     graph.translateElementTo(updates, true);
   }
@@ -1913,6 +1929,38 @@ function prepareGraphForLayout(graphData, viewport = null) {
   // left-subtree nodes precede right-subtree nodes.  Dagre processes nodes in
   // data order, which strongly influences sibling positioning within a rank.
   const sortedGraphData = reorderTreeNodesByLeftRight(graphData || layoutData);
+
+  // Binary trees ALWAYS use the pre-positioned textbook layout (no G6 layout),
+  // even for tiny early steps that dagre/grid would otherwise lay out
+  // differently. Mixing grid/dagre layouts mid-playback makes nodes visibly
+  // "flash then fix" as the 'afterlayout' correction moves them — exactly the
+  // jitter seen during step-through. The same positions are reused by
+  // applyTextbookLayout() as a no-op safety net.
+  //
+  // Left/right labels come from VIS_CONFIG.layerEdgeKeys (the style panel),
+  // NOT data sniffing: early capture steps can have incomplete edges (e.g. a
+  // merge step records no left/right edge yet), so detectLeftRightLabels would
+  // bail and fall back to grid/dagre.
+  if (VIS_CONFIG.structureType === 'binary-tree') {
+    const lk = VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.left;
+    const rk = VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.right;
+    if (lk && rk) {
+      try {
+        const tb = computeTextbookPositions(
+          Array.isArray(sortedGraphData?.nodes) ? sortedGraphData.nodes : [],
+          Array.isArray(sortedGraphData?.edges) ? sortedGraphData.edges : [],
+          lk, rk
+        );
+        if (tb) {
+          for (const _pn of (sortedGraphData.nodes || [])) {
+            const pp = tb[String(_pn.id)];
+            if (pp && _pn.style) { _pn.style.x = pp[0]; _pn.style.y = pp[1]; }
+          }
+          return { data: sortedGraphData, layout: null };
+        }
+      } catch (_e) { /* fall through to dagre/grid below */ }
+    }
+  }
 
   const metrics = analyzeLayoutMetrics(layoutData, viewport || getGraphSize());
   if (!metrics.treeLike) {
@@ -2467,7 +2515,9 @@ function initGraph(data) {
       easing: ANIMATION_CONFIG.easing,
     },
     data: prepared.data,
-    layout: prepared.layout,
+    // Binary-tree pre-positioned data ships layout:null (no G6 layout), so the
+    // nodes render exactly where prepareGraphForLayout placed them.
+    layout: prepared.layout == null ? null : prepared.layout,
     node:{
       type:'card',
       style: { port: true }
@@ -4909,9 +4959,13 @@ function renderStepImpl(ri, displayIndex) {
       for (const n of (prepared.data.nodes || [])) {
         if (n.style) n.style._renderEpoch = now;
       }
-      if (typeof graph.setOptions === 'function' && nextLayout.type !== 'preset') {
+      if (nextLayout == null && typeof graph.setLayout === 'function') {
+        // Binary-tree pre-positioned data: no G6 layout so nodes stay where the
+        // textbook pass put them (no dagre flash-then-fix during playback).
+        graph.setLayout(null);
+      } else if (typeof graph.setOptions === 'function' && nextLayout && nextLayout.type !== 'preset') {
         graph.setOptions({ layout: nextLayout });
-      } else if (typeof graph.setLayout === 'function' && nextLayout.type !== 'preset') {
+      } else if (typeof graph.setLayout === 'function' && nextLayout && nextLayout.type !== 'preset') {
         graph.setLayout(nextLayout);
       }
       graph.setData(prepared.data);
