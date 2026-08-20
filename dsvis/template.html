@@ -80,7 +80,6 @@ __STYLES__
         <div class="settings-row">
           <span>文本方向</span>
           <select id="settingsTextFlow">
-            <option value="horizontal">横向</option>
             <option value="vertical">纵向</option>
           </select>
         </div>
@@ -157,6 +156,8 @@ const STACK_UI_STATE = {
 let current = 0;
 let currentRaw = null;  // non-null when stepping through execution events (raw STEPS index)
 let graph = null;
+// Minimal debug hook so automated tests can inspect the live G6 graph.
+window.__dsvisGraph = () => graph;
 let pendingRenderRequest = null;
 let renderRafId = null;
 let codeRows = [];
@@ -179,8 +180,12 @@ let hiddenPanelVisible = false;
 const NODE_TYPE_REGISTRY = new Map();  // Map<className, [{key, className, fieldName, kind}]>
 const NODE_TYPE_VISIBILITY = new Map();  // Map<className.fieldName, state>
 // Fields whose edges render (arrows shown) but must NOT drive the layout.
-// Controlled by the "布局" panel; independent of visibility.
+// Controlled by the "指针" panel; independent of visibility.
 const LAYOUT_EXEMPT_KEYS = new Set();
+// Per-field anchor for pointer edges (e.g. B+Tree next): 'row'(default)|
+// 'title'|'top'|'bottom'|'left'|'right'|'auto'. Unified with LAYOUT_EXEMPT_KEYS
+// under the "指针" management panel.
+const ANCHOR = new Map();
 const BIND_GROUP_REGISTRY = new Map();   // Map<className, [{groupName, fields: [key]}]>
 // EDGE_PROXY: "Type.refField" → { proxy: "Type.valueField", ratio: number|'auto', includeEnds: boolean }
 const EDGE_PROXY = new Map();
@@ -249,6 +254,10 @@ function persistLayoutExempt() {
   try { localStorage.setItem('dsvis:layoutExempt', JSON.stringify(Array.from(LAYOUT_EXEMPT_KEYS))); } catch(_) {}
   scheduleStyleAutosave();
 }
+function persistAnchor() {
+  try { localStorage.setItem('dsvis:anchor', JSON.stringify(Object.fromEntries(ANCHOR))); } catch(_) {}
+  scheduleStyleAutosave();
+}
 /** Toggle whether a field's edges drive the layout (see LAYOUT_EXEMPT_KEYS).
  *  exempt=true → the field is layout-exempt (edges drawn, do not drive layout). */
 function setFieldLayoutExempt(key, exempt) {
@@ -257,6 +266,28 @@ function setFieldLayoutExempt(key, exempt) {
   persistLayoutExempt();
   syncSettingsPanel();
   renderStep(current);
+}
+/** Set how a pointer field's hidden edges anchor to its node:
+ *  'row'(default, visible→row port) | 'title' | 'top' | 'bottom' | 'left' | 'right' | 'auto'. */
+function setFieldAnchor(key, anchor) {
+  if (anchor && anchor !== 'row') ANCHOR.set(key, anchor);
+  else ANCHOR.delete(key);
+  persistAnchor();
+  syncSettingsPanel();
+  renderStep(current);
+}
+function getFieldAnchor(key) {
+  return ANCHOR.get(key) || 'row';
+}
+/** Resolve a pointer field's anchor for hidden edges.
+ *  Explicit config wins; else preset by layout role:
+ *    - layout-deciding pointer → 'v-auto' (top/bottom midpoint by target y)
+ *    - layout-exempt / side pointer (e.g. next) → 'h-auto' (left/right by target x)
+ *  Explicit 'auto' behaves like the preset. */
+function resolveAnchorForField(key) {
+  const explicit = getFieldAnchor(key);
+  if (explicit !== 'row') return explicit;
+  return isFieldNoLayout(key) ? 'h-auto' : 'v-auto';
 }
 function loadVisibility() {
   // 1. Persisted per-script style file (authoritative — not localStorage).
@@ -291,6 +322,7 @@ function exportCurrentConfig() {
     structureType: VIS_CONFIG.structureType,
     edgeProxy: proxyObj, visibility: visObj, titleField: tf,
     layoutExempt: Array.from(LAYOUT_EXEMPT_KEYS),
+    anchor: Object.fromEntries(ANCHOR),
     layerEdges: Array.from(LAYER_EDGES),
     layerEdgeKeys: { ...VIS_CONFIG.layerEdgeKeys },
     layout: { rankdir: VIS_CONFIG.textFlow === 'vertical' ? 'TB' : 'LR' },
@@ -312,7 +344,7 @@ function importConfig(jsonText) {
   if (cfg.edgeProxy) { EDGE_PROXY.clear(); for (var _k in cfg.edgeProxy) EDGE_PROXY.set(_k, cfg.edgeProxy[_k]); }
   if (cfg.visibility) { for (var _vk in cfg.visibility) NODE_TYPE_VISIBILITY.set(_vk, cfg.visibility[_vk]); }
   if (cfg.titleField) { var _tkeys = Object.keys(cfg.titleField); if (_tkeys.length) TITLE_FIELD = { className: _tkeys[0], key: cfg.titleField[_tkeys[0]] }; }
-  if (cfg.layout && cfg.layout.rankdir) VIS_CONFIG.textFlow = cfg.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
+  if (cfg.layout && cfg.layout.rankdir) VIS_CONFIG.textFlow = 'vertical'; // horizontal no longer supported
   if (cfg.showSubtitle !== undefined) VIS_CONFIG.showSubtitle = cfg.showSubtitle;
   if (cfg.uniformEdgesEnabled !== undefined) VIS_CONFIG.uniformEdgesEnabled = cfg.uniformEdgesEnabled;
   if (cfg.rowDisplayMode) VIS_CONFIG.rowDisplayMode = cfg.rowDisplayMode;
@@ -324,6 +356,8 @@ function importConfig(jsonText) {
   }
   LAYER_EXEMPT_KEYS.clear();
   if (Array.isArray(cfg.layoutExempt)) { for (var _le2 = 0; _le2 < cfg.layoutExempt.length; _le2++) LAYER_EXEMPT_KEYS.add(cfg.layoutExempt[_le2]); }
+  ANCHOR.clear();
+  if (cfg.anchor && typeof cfg.anchor === 'object') { for (const _a in cfg.anchor) ANCHOR.set(_a, cfg.anchor[_a]); }
   LAYER_EDGES.clear();
   if (Array.isArray(cfg.layerEdges)) { for (var _le = 0; _le < cfg.layerEdges.length; _le++) LAYER_EDGES.add(cfg.layerEdges[_le]); }
   persistProxy(); persistVisibility(); persistLayoutExempt();
@@ -428,7 +462,7 @@ function resetAllStyle() {
   LAYER_EDGES.clear();
   TITLE_FIELD = null;
   for (var _rkey of NODE_TYPE_VISIBILITY.keys()) NODE_TYPE_VISIBILITY.set(_rkey, 'visible');
-  VIS_CONFIG.textFlow = 'horizontal';
+  VIS_CONFIG.textFlow = 'vertical';
   VIS_CONFIG.showSubtitle = true;
   VIS_CONFIG.structureType = 'other';
   VIS_CONFIG.layerEdgeKeys = {};
@@ -490,7 +524,7 @@ const PAGE_AGENT_STORAGE_KEY = 'dsvis:pageAgentConfig';
 // local style server is reachable, so style changes still survive a reload.
 const STYLE_LOCAL_KEY = 'dsvis:style:local';
 const DEFAULT_VIS_CONFIG = {
-  textFlow: 'horizontal',
+  textFlow: 'vertical',
   showSubtitle: true,
   structureType: 'other',
   layerEdgeKeys: {},
@@ -519,7 +553,8 @@ function loadVisConfig() {
   //    not the browser's localStorage on C:).
   if (FILE_STYLE) {
     if (FILE_STYLE.layout && FILE_STYLE.layout.rankdir) {
-      merged.textFlow = FILE_STYLE.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
+      // Horizontal text flow is no longer supported — always vertical.
+      merged.textFlow = 'vertical';
     }
     if (FILE_STYLE.showSubtitle !== undefined) merged.showSubtitle = FILE_STYLE.showSubtitle;
     if (FILE_STYLE.structureType) merged.structureType = FILE_STYLE.structureType;
@@ -3173,6 +3208,38 @@ function resolvePortsForEdge(e, nodeMap) {
     };
   }
 
+  // ── Anchor routing (hidden single-pointer edges, e.g. B+Tree next) ──
+  // The edge leaves from the node midpoint chosen by the field's anchor:
+  //   title/top → top-centre (inT) · bottom → bottom-centre (inB)
+  //   left → sL · right → sR · auto/h-auto → side by target x · v-auto → top/bottom by target y
+  if (e.data && e.data._anchor) {
+    const a = e.data._anchor;
+    const sx = src.style?.x ?? 0, sy = src.style?.y ?? 0;
+    const tx = tgt.style?.x ?? 0, ty = tgt.style?.y ?? 0;
+    const srcPorts = new Set((src?.style?.ports || []).map((p) => p.key));
+    const tgtPorts = new Set((tgt?.style?.ports || []).map((p) => p.key));
+    const has = (id) => srcPorts.has(id);
+    const hasT = (id) => tgtPorts.has(id);
+    let sourcePort, targetPort;
+    if (a === 'left') { sourcePort = 'sL'; targetPort = 'sR'; }
+    else if (a === 'right') { sourcePort = 'sR'; targetPort = 'sL'; }
+    else if (a === 'bottom') { sourcePort = 'inB'; targetPort = ty <= sy ? 'inT' : 'inB'; }
+    else if (a === 'title' || a === 'top') { sourcePort = 'inT'; targetPort = ty >= sy ? 'inB' : 'inT'; }
+    else if (a === 'h-auto') { sourcePort = tx >= sx ? 'sR' : 'sL'; targetPort = tx >= sx ? 'sL' : 'sR'; }
+    else if (a === 'v-auto') { sourcePort = ty >= sy ? 'inB' : 'inT'; targetPort = ty >= sy ? 'inT' : 'inB'; }
+    else { // 'auto': dominant axis decides side vs top/bottom
+      if (Math.abs(tx - sx) >= Math.abs(ty - sy)) {
+        sourcePort = tx >= sx ? 'sR' : 'sL'; targetPort = tx >= sx ? 'sL' : 'sR';
+      } else {
+        sourcePort = ty >= sy ? 'inB' : 'inT'; targetPort = ty >= sy ? 'inT' : 'inB';
+      }
+    }
+    if (has(sourcePort) && hasT(targetPort)) {
+      return { sourcePort, targetPort };
+    }
+    return null;
+  }
+
   const refIndex = e.data ? e.data.refIndex : null;
   if (refIndex === null || refIndex === undefined) return null;
 
@@ -4227,8 +4294,21 @@ function renderStackPanel(stackData, stepIndex) {
   syncStackHighlights();
 }
 
-function filterHiddenNodes(graphData) {
-  if (!HIDDEN_NODES.size) return graphData;
+/** Ensure every node exposes the side ports (sL/sR) used by anchor edges, so
+ *  hidden single pointers (e.g. B+Tree next) can leave from the node sides. */
+function ensureSidePorts(nodes) {
+  for (const n of nodes) {
+    const st = n.style || {};
+    if (!Array.isArray(st.ports)) continue;
+    if (st.ports.some(p => p.key === 'sL' || p.key === 'sR')) continue;
+    st.ports = st.ports.concat([
+      { key: 'sL', placement: [0, 0.5], r: 0, fill: 'transparent', stroke: 'transparent' },
+      { key: 'sR', placement: [1, 0.5], r: 0, fill: 'transparent', stroke: 'transparent' },
+    ]);
+  }
+}
+
+function filterHiddenNodes(graphData) {  if (!HIDDEN_NODES.size) return graphData;
   const hiddenSet = new Set(HIDDEN_NODES.keys());
   const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
   
@@ -4700,6 +4780,7 @@ function applyNodeTypeVisibility(graphData) {
     let forceVisible = false;
     let orphan = false;
     let parentCenter = false;
+    let anchorEdge = false;
     if (hiddenKey && !isFieldVisible(hiddenKey)) {
       const state = NODE_TYPE_VISIBILITY.get(hiddenKey);
       const baseMatch = hiddenKey.match(/^(.+?)\[.*\]$/);
@@ -4715,10 +4796,14 @@ function applyNodeTypeVisibility(graphData) {
         forceVisible = true;
         parentCenter = true;
       } else if (VIS_CONFIG.uniformEdgesEnabled && stDef && stDef.uniformEdges) {
-        // ── Uniform-edge mode: orphaned edges survive, positioned uniformly ──
+        // ── Uniform-edge mode: hidden edges survive, positioned per type ──
         if (!isCascade) {
           forceVisible = true;
-          orphan = true;  // will be placed by applyUniformEdgePorts later
+          if (hiddenKey.includes('[')) {
+            orphan = true;  // container (children[i]) → uniform distribution
+          } else {
+            anchorEdge = true;  // single pointer (next/left/right/parent) → anchor midpoint
+          }
         }
         // cascade mode: edge is hidden (no proxy redirect)
       } else {
@@ -4755,6 +4840,11 @@ function applyNodeTypeVisibility(graphData) {
     // Layout-exempt: the field is visible but its edges must not drive layout.
     if (effectiveKey && isFieldNoLayout(effectiveKey) && edge && typeof edge === 'object') {
       edge.data = { ...(edge?.data || {}), _noLayout: true };
+    }
+    // Anchor for hidden single-pointer edges: leave from the node midpoint
+    // chosen by the field's anchor (row|title|top|bottom|left|right|auto).
+    if (anchorEdge && effectiveKey && edge && typeof edge === 'object') {
+      edge.data = { ...(edge?.data || {}), _anchor: resolveAnchorForField(effectiveKey) };
     }
     if (parentCenter) {
       // Parent pointer: keep the edge, resolve its routing in the post-pass.
@@ -5165,6 +5255,7 @@ function renderStepImpl(ri, displayIndex) {
   const adaptedGraph = adaptNodesForTextFlow(typeFilteredGraph);
   adaptBTreeNodes(adaptedGraph);
   const graphData = filterHiddenNodes(adaptedGraph);
+  ensureSidePorts(graphData.nodes);
 
   // Uniform-edge port placement (must run AFTER adaptNodesForTextFlow
   // because it overwrites the ports array for vertical-layout nodes)
@@ -5887,10 +5978,12 @@ function syncSettingsPanel() {
       list.appendChild(proxyGroup);
     }
   }
-  // ── Layout control panel ──
-  // Independent from visibility: which pointer (ref) fields decide the layout.
-  // Untick a field to keep its arrows drawn but exclude its edges from layout.
-  renderLayoutControlPanel(list);
+  // ── Pointer management panel ──
+  // Unified pointer options (layout participation + anchor), across all pointer
+  // (ref) fields. Untick "participate in layout" to keep arrows but exclude edges
+  // from layout; the anchor selects where a hidden field's edges attach (row port,
+  // title bar, or a node-side midpoint).
+  renderPointerPanel(list);
 }
 
 /** Render the "布局控制" panel: a checkbox per pointer (ref) field controlling
@@ -5898,7 +5991,7 @@ function syncSettingsPanel() {
  *  Pointer fields are collected from the script's actual edges (field_key /
  *  label), normalised to their base key (children[0] → children), because the
  *  node-type registry marks container parents as 'field' not 'ref'. */
-function renderLayoutControlPanel(list) {
+function renderPointerPanel(list) {
   const seen = new Set();
   const rows = [];
   for (const step of STEPS) {
@@ -5919,34 +6012,48 @@ function renderLayoutControlPanel(list) {
   }
   if (!rows.length) return;
   const group = document.createElement('div');
-  group.className = 'node-type-group layout-exempt-group';
+  group.className = 'node-type-group pointer-group';
   group.style.cssText = 'border-left:3px solid #66bb6a;';
   const header = document.createElement('div');
   header.className = 'node-type-group-header';
   const title = document.createElement('span');
   title.className = 'node-type-group-title';
-  title.textContent = '布局控制';
+  title.textContent = '指针';
   header.appendChild(title);
   const sub = document.createElement('span');
   sub.className = 'node-type-group-subtitle';
-  sub.textContent = '指针是否参与布局';
+  sub.textContent = '布局与端口';
   header.appendChild(sub);
   group.appendChild(header);
   const items = document.createElement('div');
-  items.className = 'node-type-items layout-exempt-items';
-  items.style.cssText = 'flex-direction:column;align-items:flex-start;gap:4px;';
+  items.className = 'node-type-items pointer-items';
+  items.style.cssText = 'flex-direction:column;align-items:stretch;gap:6px;';
   for (const r of rows) {
-    const label = document.createElement('label');
-    label.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;color:#24406f;cursor:pointer;';
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:11px;color:#24406f;';
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = !isFieldNoLayout(r.key);
+    cb.title = '参与布局';
     cb.addEventListener('change', () => setFieldLayoutExempt(r.key, !cb.checked));
-    label.appendChild(cb);
-    const span = document.createElement('span');
-    span.textContent = r.key;
-    label.appendChild(span);
-    items.appendChild(label);
+    row.appendChild(cb);
+    const name = document.createElement('span');
+    name.textContent = r.key;
+    name.style.cssText = 'flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    row.appendChild(name);
+    const sel = document.createElement('select');
+    sel.style.cssText = 'font-size:10px;padding:1px 2px;';
+    sel.title = '锚点：字段隐藏后边连向（字段行=可见时行端口，预设按布局/侧向自动）';
+    const opts = [['row', '字段行'], ['title', '标题栏'], ['top', '上'], ['bottom', '下'], ['left', '左'], ['right', '右'], ['auto', '自动']];
+    for (const [v, t] of opts) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = t;
+      sel.appendChild(o);
+    }
+    sel.value = getFieldAnchor(r.key);
+    sel.addEventListener('change', () => setFieldAnchor(r.key, sel.value));
+    row.appendChild(sel);
+    items.appendChild(row);
   }
   group.appendChild(items);
   list.appendChild(group);
@@ -6124,7 +6231,8 @@ function createAgentAPI() {
     },
     setTextFlow(flow) {
       if (!['horizontal', 'vertical'].includes(flow)) throw new Error(`Invalid textFlow: ${flow}`);
-      VIS_CONFIG.textFlow = flow;
+      // Horizontal text flow is no longer supported — silently use vertical.
+      VIS_CONFIG.textFlow = 'vertical';
       applyVisConfig();
       DSVisLogger.info('agent', 'text-flow-updated', { flow });
       return this.getPresentationConfig();
@@ -6785,13 +6893,14 @@ DSVisLogger.info('agent', 'agent-api-ready', { methods: Object.keys(window.DSVis
 
   // ── presentation (10) ──
   dsvis.define('presentation.setTextFlow', {
-    description: '设置文本方向（horizontal=横向, vertical=纵向）',
-    params: { flow: { type: 'string', description: '"horizontal" 或 "vertical"' } },
+    description: '设置文本方向（仅支持 vertical；horizontal 将静默按纵向处理）',
+    params: { flow: { type: 'string', description: '"vertical"（horizontal 不再支持）' } },
     handler(args) {
-      if (!['horizontal', 'vertical'].includes(args.flow)) throw new Error('flow 必须为 horizontal 或 vertical');
-      VIS_CONFIG.textFlow = args.flow;
+      if (!['horizontal', 'vertical'].includes(args.flow)) throw new Error('flow 必须为 vertical（horizontal 已不再支持）');
+      // Horizontal text flow is no longer supported — silently use vertical.
+      VIS_CONFIG.textFlow = 'vertical';
       applyVisConfig();
-      return `文本方向已设为 ${args.flow}`;
+      return '文本方向已设为 vertical';
     },
   });
   dsvis.define('presentation.showPanel', {
@@ -7203,6 +7312,15 @@ if (FILE_STYLE && Array.isArray(FILE_STYLE.layoutExempt)) {
     if (leRaw) { const _arr0 = JSON.parse(leRaw); LAYOUT_EXEMPT_KEYS.clear(); for (const _k0 of _arr0) LAYOUT_EXEMPT_KEYS.add(_k0); }
   } catch(_) {}
 }
+if (FILE_STYLE && FILE_STYLE.anchor && typeof FILE_STYLE.anchor === 'object') {
+  ANCHOR.clear();
+  for (const _a0 in FILE_STYLE.anchor) ANCHOR.set(_a0, FILE_STYLE.anchor[_a0]);
+} else {
+  try {
+    const anRaw = localStorage.getItem('dsvis:anchor');
+    if (anRaw) { const _aObj = JSON.parse(anRaw); ANCHOR.clear(); for (const _k1 in _aObj) ANCHOR.set(_k1, _aObj[_k1]); }
+  } catch(_) {}
+}
 if (FILE_STYLE && Array.isArray(FILE_STYLE.layerEdges)) {
   LAYER_EDGES = new Set(FILE_STYLE.layerEdges);
 } else {
@@ -7280,7 +7398,7 @@ function applyStyleLocalFallback() {
     if (raw) cfg = JSON.parse(raw);
   } catch (_) {}
   if (!cfg || typeof cfg !== 'object') return;
-  if (cfg.layout && cfg.layout.rankdir) VIS_CONFIG.textFlow = cfg.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
+  if (cfg.layout && cfg.layout.rankdir) VIS_CONFIG.textFlow = 'vertical'; // horizontal no longer supported
   if (cfg.showSubtitle !== undefined) VIS_CONFIG.showSubtitle = cfg.showSubtitle;
   if (cfg.structureType) VIS_CONFIG.structureType = cfg.structureType;
   if (cfg.layerEdgeKeys) VIS_CONFIG.layerEdgeKeys = { ...cfg.layerEdgeKeys };
@@ -7305,6 +7423,10 @@ function applyStyleLocalFallback() {
   if (Array.isArray(cfg.layoutExempt)) {
     LAYOUT_EXEMPT_KEYS.clear();
     for (const k of cfg.layoutExempt) LAYOUT_EXEMPT_KEYS.add(k);
+  }
+  if (cfg.anchor && typeof cfg.anchor === 'object') {
+    ANCHOR.clear();
+    for (const k in cfg.anchor) ANCHOR.set(k, cfg.anchor[k]);
   }
 }
 

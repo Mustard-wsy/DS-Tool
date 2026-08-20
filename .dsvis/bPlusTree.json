@@ -7,7 +7,7 @@
     "BPlusNode.__title__": "self",
     "BPlusNode.keys": "visible",
     "BPlusNode.children": "visible",
-    "BPlusNode.next": "cascade",
+    "BPlusNode.next": "self",
     "BPlusTree.root": "visible",
     "BPlusTree.__title__": "visible",
     "BPlusTree.t": "visible",
@@ -26,6 +26,7 @@
   "layoutExempt": [
     "BPlusNode.next"
   ],
+  "anchor": {},
   "layerEdges": [
     "children"
   ],

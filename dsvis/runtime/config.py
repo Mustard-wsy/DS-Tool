@@ -44,9 +44,11 @@ def get_layout():
 # Text flow
 # ---------------------------------------------------------------------------
 
-_TEXT_FLOW = os.environ.get("DSVIS_TEXT_FLOW", "horizontal").strip().lower()
+_TEXT_FLOW = os.environ.get("DSVIS_TEXT_FLOW", "vertical").strip().lower()
 if _TEXT_FLOW not in {"horizontal", "vertical"}:
-    _TEXT_FLOW = "horizontal"
+    _TEXT_FLOW = "vertical"
+if _TEXT_FLOW == "horizontal":
+    _TEXT_FLOW = "vertical"  # horizontal text flow no longer supported
 
 
 def get_text_flow() -> str:
@@ -55,9 +57,11 @@ def get_text_flow() -> str:
 
 def set_text_flow(flow: str):
     global _TEXT_FLOW
-    if flow not in {"horizontal", "vertical"}:
+    normalized = (flow or "").strip().lower()
+    if normalized not in {"horizontal", "vertical"}:
         raise ValueError("text_flow must be 'horizontal' or 'vertical'")
-    _TEXT_FLOW = flow
+    # Horizontal text flow is no longer supported — silently use vertical.
+    _TEXT_FLOW = "vertical"
 
 
 # ---------------------------------------------------------------------------

@@ -104,6 +104,9 @@ class StyleHandler(BaseHTTPRequestHandler):
             else:
                 self._reply(200, {"style": None})
             return
+        if path.startswith("/view/"):
+            self._serve_view(path)
+            return
         self._reply(404, {"error": "not found"})
 
     def do_POST(self):
@@ -126,6 +129,42 @@ class StyleHandler(BaseHTTPRequestHandler):
             self._reply(200, {"ok": True, "path": str(p)})
         except Exception as e:  # noqa: BLE001
             self._reply(400, {"error": str(e)})
+
+    # ------------------------------------------------------------------
+    # View hosting — serve generated debug pages from .dsvis/out/ over http://
+    # ------------------------------------------------------------------
+    def _view_dir(self) -> Path:
+        return Path.cwd() / ".dsvis" / "out"
+
+    @staticmethod
+    def _view_name_ok(name: str) -> bool:
+        if not name or len(name) > 120:
+            return False
+        return all(c.isalnum() or c in "._-" for c in name)
+
+    def _serve_view(self, path: str):
+        """GET /view/<name> → serve the generated page from .dsvis/out/."""
+        name = path[len("/view/"):].strip("/")
+        if not self._view_name_ok(name):
+            self._reply(404, {"error": "bad name"})
+            return
+        vdir = self._view_dir()
+        target = vdir / name
+        try:
+            resolved = target.resolve()
+            if not str(resolved).startswith(str(vdir.resolve())):
+                self._reply(403, {"error": "forbidden"})
+                return
+            data = resolved.read_bytes()
+        except Exception:
+            self._reply(404, {"error": "not found"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self._cors()
+        self.end_headers()
+        self.wfile.write(data)
 
     def log_message(self, *args):  # keep stdout clean
         pass

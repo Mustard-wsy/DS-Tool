@@ -272,6 +272,10 @@ def _build_ports(*, is_vertical, ref_row_indices, header_h, height, text_cfg):
         ports = [
             {"key": "inT", "placement": [header_center_x, 0], "r": 0, "fill": "transparent", "stroke": "transparent"},
             {"key": "inB", "placement": [header_center_x, 1], "r": 0, "fill": "transparent", "stroke": "transparent"},
+            # Side ports for "sidePort" pointer edges (e.g. B+Tree next sibling
+            # links): left/right midpoints so such edges can leave from the sides.
+            {"key": "sL", "placement": [0, 0.5], "r": 0, "fill": "transparent", "stroke": "transparent"},
+            {"key": "sR", "placement": [1, 0.5], "r": 0, "fill": "transparent", "stroke": "transparent"},
         ]
         for i, row_idx in enumerate(ref_row_indices):
             if num_ref_rows > 1:
@@ -781,6 +785,26 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(html)
 
-    webbrowser.open(html_path.as_uri())
-    print(f"[dsvis] HTML 输出：{html_path}")
+    # ── Open the page ──
+    # Server mode (default): serve via the local style server so the browser
+    # loads it over http:// (no file:// restrictions, PageAgent works, style
+    # persistence is same-origin). Falls back to file:// when no server is up
+    # or the server does not support /view (e.g. an older process on the port).
+    http_url = None
+    if style_port:
+        stem = Path(source_file).stem if source_file else "dsvis"
+        candidate = f"http://127.0.0.1:{style_port}/view/{stem}.html"
+        try:
+            import urllib.request
+            with urllib.request.urlopen(candidate, timeout=2) as _resp:
+                if _resp.status == 200:
+                    http_url = candidate
+        except Exception:
+            http_url = None
+    if http_url:
+        webbrowser.open(http_url)
+        print(f"[dsvis] HTML 输出：{http_url}")
+    else:
+        webbrowser.open(html_path.as_uri())
+        print(f"[dsvis] HTML 输出：{html_path}")
     return html_path
