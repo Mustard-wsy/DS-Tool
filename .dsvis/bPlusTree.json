@@ -23,6 +23,9 @@
     "BPlusNode.children[4]": "visible"
   },
   "titleField": {},
+  "layoutExempt": [
+    "BPlusNode.next"
+  ],
   "layerEdges": [
     "children"
   ],

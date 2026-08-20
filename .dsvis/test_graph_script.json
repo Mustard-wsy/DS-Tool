@@ -20,6 +20,7 @@
     "GraphNode.edges[2]": "visible"
   },
   "titleField": {},
+  "layoutExempt": [],
   "layerEdges": [],
   "layerEdgeKeys": {},
   "layout": {

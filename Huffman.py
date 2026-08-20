@@ -16,7 +16,7 @@ class HuffmanNode:
         return self.freq < other.freq
 
 
-class HuffmanTree:
+class HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee:
     def __init__(self):
         self.root = None
         self.codes = {}

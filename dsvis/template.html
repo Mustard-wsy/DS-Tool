@@ -115,7 +115,6 @@ __STYLES__
             <input id="pageAgentModel" type="text" placeholder="留空使用默认 Testing API" />
           </div>
           <div class="settings-note">同时配置 URL、Token、模型时使用你的 OpenAI-compatible API；否则使用 PageAgent 默认测试接口。生产环境不要在前端保存真实密钥。</div>
-          <div id="pageAgentFileNote" class="settings-note" style="display:none;color:#c0392b;">本地文件（file://）模式下 PageAgent 不可用：浏览器禁止 file: 页面加载自引用 iframe。请通过本地服务器（如 <code>python -m http.server</code>）访问以使用 AI 助手。</div>
         </div>
         <div id="nodeTypeList"></div>
       </div>
@@ -178,7 +177,10 @@ const HIDDEN_NODES = new Map();  // Map<nodeId, label> — hidden nodes
 const HIDDEN_NODES_CASCADE = new Set();  // nodeIds whose descendants also cascade-hide
 let hiddenPanelVisible = false;
 const NODE_TYPE_REGISTRY = new Map();  // Map<className, [{key, className, fieldName, kind}]>
-const NODE_TYPE_VISIBILITY = new Map();  // Map<className.fieldName, boolean>
+const NODE_TYPE_VISIBILITY = new Map();  // Map<className.fieldName, state>
+// Fields whose edges render (arrows shown) but must NOT drive the layout.
+// Controlled by the "布局" panel; independent of visibility.
+const LAYOUT_EXEMPT_KEYS = new Set();
 const BIND_GROUP_REGISTRY = new Map();   // Map<className, [{groupName, fields: [key]}]>
 // EDGE_PROXY: "Type.refField" → { proxy: "Type.valueField", ratio: number|'auto', includeEnds: boolean }
 const EDGE_PROXY = new Map();
@@ -243,6 +245,19 @@ function persistVisibility() {
   try { localStorage.setItem(VISIBILITY_STORAGE_KEY, JSON.stringify([...NODE_TYPE_VISIBILITY])); } catch(_) {}
   scheduleStyleAutosave();
 }
+function persistLayoutExempt() {
+  try { localStorage.setItem('dsvis:layoutExempt', JSON.stringify(Array.from(LAYOUT_EXEMPT_KEYS))); } catch(_) {}
+  scheduleStyleAutosave();
+}
+/** Toggle whether a field's edges drive the layout (see LAYOUT_EXEMPT_KEYS).
+ *  exempt=true → the field is layout-exempt (edges drawn, do not drive layout). */
+function setFieldLayoutExempt(key, exempt) {
+  if (exempt) LAYOUT_EXEMPT_KEYS.add(key);
+  else LAYOUT_EXEMPT_KEYS.delete(key);
+  persistLayoutExempt();
+  syncSettingsPanel();
+  renderStep(current);
+}
 function loadVisibility() {
   // 1. Persisted per-script style file (authoritative — not localStorage).
   if (FILE_STYLE && FILE_STYLE.visibility) {
@@ -275,6 +290,7 @@ function exportCurrentConfig() {
     version: 1,
     structureType: VIS_CONFIG.structureType,
     edgeProxy: proxyObj, visibility: visObj, titleField: tf,
+    layoutExempt: Array.from(LAYOUT_EXEMPT_KEYS),
     layerEdges: Array.from(LAYER_EDGES),
     layerEdgeKeys: { ...VIS_CONFIG.layerEdgeKeys },
     layout: { rankdir: VIS_CONFIG.textFlow === 'vertical' ? 'TB' : 'LR' },
@@ -306,9 +322,11 @@ function importConfig(jsonText) {
   if (cfg.graphViewer && typeof cfg.graphViewer === 'object') {
     VIS_CONFIG.graphViewer = { ...(VIS_CONFIG.graphViewer || {}), ...cfg.graphViewer };
   }
+  LAYER_EXEMPT_KEYS.clear();
+  if (Array.isArray(cfg.layoutExempt)) { for (var _le2 = 0; _le2 < cfg.layoutExempt.length; _le2++) LAYER_EXEMPT_KEYS.add(cfg.layoutExempt[_le2]); }
   LAYER_EDGES.clear();
   if (Array.isArray(cfg.layerEdges)) { for (var _le = 0; _le < cfg.layerEdges.length; _le++) LAYER_EDGES.add(cfg.layerEdges[_le]); }
-  persistProxy(); persistVisibility();
+  persistProxy(); persistVisibility(); persistLayoutExempt();
   try { localStorage.setItem('dsvis:layerEdges', JSON.stringify(Array.from(LAYER_EDGES))); } catch(_) {}
   try { localStorage.setItem('dsvis:titleField', JSON.stringify(TITLE_FIELD)); } catch(_) {}
   saveVisConfig(VIS_CONFIG);
@@ -468,6 +486,9 @@ function autoDetectLayerFields(nodeFields, structType) {
 // ── Visualisation configuration ──
 const VIS_CONFIG_STORAGE_KEY = 'dsvis:config';
 const PAGE_AGENT_STORAGE_KEY = 'dsvis:pageAgentConfig';
+// Server-less fallback: the full exported style is persisted here when no
+// local style server is reachable, so style changes still survive a reload.
+const STYLE_LOCAL_KEY = 'dsvis:style:local';
 const DEFAULT_VIS_CONFIG = {
   textFlow: 'horizontal',
   showSubtitle: true,
@@ -485,7 +506,7 @@ const DEFAULT_VIS_CONFIG = {
   },
 };
 const DEFAULT_PAGE_AGENT_CONFIG = {
-  enabled: false,
+  enabled: true,  // PageAgent 默认可用（file:// 下同样适用，见 initializeDsvisAgent）
   baseURL: '',
   apiKey: '',
   model: '',
@@ -964,16 +985,10 @@ async function initializeDsvisAgent() {
     DSVisLogger.debug('agent', 'not-enabled', {});
     return;
   }
-  // The PageAgent CDN bundle creates a self-referencing iframe sandbox on
-  // load. Chrome blocks that for file: pages ("file: URLs are unique security
-  // origins"), so loading it from a locally-opened debug page fires
-  // "Unsafe attempt to load URL file:// …". Skip loading + initialising
-  // entirely when the page is opened from the filesystem; the feature remains
-  // fully available when the page is served over http(s)://.
-  if (location.protocol === 'file:') {
-    DSVisLogger.debug('agent', 'file-mode-skip', {});
-    return;
-  }
+  // PageAgent works fine under file:// with the current CDN build
+  // (page-agent@1.12.2?autoInit=false&showPanel=false): it does not create the
+  // self-referencing iframe that older builds did, so there is no
+  // "Unsafe attempt to load URL file:// …" warning. It is enabled by default.
   if (!window.PageAgent) {
     await loadPageAgentCdn();
     if (!window.PageAgent) {
@@ -1675,7 +1690,7 @@ function findFrameStepIndex(frameKeyValue, preferredIndex = current) {
  * End Replay Navigation Section
  * ======================================================================== */
 
-function analyzeLayoutMetrics(graphData, viewport) {
+function analyzeLayoutMetrics(graphData, viewport, connectivityEdges = null) {
   const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
   const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
   let maxH = 80;
@@ -1705,8 +1720,14 @@ function analyzeLayoutMetrics(graphData, viewport) {
     Math.min(LAYOUT_PRESET.aspectMax, width / Math.max(height, 1))
   );
   const cols = Math.max(1, Math.ceil(Math.sqrt(nodes.length * aspect)));
+  // Connectivity is judged against *connectivityEdges* when provided (the full
+  // graph's edges) instead of only *graphData.edges*. B-tree/n-ary trees lay
+  // out with a LAYER_EDGES-filtered subgraph, but early steps may only carry
+  // root/next/parent links (no children layer edge yet) — those nodes are still
+  // connected and must NOT fall back to the dense grid.
+  const edgeList = Array.isArray(connectivityEdges) ? connectivityEdges : edges;
   const connectedNodeIds = new Set();
-  for (const e of edges) {
+  for (const e of edgeList) {
     if (e?.source !== undefined) connectedNodeIds.add(String(e.source));
     if (e?.target !== undefined) connectedNodeIds.add(String(e.target));
   }
@@ -1717,7 +1738,7 @@ function analyzeLayoutMetrics(graphData, viewport) {
   // lay the whole set out as a graph (dagre) so the connections read
   // naturally. Grid is reserved for fully disconnected collections (no edges),
   // where density is the goal.
-  const hasConnections = edges.length > 0 && connectedNodeIds.size >= 2;
+  const hasConnections = edgeList.length > 0 && connectedNodeIds.size >= 2;
   const treeLike = hasConnections;
 
   return { nodes, maxW, maxH, cols, boundaryGapX, boundaryGapY, treeLike };
@@ -1958,11 +1979,116 @@ function enforceLeftRightOrdering() {
   } catch (_) { /* best-effort */ }
 }
 
+/** Post-layout pass for array-child trees (B-tree / B+ / n-ary): after dagre
+ *  settles, reorder each parent's children (children[0..n]) left→right by array
+ *  index, mirroring the binary-tree left/right ordering, so sibling edges do
+ *  not cross. Only touches siblings on the same rank (same y) and preserves
+ *  their existing gaps (swaps x positions in index order). */
+function enforceArrayChildrenOrdering() {
+  if (!graph) return;
+  if (VIS_CONFIG.structureType === 'binary-tree' || VIS_CONFIG.structureType === 'graph') return;
+  if (!LAYER_EDGES.size) return;
+  try {
+    const apply = () => {
+      const data = graph.getData ? graph.getData() : { nodes: [], edges: [] };
+      const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+      const edges = Array.isArray(data.edges) ? data.edges : [];
+      if (nodes.length < 3) return;
+      const nodeX = new Map();
+      const nodeY = new Map();
+      for (const n of nodes) {
+        nodeX.set(String(n.id), Number(n.style && n.style.x) || 0);
+        nodeY.set(String(n.id), Number(n.style && n.style.y) || 0);
+      }
+      // Group children by parent, tracking their array index (children[0..n]).
+      const childrenByParent = new Map();
+      const idxRe = /\[(\d+)\]\s*$/;
+      for (const e of edges) {
+        const label = String(e?.data?.label || '').trim();
+        const fk = String(e?.data?.field_key || '').trim();
+        let idx = -1;
+        for (const le of LAYER_EDGES) {
+          const m = label.match(idxRe) || fk.match(idxRe);
+          if ((label === le || fk === le || label.startsWith(le + '[') || fk.includes('::' + le + '[')) && m) {
+            idx = parseInt(m[1]);
+            break;
+          }
+        }
+        if (idx < 0) continue;
+        const parent = String(e.source);
+        if (!childrenByParent.has(parent)) childrenByParent.set(parent, []);
+        childrenByParent.get(parent).push({ idx, child: String(e.target) });
+      }
+      const updates = {};
+      for (const [parent, kids] of childrenByParent.entries()) {
+        if (kids.length < 2) continue;
+        const rowY = nodeY.get(kids[0].child);
+        if (kids.some(k => nodeY.get(k.child) !== rowY)) continue;
+        const xs = kids.map(k => nodeX.get(k.child)).sort((a, b) => a - b);
+        const sorted = [...kids].sort((a, b) => a.idx - b.idx);
+        for (let i = 0; i < sorted.length; i++) {
+          updates[sorted[i].child] = [xs[i], rowY];
+        }
+      }
+      const keys = Object.keys(updates);
+      if (keys.length && typeof graph.translateElementTo === 'function') {
+        graph.translateElementTo(updates, true);
+      }
+    };
+    apply();
+    // dagre keeps applying its computed positions in wrap-up frames; re-apply
+    // once the layout settles (double rAF), like enforceLeftRightOrdering.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        try { apply(); } catch (_) {}
+      });
+    });
+  } catch (_) { /* best-effort */ }
+}
+
+/** After a layout settles, re-add layout-exempt ("nolayout") edges so their
+ *  arrows render without moving any node (G6 addData does not relayout).
+ *  Idempotent: re-attaching replaces the previous handler. */
+function attachNoLayoutEdges(graph, noLayoutEdges) {
+  if (!graph) return;
+  if (graph.__noLayoutAdd && typeof graph.off === 'function') {
+    graph.off('afterlayout', graph.__noLayoutAdd);
+    graph.off('afterrender', graph.__noLayoutAdd);
+  }
+  graph.__noLayoutAdd = null;
+  if (!noLayoutEdges || !noLayoutEdges.length) return;
+  const add = () => {
+    try {
+      const cur = (typeof graph.getData === 'function' && graph.getData()) || {};
+      const curEdges = Array.isArray(cur.edges) ? cur.edges : [];
+      const already = curEdges.some(e => e?.data?._noLayout);
+      if (!already && typeof graph.addData === 'function') {
+        graph.addData({ edges: noLayoutEdges });
+      }
+    } catch (_) {}
+  };
+  graph.__noLayoutAdd = add;
+  if (typeof graph.on === 'function') {
+    graph.on('afterlayout', add);
+    graph.on('afterrender', add);
+  }
+}
+
 function prepareGraphForLayout(graphData, viewport = null) {
+  // ── Layout-exempt ("nolayout") edges ──
+  // Fields set to 'nolayout' stay visible (their arrows render) but must NOT
+  // drive the layout. Split them out here: layout computation only sees the
+  // non-exempt edges; the renderer re-adds the exempt ones after layout so
+  // they are drawn without moving any node (see attachNoLayoutEdges).
+  const fullEdges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+  const noLayoutEdges = fullEdges.filter(e => e?.data?._noLayout);
+  const layoutEdges = fullEdges.filter(e => !e?.data?._noLayout);
+  const layoutSource = { ...(graphData || {}), edges: layoutEdges };
+
   // If LAYER_EDGES is set, use only layer-edges for layout calculation
-  let layoutData = graphData;
+  let layoutData = layoutSource;
   if (LAYER_EDGES.size > 0) {
-    const allEdges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+    const allEdges = layoutEdges;
     // A container field is stored with indexed ref labels ("children[0]",
     // field_key "Type::children[0]") while the layer edge is the bare field
     // name ("children").  Match both the exact name and any indexed variant so
@@ -1994,7 +2120,11 @@ function prepareGraphForLayout(graphData, viewport = null) {
   // Detect left/right edge labels from actual data, then sort nodes so that
   // left-subtree nodes precede right-subtree nodes.  Dagre processes nodes in
   // data order, which strongly influences sibling positioning within a rank.
-  const sortedGraphData = reorderTreeNodesByLeftRight(graphData || layoutData);
+  const sortedGraphData = reorderTreeNodesByLeftRight(graphData || layoutSource);
+  // Strip any layout-exempt edges from the data handed to the layout engine.
+  if (Array.isArray(sortedGraphData?.edges)) {
+    sortedGraphData.edges = sortedGraphData.edges.filter(e => !e?.data?._noLayout);
+  }
 
   // Binary trees ALWAYS use the pre-positioned textbook layout (no G6 layout),
   // even for tiny early steps that dagre/grid would otherwise lay out
@@ -2022,20 +2152,30 @@ function prepareGraphForLayout(graphData, viewport = null) {
             const pp = tb[String(_pn.id)];
             if (pp && _pn.style) { _pn.style.x = pp[0]; _pn.style.y = pp[1]; }
           }
-          return { data: sortedGraphData, layout: null };
+          return { data: sortedGraphData, noLayoutEdges, layout: null };
         }
       } catch (_e) { /* fall through to dagre/grid below */ }
     }
   }
 
-  const metrics = analyzeLayoutMetrics(layoutData, viewport || getGraphSize());
+  const metrics = analyzeLayoutMetrics(
+    layoutData,
+    viewport || getGraphSize(),
+    // Connectivity must see the FULL (non-exempt) edge set, not just the
+    // LAYER_EDGES-filtered subgraph: B-tree / n-ary early steps may only carry
+    // root/next/parent links (no children layer edge yet) — those connected
+    // nodes should use dagre, not the dense grid. Layout computation still
+    // uses layoutData.
+    layoutEdges
+  );
   if (!metrics.treeLike) {
-    const compactLayout = applyCompactGridLayout(LAYER_EDGES.size > 0 ? graphData : layoutData, viewport || getGraphSize());
+    const compactLayout = applyCompactGridLayout(LAYER_EDGES.size > 0 ? layoutSource : layoutData, viewport || getGraphSize());
+    compactLayout.noLayoutEdges = noLayoutEdges;
     return compactLayout;
   }
   const layout = computeAdaptiveLayout(layoutData, viewport);
-  // Use sorted graph data (all edges) with the computed layout
-  return { data: sortedGraphData, layout };
+  // Use sorted graph data (non-exempt edges) with the computed layout
+  return { data: sortedGraphData, noLayoutEdges, layout };
 }
 
 // ── Binary tree left/right ordering ──
@@ -2609,6 +2749,12 @@ function initGraph(data) {
   graph.on('element:dragstart', onDragStart);
   graph.on('element:drag', onDragMove);
   graph.on('element:dragend', onDragEnd);
+  // Re-add layout-exempt edges after the layout settles (arrows only).
+  attachNoLayoutEdges(graph, prepared.noLayoutEdges || []);
+  // Reorder array-child siblings (children[i]) left→right once layout settles.
+  if (typeof graph.once === 'function') {
+    graph.once('afterlayout', enforceArrayChildrenOrdering);
+  }
   // Right-click on node → hide it and suppress browser context menu.
   // Right-click on empty canvas → normal browser menu (save image, etc.).
   graph.on('node:contextmenu', (evt) => {
@@ -4430,13 +4576,24 @@ function isFieldVisible(key) {
   if (!key) return true;
   const state = NODE_TYPE_VISIBILITY.get(key);
   if (state === 'self' || state === 'cascade' || state === false) return false;
-  // Check base key — only cascade hides children (self means only the parent)  
+  // Check base key — only cascade hides children (self means only the parent)
   const baseMatch = key.match(/^(.+?)\[.*\]$/);
   if (baseMatch) {
     const baseState = NODE_TYPE_VISIBILITY.get(baseMatch[1]);
     if (baseState === 'cascade' || baseState === false) return false;
   }
   return true;
+}
+
+/** Whether a field is layout-exempt: its edges are drawn but must NOT drive the
+ *  layout. Controlled by the "布局" panel via LAYOUT_EXEMPT_KEYS. Indexed keys
+ *  (children[0]) inherit their base key's (children) exemption. */
+function isFieldNoLayout(key) {
+  if (!key) return false;
+  if (LAYOUT_EXEMPT_KEYS.has(key)) return true;
+  const baseMatch = key.match(/^(.+?)\[.*\]$/);
+  if (baseMatch && LAYOUT_EXEMPT_KEYS.has(baseMatch[1])) return true;
+  return false;
 }
 
 // ── Uniform edge port distribution ──
@@ -4595,6 +4752,10 @@ function applyNodeTypeVisibility(graphData) {
       }
     }
     const hidden = forceVisible ? false : (effectiveKey ? (!isFieldVisible(effectiveKey)) : false);
+    // Layout-exempt: the field is visible but its edges must not drive layout.
+    if (effectiveKey && isFieldNoLayout(effectiveKey) && edge && typeof edge === 'object') {
+      edge.data = { ...(edge?.data || {}), _noLayout: true };
+    }
     if (parentCenter) {
       // Parent pointer: keep the edge, resolve its routing in the post-pass.
       const pcEdge = { ...edge, data: { ...(edge?.data || {}), _parentCenter: true, _orphanLabel: edge?.data?.label || '' } };
@@ -5059,9 +5220,12 @@ function renderStepImpl(ri, displayIndex) {
         graph.setLayout(nextLayout);
       }
       graph.setData(prepared.data);
+      // Re-add layout-exempt edges after the layout settles (arrows only).
+      attachNoLayoutEdges(graph, prepared.noLayoutEdges || []);
       if (typeof graph.once === 'function') {
         graph.once('afterlayout', refreshGraphVisuals);
         graph.once('afterlayout', enforceLeftRightOrdering);
+        graph.once('afterlayout', enforceArrayChildrenOrdering);
         graph.once('afterrender', refreshGraphVisuals);
       }
       graph.render();
@@ -5347,9 +5511,9 @@ function toggleSettingsPanel() {
   const panel = document.getElementById('settingsPanel');
   if (panel) panel.classList.toggle('open', settingsPanelVisible);
   if (settingsPanelVisible) syncSettingsPanel();
-  else if (__styleAutosaveReady && STYLE_SERVER && STYLE_SERVER.port) {
-    // 关闭样式面板时立即把当前样式写入本地（.dsvis/<script>.json），
-    // 而不是等到页面关闭。
+  else if (__styleAutosaveReady) {
+    // 关闭样式面板时立即把当前样式写入本地（.dsvis/<script>.json，或
+    // server 不可用时写入 localStorage），而不是等到页面关闭。
     clearTimeout(__styleAutosaveTimer);
     __styleAutosaveSend();
   }
@@ -5367,23 +5531,10 @@ function syncSettingsPanel() {
   const agentBaseURL = document.getElementById('pageAgentBaseURL');
   const agentApiKey = document.getElementById('pageAgentApiKey');
   const agentModel = document.getElementById('pageAgentModel');
-  const fileMode = location.protocol === 'file:';
-  if (fileMode) {
-    // file:// 页面：PageAgent 无法工作（自引用 iframe 被浏览器拦截，会触发
-    // "Unsafe attempt to load URL file:// …"）。禁用开关与输入框，避免用户在
-    // 本地文件下误以为已启用，并给出提示文案。
-    if (agentEnabled) { agentEnabled.checked = false; agentEnabled.disabled = true; }
-    if (agentBaseURL) agentBaseURL.disabled = true;
-    if (agentApiKey) agentApiKey.disabled = true;
-    if (agentModel) agentModel.disabled = true;
-    const note = document.getElementById('pageAgentFileNote');
-    if (note) note.style.display = '';
-  } else {
-    if (agentEnabled) agentEnabled.checked = pageAgentConfig.enabled;
-    if (agentBaseURL) agentBaseURL.value = pageAgentConfig.baseURL;
-    if (agentApiKey) agentApiKey.value = pageAgentConfig.apiKey;
-    if (agentModel) agentModel.value = pageAgentConfig.model;
-  }
+  if (agentEnabled) agentEnabled.checked = pageAgentConfig.enabled;
+  if (agentBaseURL) agentBaseURL.value = pageAgentConfig.baseURL;
+  if (agentApiKey) agentApiKey.value = pageAgentConfig.apiKey;
+  if (agentModel) agentModel.value = pageAgentConfig.model;
   buildNodeTypeRegistry();
   const list = document.getElementById('nodeTypeList');
   if (!list) return;
@@ -5736,6 +5887,69 @@ function syncSettingsPanel() {
       list.appendChild(proxyGroup);
     }
   }
+  // ── Layout control panel ──
+  // Independent from visibility: which pointer (ref) fields decide the layout.
+  // Untick a field to keep its arrows drawn but exclude its edges from layout.
+  renderLayoutControlPanel(list);
+}
+
+/** Render the "布局控制" panel: a checkbox per pointer (ref) field controlling
+ *  whether its edges drive the layout (see LAYOUT_EXEMPT_KEYS / isFieldNoLayout).
+ *  Pointer fields are collected from the script's actual edges (field_key /
+ *  label), normalised to their base key (children[0] → children), because the
+ *  node-type registry marks container parents as 'field' not 'ref'. */
+function renderLayoutControlPanel(list) {
+  const seen = new Set();
+  const rows = [];
+  for (const step of STEPS) {
+    const g = step && step.graph;
+    if (!g || !Array.isArray(g.edges)) continue;
+    for (const e of g.edges) {
+      const raw = String(e?.data?.field_key || e?.data?.label || '').trim();
+      if (!raw) continue;
+      let key = raw.replace(/::/g, '.');
+      // Normalise indexed variants to their base field (children[0] → children).
+      const base = key.replace(/\[.*\]$/, '');
+      if (!base.includes('.')) continue; // needs ClassName.field form
+      if (!seen.has(base)) {
+        seen.add(base);
+        rows.push({ key: base });
+      }
+    }
+  }
+  if (!rows.length) return;
+  const group = document.createElement('div');
+  group.className = 'node-type-group layout-exempt-group';
+  group.style.cssText = 'border-left:3px solid #66bb6a;';
+  const header = document.createElement('div');
+  header.className = 'node-type-group-header';
+  const title = document.createElement('span');
+  title.className = 'node-type-group-title';
+  title.textContent = '布局控制';
+  header.appendChild(title);
+  const sub = document.createElement('span');
+  sub.className = 'node-type-group-subtitle';
+  sub.textContent = '指针是否参与布局';
+  header.appendChild(sub);
+  group.appendChild(header);
+  const items = document.createElement('div');
+  items.className = 'node-type-items layout-exempt-items';
+  items.style.cssText = 'flex-direction:column;align-items:flex-start;gap:4px;';
+  for (const r of rows) {
+    const label = document.createElement('label');
+    label.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;color:#24406f;cursor:pointer;';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !isFieldNoLayout(r.key);
+    cb.addEventListener('change', () => setFieldLayoutExempt(r.key, !cb.checked));
+    label.appendChild(cb);
+    const span = document.createElement('span');
+    span.textContent = r.key;
+    label.appendChild(span);
+    items.appendChild(label);
+  }
+  group.appendChild(items);
+  list.appendChild(group);
 }
 
 /** Save the current PageAgent form values and reload the agent. */
@@ -5799,11 +6013,6 @@ if (pageAgentBtn) {
     panel.style.display = 'flex';
     requestAnimationFrame(() => requestAnimationFrame(() => panel.classList.add('open')));
     const status = document.getElementById('pageAgentStatus');
-    if (location.protocol === 'file:') {
-      // file:// 下 PageAgent 不可用（自引用 iframe 被浏览器拦截）。
-      if (status) status.textContent = '本地文件模式不可用，请通过本地服务器访问页面。';
-      return;
-    }
     const config = loadPageAgentConfig();
     if (!config.enabled) {
       config.enabled = true;
@@ -6985,6 +7194,15 @@ updateResizeHandleState();
 // Load persisted config — per-script style file wins, localStorage is the fallback.
 loadProxy();
 loadVisibility();
+if (FILE_STYLE && Array.isArray(FILE_STYLE.layoutExempt)) {
+  LAYOUT_EXEMPT_KEYS.clear();
+  for (const _le0 of FILE_STYLE.layoutExempt) LAYOUT_EXEMPT_KEYS.add(_le0);
+} else {
+  try {
+    const leRaw = localStorage.getItem('dsvis:layoutExempt');
+    if (leRaw) { const _arr0 = JSON.parse(leRaw); LAYOUT_EXEMPT_KEYS.clear(); for (const _k0 of _arr0) LAYOUT_EXEMPT_KEYS.add(_k0); }
+  } catch(_) {}
+}
 if (FILE_STYLE && Array.isArray(FILE_STYLE.layerEdges)) {
   LAYER_EDGES = new Set(FILE_STYLE.layerEdges);
 } else {
@@ -7002,6 +7220,9 @@ if (FILE_STYLE && FILE_STYLE.titleField) {
     if (tfRaw) { TITLE_FIELD = JSON.parse(tfRaw); }
   } catch(_) {}
 }
+// Server-less fallback: restore the full style from localStorage when no
+// per-script style file was embedded (kept before the first render).
+applyStyleLocalFallback();
 
 // ── Automatic style persistence ──
 // Every style change is written back to <cwd>/.dsvis/<script>.json automatically
@@ -7019,18 +7240,24 @@ function __styleAutosavePayload() {
 
 function __styleAutosaveSend() {
   const body = __styleAutosavePayload();
-  if (!body) return;
-  fetch(`http://127.0.0.1:${STYLE_SERVER.port}/style`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body,
-    keepalive: true,
-  }).catch(() => {});
+  if (body) {
+    fetch(`http://127.0.0.1:${STYLE_SERVER.port}/style`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      keepalive: true,
+    }).catch(() => {});
+    return;
+  }
+  // No local style server reachable (server-less environment) — persist the
+  // full style to localStorage so it survives a reload.
+  try {
+    localStorage.setItem(STYLE_LOCAL_KEY, JSON.stringify(exportCurrentConfig()));
+  } catch (_) {}
 }
 
-/** Debounced auto-save after any style change. */
+/** Debounced auto-save after any style change (server or localStorage). */
 function scheduleStyleAutosave() {
-  if (!STYLE_SERVER || !STYLE_SERVER.port) return;
   if (!__styleAutosaveReady) return; // suppress writes while initialising
   clearTimeout(__styleAutosaveTimer);
   __styleAutosaveTimer = setTimeout(__styleAutosaveSend, 600);
@@ -7038,10 +7265,48 @@ function scheduleStyleAutosave() {
 
 // Flush any pending save when the page is closed / navigated away.
 window.addEventListener('pagehide', () => {
-  if (!STYLE_SERVER || !STYLE_SERVER.port || !__styleAutosaveReady) return;
+  if (!__styleAutosaveReady) return;
   clearTimeout(__styleAutosaveTimer);
   __styleAutosaveSend();
 });
+
+// Server-less fallback load: when no per-script style file was embedded,
+// restore the full style previously persisted to localStorage.
+function applyStyleLocalFallback() {
+  if (FILE_STYLE) return; // per-script style file (.dsvis/) is authoritative
+  let cfg = null;
+  try {
+    const raw = localStorage.getItem(STYLE_LOCAL_KEY);
+    if (raw) cfg = JSON.parse(raw);
+  } catch (_) {}
+  if (!cfg || typeof cfg !== 'object') return;
+  if (cfg.layout && cfg.layout.rankdir) VIS_CONFIG.textFlow = cfg.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
+  if (cfg.showSubtitle !== undefined) VIS_CONFIG.showSubtitle = cfg.showSubtitle;
+  if (cfg.structureType) VIS_CONFIG.structureType = cfg.structureType;
+  if (cfg.layerEdgeKeys) VIS_CONFIG.layerEdgeKeys = { ...cfg.layerEdgeKeys };
+  if (cfg.uniformEdgesEnabled !== undefined) VIS_CONFIG.uniformEdgesEnabled = cfg.uniformEdgesEnabled;
+  if (cfg.rowDisplayMode) VIS_CONFIG.rowDisplayMode = cfg.rowDisplayMode;
+  if (cfg.parentFieldKey !== undefined) VIS_CONFIG.parentFieldKey = cfg.parentFieldKey;
+  if (cfg.graphViewer && typeof cfg.graphViewer === 'object') {
+    VIS_CONFIG.graphViewer = { ...(VIS_CONFIG.graphViewer || {}), ...cfg.graphViewer };
+  }
+  if (cfg.edgeProxy && typeof cfg.edgeProxy === 'object') {
+    EDGE_PROXY.clear();
+    for (const k in cfg.edgeProxy) EDGE_PROXY.set(k, cfg.edgeProxy[k]);
+  }
+  if (cfg.visibility && typeof cfg.visibility === 'object') {
+    for (const k in cfg.visibility) NODE_TYPE_VISIBILITY.set(k, cfg.visibility[k]);
+  }
+  if (cfg.titleField && typeof cfg.titleField === 'object') {
+    const tk = Object.keys(cfg.titleField);
+    if (tk.length) TITLE_FIELD = { className: tk[0], key: cfg.titleField[tk[0]] };
+  }
+  if (Array.isArray(cfg.layerEdges)) LAYER_EDGES = new Set(cfg.layerEdges);
+  if (Array.isArray(cfg.layoutExempt)) {
+    LAYOUT_EXEMPT_KEYS.clear();
+    for (const k of cfg.layoutExempt) LAYOUT_EXEMPT_KEYS.add(k);
+  }
+}
 
 renderAllCode();
 computeStepDiffs();

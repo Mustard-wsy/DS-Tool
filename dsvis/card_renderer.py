@@ -34,33 +34,74 @@ def _read_style_config(source_file):
         return None
 
 
-def _ensure_style_server():
-    """Return the style server port if it is reachable (starting a detached
-    server on first use), else None."""
+def _port_open(port: int, timeout: float = 0.4) -> bool:
     try:
-        with socket.create_connection(("127.0.0.1", STYLE_SERVER_PORT), timeout=0.4):
-            return STYLE_SERVER_PORT
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
     except OSError:
-        pass
+        return False
+
+
+def _probe_http(port: int, path: str = "/ping", timeout: float = 1.5) -> bool:
+    """True if a DSVis-style HTTP server responds 204 on GET <path>.
+
+    Verifying with an actual request (not just a TCP connect) prevents a
+    non-DSVis process squatting on the port from being mistaken for ours.
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout) as s:
+            s.sendall(f"GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n".encode("ascii"))
+            s.settimeout(timeout)
+            first = s.recv(64).decode("latin-1", "replace")
+            return " 204" in first.split("\r\n", 1)[0]
+    except Exception:
+        return False
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _start_server_on_port(port: int) -> bool:
+    """Launch a detached style server on *port* and wait for /ping to answer."""
     try:
         server_script = Path(__file__).resolve().parent / "runtime" / "style_server.py"
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         subprocess.Popen(
-            [sys.executable, str(server_script), "--port", str(STYLE_SERVER_PORT)],
+            [sys.executable, str(server_script), "--port", str(port)],
             cwd=str(Path.cwd()),
             creationflags=creationflags,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        for _ in range(25):
-            try:
-                with socket.create_connection(("127.0.0.1", STYLE_SERVER_PORT), timeout=0.3):
-                    return STYLE_SERVER_PORT
-            except OSError:
-                time.sleep(0.1)
+        for _ in range(30):
+            if _probe_http(port):
+                return True
+            time.sleep(0.1)
     except Exception:
         pass
-    return None
+    return False
+
+
+def _ensure_style_server():
+    """Return a reachable DSVis style-server port (reusing a live one or
+    starting a detached server), else None.
+
+    - Reuses the default port only if a live DSVis server answers /ping.
+    - If the default port is squatted by a non-DSVis process, starts the server
+      on a random free high port instead.
+    - Any failure degrades gracefully to None (the frontend falls back to
+      localStorage for style persistence).
+    """
+    if _probe_http(STYLE_SERVER_PORT):
+        return STYLE_SERVER_PORT
+    if _port_open(STYLE_SERVER_PORT):
+        # Squatted by something else — use a random free port.
+        port = _find_free_port()
+        return port if _start_server_on_port(port) else None
+    return STYLE_SERVER_PORT if _start_server_on_port(STYLE_SERVER_PORT) else None
 def _load_codicon_styles() -> str:
     """Return codicon CSS with the font embedded as a data URI.
 
@@ -720,10 +761,25 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
     html = html.replace("__STYLE_CONFIG__", json.dumps(style_config, ensure_ascii=False))
     html = html.replace("__STYLE_SERVER__", json.dumps(style_server, ensure_ascii=False))
 
-    fd, path = tempfile.mkstemp(suffix=".html")
-    html_path = Path(path)
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(html)
+    # ── Output location ──
+    # Default: write a stable, shareable self-contained page to
+    # <cwd>/.dsvis/out/<script-stem>.html, overwriting on each run, so the user
+    # can double-click / share / refresh the same file. Falls back to a temp
+    # file when the project directory is not writable.
+    html_path = None
+    try:
+        out_dir = Path.cwd() / ".dsvis" / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = Path(source_file).stem if source_file else "dsvis"
+        html_path = out_dir / f"{stem}.html"
+        html_path.write_text(html, encoding="utf-8")
+    except Exception:
+        html_path = None
+    if html_path is None:
+        fd, path = tempfile.mkstemp(suffix=".html")
+        html_path = Path(path)
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html)
 
     webbrowser.open(html_path.as_uri())
     print(f"[dsvis] HTML 输出：{html_path}")
