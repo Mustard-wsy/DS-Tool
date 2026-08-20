@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "structureType": "bplustree",
+  "structureType": "nary-tree",
   "edgeProxy": {},
   "visibility": {
     "BPlusNode.leaf": "self",

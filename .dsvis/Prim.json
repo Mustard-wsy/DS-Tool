@@ -22,6 +22,12 @@
     "GraphNode.edges[3]": "visible"
   },
   "titleField": {},
+  "layoutExempt": [],
+  "anchor": {
+    "HuffmanNode.right": "vertical",
+    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.root": "title",
+    "HuffmanNode.left": "vertical"
+  },
   "layerEdges": [],
   "layerEdgeKeys": {},
   "layout": {
@@ -30,6 +36,7 @@
   "showSubtitle": true,
   "uniformEdgesEnabled": true,
   "rowDisplayMode": "both",
+  "pointerRep": "sequential",
   "parentFieldKey": "",
   "graphViewer": {
     "valueField": "",

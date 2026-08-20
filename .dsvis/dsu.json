@@ -24,6 +24,12 @@
     "Dsu.size": "visible"
   },
   "titleField": {},
+  "layoutExempt": [],
+  "anchor": {
+    "BPlusTree.root": "title",
+    "BPlusNode.children": "vertical",
+    "BPlusNode.next": "horizontal"
+  },
   "layerEdges": [],
   "layerEdgeKeys": {},
   "layout": {
@@ -32,6 +38,7 @@
   "showSubtitle": true,
   "uniformEdgesEnabled": true,
   "rowDisplayMode": "value",
+  "pointerRep": "sequential",
   "parentFieldKey": "",
   "graphViewer": {
     "valueField": "",

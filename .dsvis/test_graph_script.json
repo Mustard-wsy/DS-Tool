@@ -29,7 +29,7 @@
   "layout": {
     "rankdir": "TB"
   },
-  "showSubtitle": true,
+  "showSubtitle": false,
   "uniformEdgesEnabled": true,
   "rowDisplayMode": "both",
   "pointerRep": "sequential",

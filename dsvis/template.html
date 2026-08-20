@@ -208,10 +208,7 @@ const STRUCTURE_TYPES = {
   'nary-tree':    { name: 'N叉树',        layerFields: ['children'],      parentField: 'parent', proxyRules: null, uniformEdges: true },
   'btree':        { name: 'B-Tree',       layerFields: ['children'],      parentField: null,   proxyRules: { childField: 'children', keyField: 'keys' }, uniformEdges: true },
   'bplustree':    { name: 'B+ Tree',      layerFields: ['children'],      parentField: null,   proxyRules: { childField: 'children', keyField: 'keys' }, uniformEdges: true },
-  'heap':         { name: '堆',           layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
   'graph':        { name: '图',           layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
-  'linkedlist':   { name: '链表/栈/队列', layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
-  'hashtable':    { name: '散列表',       layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
   'other':        { name: '默认',         layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
 };
 
@@ -2996,9 +2993,11 @@ function registerGraphNodeType() {
       // ones, set in buildGraphViewerG6Data), not for dimming.
       const key = this.upsert('key', 'circle', {
         x: 0, y: 0, r,
-        fill: highlight ? '#ffe8d0' : '#ffffff',
-        stroke: highlight ? '#ff6a00' : '#5b8ff9',
-        lineWidth: highlight ? 3 : 1.5,
+        // Match the rest of the debugger: DELTA_COLORS.unchanged for normal
+        // nodes, DELTA_COLORS.added for newly-added (highlight) nodes.
+        fill: highlight ? DELTA_COLORS.added.fill : DELTA_COLORS.unchanged.fill,
+        stroke: highlight ? DELTA_COLORS.added.stroke : DELTA_COLORS.unchanged.stroke,
+        lineWidth: highlight ? 2.5 : 1.5,
         zIndex: -1,
       }, container);
       this.upsert('value', 'text', {
@@ -3056,11 +3055,39 @@ function graphViewerFieldValue(cardNode, fieldName) {
   return null;
 }
 
+// Global (cross-step) direction detection. build_graph_viewer_data's per-step
+// `undirected` flag is unreliable for a directed walk: mid-walk the BFS edge
+// list only contains ONE direction (e.g. A→B but not B→A yet), so the same
+// undirected edge looks directed (arrow shown) on one step and undirected (no
+// arrow) on the next — "step 4 has arrows, step 6 is just a line". Decide once
+// from the union of ALL steps' edges: directed iff some edge lacks its
+// same-value mirror across the whole trace. Cached per page load.
+let __graphGlobalDirected = null;
+function graphViewGlobalDirected() {
+  if (__graphGlobalDirected != null) return __graphGlobalDirected;
+  const seen = new Set();
+  for (const s of STEPS || []) {
+    const gv = s && s.graphView;
+    for (const e of (gv && gv.edges) || []) {
+      const a = String(e.source), b = String(e.target);
+      const v = e.value != null ? String(e.value) : '';
+      seen.add(`${a}\u0001${b}\u0001${v}`);
+    }
+  }
+  let allMirrored = true;
+  for (const key of seen) {
+    const [a, b, v] = key.split('\u0001');
+    if (!seen.has(`${b}\u0001${a}\u0001${v}`)) { allMirrored = false; break; }
+  }
+  __graphGlobalDirected = !allMirrored;
+  return __graphGlobalDirected;
+}
+
 function buildGraphViewerG6Data(gv, highlight, cardNodes) {
   const cfg = VIS_CONFIG.graphViewer || {};
   const cardById = new Map((cardNodes || []).map((n) => [String(n.id), n]));
   const directed = cfg.direction === 'auto'
-    ? !gv.undirected
+    ? graphViewGlobalDirected()
     : cfg.direction === 'directed';
   const highlightNodes = (highlight && highlight.nodes) || new Set();
   const highlightEdges = (highlight && highlight.edges) || new Set();
@@ -3095,30 +3122,90 @@ function buildGraphViewerG6Data(gv, highlight, cardNodes) {
       },
     };
   });
-  const edges = (gv.edges || []).map((e, i) => {
+  // Bidirectional edge handling: when the same node pair has edges in BOTH
+  // directions (A→B and B→A), G6 would otherwise draw two straight lines on
+  // top of each other — with both labels overlapping at the centre (looks like
+  // a double arrow showing the number twice).
+  //   * Same value on both directions → merge into ONE double-arrow edge
+  //     (startArrow + endArrow) that shows the value once.
+  //   * Different values → keep TWO separate quadratic edges that curve away
+  //     from each other (opposite curveOffset), each showing its own value —
+  //     never fused into a single double-arrow.
+  const rawEdges = (gv.edges || []).map((e) => {
     let value = e.value;
     if (cfg.edgeValueField && e.edgeId) {
       const v = graphViewerFieldValue(cardById.get(String(e.edgeId)), cfg.edgeValueField);
       if (v != null) value = v;
     }
-    const sig = graphViewEdgeSig(e);
-    const active = highlightEdges.has(sig);
     return {
-      id: `ge${i}`,
       source: String(e.source),
       target: String(e.target),
-      style: {
-        stroke: active ? '#ff6a00' : '#a0a0a0',
-        lineWidth: active ? 3 : 1.5,
-        endArrow: directed ? { fill: '#a0a0a0' } : false,
-        labelText: value != null && value !== '' ? String(value) : '',
-        labelFontSize: 11,
-        labelFill: '#666',
-        labelPlacement: 'center',
-        labelOffset: [0, -8],
-      },
+      value,
+      active: highlightEdges.has(graphViewEdgeSig(e)),
     };
   });
+  const pairMap = new Map();
+  for (const re of rawEdges) {
+    const key = re.source < re.target ? `${re.source}\u0001${re.target}` : `${re.target}\u0001${re.source}`;
+    if (!pairMap.has(key)) pairMap.set(key, []);
+    pairMap.get(key).push(re);
+  }
+  const edges = [];
+  const pushEdge = (source, target, value, active, extra) => {
+    const { type = 'line', curveOffset, bothArrow = false } = extra || {};
+    // Same palette as the rest of the debugger: ordinary edges are #888 (as in
+    // the dagre views), newly-added (active) edges use DELTA_COLORS.added.
+    const strokeColor = active ? DELTA_COLORS.added.stroke : '#888';
+    const style = {
+      stroke: strokeColor,
+      lineWidth: active ? 2.5 : 1.5,
+      endArrow: directed ? { fill: strokeColor } : false,
+      startArrow: (bothArrow && directed) ? { fill: strokeColor } : false,
+      labelText: value != null && value !== '' ? String(value) : '',
+      labelFontSize: 11,
+      labelFill: '#666',
+      labelPlacement: 'center',
+      labelOffset: [0, -8],
+    };
+    if (curveOffset != null) style.curveOffset = curveOffset;
+    // Stable edge id keyed by the unordered node pair + direction role — NOT an
+    // index. Indexed ids (ge0, ge1, …) silently swap which logical edge an id
+    // refers to whenever the backend reorders edges between two steps; the
+    // incremental update+draw branch then updates the WRONG edge (arrows/labels
+    // land on the wrong pair, or an edge can look unbound because its endpoints
+    // were re-written to a different pair). `value` is deliberately omitted —
+    // it changes almost every step (highlight/label refresh), so including it
+    // would make the id unstable across the very steps we want to update.
+    const a = source < target ? source : target;
+    const b = source < target ? target : source;
+    const dir = bothArrow ? 'both' : (source === a ? 'fwd' : 'rev');
+    // Node ids are plain timestamps, so even a long edge id stays
+    // alphanumeric. Keep it free of ':', '|' etc — G6 v5's element registry
+    // keys elements by id and reliably handles plain alphanumeric ids, while
+    // punctuation can interfere with some internal lookups and occasionally
+    // make an edge element never get created after a step that adds it.
+    const id = `ge_${a}_${b}_${dir}`;
+    edges.push({ id, source, target, type, style });
+  };
+  for (const [, list] of pairMap) {
+    if (list.length === 2) {
+      const [first, second] = list;
+      const hasBoth = first.source === second.target && first.target === second.source;
+      if (hasBoth) {
+        const sameValue = String(first.value ?? '') === String(second.value ?? '');
+        if (sameValue) {
+          // Merge: one double-arrow edge, value shown once.
+          pushEdge(first.source, first.target, first.value, first.active || second.active, { bothArrow: true });
+        } else {
+          // Keep both, curved away from each other so labels never overlap.
+          pushEdge(first.source, first.target, first.value, first.active, { type: 'quadratic', curveOffset: 26 });
+          pushEdge(second.source, second.target, second.value, second.active, { type: 'quadratic', curveOffset: -26 });
+        }
+        continue;
+      }
+    }
+    for (const re of list) pushEdge(re.source, re.target, re.value, re.active);
+  }
   return { nodes, edges };
 }
 
@@ -3131,6 +3218,11 @@ function initGraphViewer(data) {
     width: size.width,
     height: size.height,
     autoResize: true,
+    // G6 defaults to zoomRange [0.01, 10] — in the graph viewer that let users
+    // zoom the canvas in absurdly far (nodes become enormous). Clamp the ceiling
+    // to 2x (zoom-canvas zooms via zoomTo, which is clamped by this range), and
+    // keep zoom-canvas at a calmer sensitivity.
+    zoomRange: [0.1, 2],
     animation: { duration: 80, easing: 'linear' },
     data,
     layout: {
@@ -3151,7 +3243,14 @@ function initGraphViewer(data) {
       // 2) Spacing: manyBody:-350 / link:0.4 left the layout unstable and
       //    far-apart-looking. distance:130 / strength:0.8 + manyBody:-200 keeps
       //    it compact, and collide enforces a stable ~72px node separation.
-      //    velocityDecay 0.6 helps each step settle quickly.
+      //
+      //    Jitter is NOT fixed by forcing the simulation to end early: an
+      //    aggressive alphaDecay/alphaMin froze `drag-element-force`, whose
+      //    onDragStart wakes the simulation via simulation.alphaTarget(0.3)
+      //    .restart(). Instead renderGraphStep keeps the current layout when the
+      //    topology is unchanged and only re-runs d3-force when nodes/edges
+      //    actually change. velocityDecay stays at G6's default for a standard
+      //    drag feel.
       type: 'd3-force',
       link: { distance: 130, strength: 0.8 },
       manyBody: { strength: -200 },
@@ -3159,7 +3258,17 @@ function initGraphViewer(data) {
       x: { strength: 0.15, x: size.width / 2 },
       y: { strength: 0.15, y: size.height / 2 },
       center: { x: size.width / 2, y: size.height / 2 },
-      velocityDecay: 0.6,
+      velocityDecay: 0.4,
+      // Make the simulation converge FAST (not to fix jitter — the topology
+      // signature already stops re-layouts — but because G6 leaves the d3-force
+      // timer running until alpha naturally decays to alphaMin, which takes
+      // ~4s with the default alphaDecay. During that window nodes keep
+      // drifting and fight drags right after a step. A higher alphaDecay +
+      // alphaMin stops the simulation in well under a second so the graph is
+      // stable and draggable almost immediately. afterlayout/dragend also stop
+      // it explicitly as a safety net.
+      alphaDecay: 0.1,
+      alphaMin: 0.01,
     },
     node: { type: 'graph-node' },
     // Plain `drag-element` only translates the node and does NOT cooperate with
@@ -3170,21 +3279,63 @@ function initGraphViewer(data) {
     // keeps the node where it was dropped (not dragged back by the layout).
     behaviors: [
       'drag-canvas',
-      'zoom-canvas',
-      { type: 'drag-element-force', fixed: true },
+      { type: 'zoom-canvas', sensitivity: 0.8 },
+      // Plain drag-element (NOT drag-element-force): the force variant relies on
+      // the d3-force simulation's restart() to move the node, but G6 stops the
+      // simulation after the layout settles, so after stepping (or once the
+      // fast-converging alphaDecay runs out) the node no longer follows the
+      // mouse — "can't drag on this step". drag-element moves the node by
+      // writing its position directly and redrawing; it works in any layout
+      // state. fixed:true keeps the dropped node where it was put (the layout
+      // only re-runs on topology-changing steps and re-lays it out then, which
+      // is expected).
+      { type: 'drag-element', fixed: true },
     ],
   });
   graph._dsvisMode = 'graph';
+  graph.__lastGraphSig = graphViewTopologySig(data);
   graph.on('node:click', (evt) => {
     const nodeId = evt?.target?.id || evt?.item?.id || evt?.data?.id;
     if (nodeId) showGraphNodeDetails(String(nodeId));
   });
+  // While the user is dragging a node, cancel any pending auto-refit. On a
+  // topology-changing step the layout just re-ran and `scheduleGraphViewRefit`
+  // is about to fitView() the viewport; if that fires mid-drag the camera
+  // jumps and the node appears to be yanked off the cursor ("can't drag on
+  // this step"). fitView only changes the viewport, so skipping it while the
+  // user holds a node keeps the drag steady.
+  if (typeof graph.on === 'function') {
+    graph.on('node:dragstart', () => {
+      if (graph) clearTimeout(graph.__graphRefitTimer);
+      // Stop any in-flight layout iteration so the drag isn't fought by a
+      // still-running force simulation (the fast alphaDecay converges the
+      // layout, and drag-element moves nodes directly).
+      try { if (graph && typeof graph.stopLayout === 'function') graph.stopLayout(); } catch (_e) { /* benign */ }
+    });
+    graph.on('node:dragend', () => {
+      // Leave the simulation alone: alphaTarget(0) set by drag-element-force
+      // decays it to alphaMin where d3 stops the timer on its own. Explicitly
+      // stopping the layout here would break the next drag's restart().
+    });
+    // d3-force keeps its simulation ticking in the background after a layout
+    // (alpha decays over ~4s with the default alphaDecay), which makes nodes
+    // keep drifting and fights drags right after a step. The layout's
+    // alphaDecay/alphaMin are set to converge in well under a second — d3
+    // stops the timer itself once alpha < alphaMin, without breaking the
+    // restart() that drag-element-force uses. Just fit on overflow here.
+    graph.on('afterlayout', scheduleGraphViewRefit);
+  }
   // G6 v5's render() is async — the d3-force layout runs inside its promise
   // chain. Fitting synchronously right after render() would measure the nodes
   // at (0,0) before the layout has run (observed: layout sometimes never ran,
   // leaving every node stacked at the origin). Fit once the first layout has
   // settled instead.
   graph.render();
+  // First render: guard against the user stepping before the initial elements
+  // exist — same gate as renderGraphStep (coalesce + settle on edge creation).
+  __graphRenderBusy = true;
+  __graphRenderQueued = null;
+  graphStepSettleDone((data.edges || []).map((e) => e.id));
   if (typeof graph.once === 'function') {
     graph.once('afterlayout', () => {
       if (graph && typeof graph.fitView === 'function') {
@@ -3194,7 +3345,68 @@ function initGraphViewer(data) {
   }
 }
 
+// Topology signature of a graphView step: sorted node ids + collapsed undirected
+// edge keys. Used to decide whether a step really changed the graph structure —
+// if not, renderGraphStep updates styles in place (draw) instead of re-running
+// the d3-force layout (render), which is what made nodes jitter and reset the
+// user's dragged positions.
+function graphViewTopologySig(gv) {
+  const nodeIds = (gv.nodes || []).map((n) => String(n.id)).sort().join(',');
+  const edgeKeys = (gv.edges || []).map(graphViewEdgeSig).sort().join(';');
+  return `${nodeIds}#${edgeKeys}`;
+}
+
+// Serialises structural (topology-changing) renders. When the user steps faster
+// than G6 finishes a topology-changing render, the next setData+render cancels
+// the one in flight and G6 permanently drops some of the newly-added edge
+// elements — that edge's arrow disappears and its node is left "not bound to
+// the edge", so dragging the node leaves the edge/arrow behind. While a
+// structural render is settling we coalesce later step requests into the LATEST
+// one (fast-forward), then render it once the current render has finished.
+// Same-topology updates (updateNodeData/updateEdgeData + draw) are synchronous
+// and never touch this gate.
+let __graphRenderBusy = false;
+let __graphRenderQueued = null; // { ri, s } — latest pending step
+let __graphSettleTimer = null;
+
+function graphStepElementsReady(edgeIds) {
+  for (const id of edgeIds) {
+    try {
+      const el = graph.context.element.getElement(id);
+      if (!el || !el.sourceNode) return false;
+    } catch (_e) { return false; }
+  }
+  return true;
+}
+
+function graphStepSettleDone(edgeIds) {
+  // Element creation for a single render() finishes in ~20ms; poll every 20ms
+  // until every newly-added edge element is bound to its endpoints (or give up
+  // after 2s). Only then release the gate and render the latest queued step.
+  let elapsed = 0;
+  clearInterval(__graphSettleTimer);
+  __graphSettleTimer = setInterval(() => {
+    elapsed += 20;
+    if (elapsed > 2000 || graphStepElementsReady(edgeIds)) {
+      clearInterval(__graphSettleTimer);
+      __graphSettleTimer = null;
+      __graphRenderBusy = false;
+      if (__graphRenderQueued) {
+        const q = __graphRenderQueued;
+        __graphRenderQueued = null;
+        renderGraphStep(q.ri, q.s);
+      }
+    }
+  }, 20);
+}
+
 function renderGraphStep(ri, s) {
+  if (__graphRenderBusy) {
+    // A topology-changing render is still settling — fast-forward to the latest
+    // requested step instead of piling up interrupting renders.
+    __graphRenderQueued = { ri, s };
+    return;
+  }
   const gv = (s && s.graphView) || { nodes: [], edges: [], undirected: false };
   const highlight = graphViewDiff(ri, gv);
   const cardNodes = (s && s.graph && s.graph.nodes) || [];
@@ -3202,25 +3414,41 @@ function renderGraphStep(ri, s) {
   if (!graph || graph._dsvisMode !== 'graph') {
     if (graph) resetGraphInstance();
     initGraphViewer(data);
-  } else {
-    try {
-      graph.setData(data);
-      graph.render();
-      // The graph viewer only fits the view once at init. When a later step
-      // brings a larger graph, part of it would fall outside the viewport
-      // (zoom/pan kept from the previous step). Refit after the (async) layout
-      // settles — fitting synchronously right after render() would see the
-      // nodes still clustered (tiny bbox) and zoom in absurdly. Debounced
-      // 'afterlayout' refits only when the graph actually exceeds the viewport,
-      // preserving a manual pan/zoom for graphs that already fit.
-      if (typeof graph.on === 'function') {
-        graph.on('afterlayout', scheduleGraphViewRefit);
-      }
-    } catch (_e) {
-      // G6's transition diff may briefly reference elements removed by a step
-      // change ("Node/Edge not found for id: …") — benign, render stays correct.
-    }
+    return;
   }
+  const sig = graphViewTopologySig(gv);
+  const sameTopology = graph.__lastGraphSig === sig;
+  graph.__lastGraphSig = sig;
+  if (sameTopology) {
+    // Same nodes/edges as the previous step — only highlights/values may have
+    // changed. Update styles in place and draw() WITHOUT re-running the force
+    // layout: re-rendering on every step is exactly what made nodes jitter, and
+    // it also clobbered positions the user dragged to (drag-element-force with
+    // fixed:true). draw() is incremental and keeps the layout untouched.
+    try {
+      const nodeUpdates = (data.nodes || []).map((n) => ({ id: n.id, style: n.style }));
+      // style-only edge updates: topology is unchanged here, so the endpoints
+      // (source/target) are by definition the same — re-sending them makes G6
+      // disconnect+reconnect the edge on every step (the "new node not bound to
+      // its arrow" / arrow-missing symptoms) for zero benefit.
+      const edgeUpdates = (data.edges || []).map((e) => ({ id: e.id, style: e.style }));
+      if (nodeUpdates.length) graph.updateNodeData(nodeUpdates);
+      if (edgeUpdates.length) graph.updateEdgeData(edgeUpdates);
+      graph.draw();
+    } catch (_e) { /* benign */ }
+    return;
+  }
+  // Structural change: rebuild the whole G6 instance instead of incremental
+  // setData+render. Incremental render on a topology change is async — the
+  // d3-force layout runs inside render()'s promise chain — so rapid steps
+  // interrupt it and G6 permanently drops some newly-added edges (arrow
+  // missing, node "not bound" to its edge, dragging leaves the edge behind).
+  // A fresh instance renders independently and can't inherit a half-finished
+  // render; this is the same path a jump-to-step takes, which always works.
+  // initGraphViewer() arms the busy/settle gate, so rapid steps coalesce onto
+  // the latest request instead of piling up.
+  if (graph) resetGraphInstance();
+  initGraphViewer(data);
 }
 
 // Debounced "fit only if the graph overflows the viewport" for the graph
@@ -3235,6 +3463,39 @@ function scheduleGraphViewRefit() {
         graph.fitView({ padding: 40, onlyOutOfViewer: true });
       } catch (_e) { /* benign */ }
     }, 120);
+  } catch (_e) { /* benign */ }
+}
+
+// Stop the d3-force simulation G6 leaves ticking in the background after a
+// layout runs (alpha decays over ~4s by default). While it ticks, nodes keep
+// drifting/jittering and the running layout fights drags — which is why a
+// freshly-stepped graph could become "undraggable". Idempotent: safe after
+// every layout and every drag end. drag-element-force re-wakes the simulation
+// (simulation.alphaTarget(0.3).restart()) during a drag, so stopping it at
+// dragend keeps the dropped node exactly where it was put.
+// Stop the d3-force simulation G6 leaves ticking in the background after a
+// layout runs (alpha decays over ~4s by default). While it ticks, nodes keep
+// drifting/jittering and the running layout fights drags — which is why a
+// freshly-stepped graph could become "undraggable". Idempotent: safe after
+// every layout and every drag end. drag-element-force re-wakes the simulation
+// (simulation.alphaTarget(0.3).restart()) during a drag, so stopping it at
+// dragend keeps the dropped node exactly where it was put.
+//
+// NOTE: currently NOT wired up — the layout's alphaDecay/alphaMin converge the
+// simulation on their own (d3 stops the timer at alphaMin), and calling this
+// (layout.stop()) breaks drag-element-force's restart() the next time you drag.
+function stopGraphViewerSimulation() {
+  try {
+    if (!graph || !graph.context || !graph.context.layout) return;
+    // Call the G6 layout wrapper's stop() (NOT simulation.stop() — G6's
+    // d3-force driver isn't the d3 timer, so stopping the raw simulation does
+    // nothing; the layout's stop() actually halts the ticking loop).
+    const insts = graph.context.layout.getLayoutInstance() || [];
+    for (const f of insts) {
+      if (f && (f.id === 'd3-force' || f.id === 'd3-force-3d') && typeof f.stop === 'function') {
+        f.stop();
+      }
+    }
   } catch (_e) { /* benign */ }
 }
 
@@ -3882,18 +4143,37 @@ function adaptNodesForTextFlow(graphData) {
     const className = getNodeClassName(st);
     const titleKey = `${className}.__title__`;
     const titleVisible = isFieldVisible(titleKey);
-
-    const titleRaw = titleVisible ? String(st.name || '') : '';
+    // "标题显示所属类型" (VIS_CONFIG.showSubtitle) independently controls the
+    // type name shown in the title column. The backend folds the type into the
+    // name ("root\n(BPlusNode)"); when the switch is off we strip that trailing
+    // line, and when the title bar itself is hidden we show just the type.
+    const sub = st.subtitle || className || '';
+    const showSub = VIS_CONFIG.showSubtitle && !!sub;
+    let titleRaw = '';
+    if (titleVisible) {
+      titleRaw = String(st.name || '');
+      if (!showSub) {
+        const lines = titleRaw.split('\n');
+        if (lines.length > 1 && lines[lines.length - 1] === '(' + sub + ')') {
+          lines.pop();
+          titleRaw = lines.join('\n');
+        }
+      }
+    }
+    // The title column exists only when the title bar is visible; the
+    // "标题显示所属类型" switch merely decorates a visible title and never
+    // brings back a title column on its own.
+    const hasTitle = titleVisible;
     // Wrap the title to the (capped) title column so a long class name like
     // "tree\n(HuffmanTreeeeee...)" renders on multiple lines inside the cell
     // instead of overflowing it. Parens in the label are already counted in
     // the string length.
-    let titleW = titleVisible
+    let titleW = hasTitle
       ? Math.max(60, Math.min(180, Math.ceil(Math.max(...titleRaw.split('\n').map((x) => x.length), 1) * 7 + 12)))
       : 0;
-    let titleMaxChars = titleVisible ? Math.max(4, Math.floor((titleW - 12) / 7)) : 0;
+    let titleMaxChars = hasTitle ? Math.max(4, Math.floor((titleW - 12) / 7)) : 0;
     let title = '';
-    if (titleVisible) {
+    if (hasTitle) {
       const titleLines2 = wrapTextToChars(titleRaw, titleMaxChars);
       const wrappedMax = Math.max(...titleLines2.map((x) => x.length), 1);
       titleW = Math.max(60, Math.min(180, Math.ceil(wrappedMax * 7 + 12)));
@@ -4047,8 +4327,11 @@ function adaptBTreeNodes(graphData) {
     // the first key(s). Allocate the column when the title is shown.
     const btreeCls = getNodeClassName(st);
     const btreeTitleVisible = btreeCls ? isFieldVisible(`${btreeCls}.__title__`) : false;
+    // Allocate the title column only when the title bar itself is shown; the
+    // "标题显示所属类型" switch only decorates a visible title.
+    const btreeHasTitle = btreeTitleVisible && !!st.name;
     let titleColW = 0;
-    if (btreeTitleVisible && st.name) {
+    if (btreeHasTitle) {
       const titleRawLines = String(st.name || '').split('\n');
       titleColW = Math.max(50, Math.min(160, Math.ceil(Math.max(...titleRawLines.map(l => l.length), 1) * 7 + 12)));
     }
@@ -5345,6 +5628,8 @@ function applyNodeTypeVisibility(graphData) {
     nextStyle.refRowIndices = keptRefRowIndices;
     nextStyle.refLabelMap = keptRefLabelMap;
 
+    // Subtitle only shows when the title bar is visible AND the global switch
+    // is on (a hidden title never leaves a bare type label).
     nextStyle.showSubtitle = nextStyle.showSubtitle && titleVisible && VIS_CONFIG.showSubtitle;
     nextStyle.name = effectiveName;
 
