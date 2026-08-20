@@ -61,6 +61,9 @@ htmlcov/
 # Generated HTML files (except template.html which is part of the library)
 debug-logs/
 
+# DSVis generated self-contained debug pages (large, ~10MB; styles json stays tracked)
+.dsvis/out/
+
 
 # Development documentation (不上传)
 OPTIMIZATION_SUMMARY.md

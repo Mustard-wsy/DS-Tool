@@ -16,7 +16,7 @@ class HuffmanNode:
         return self.freq < other.freq
 
 
-class HuffmanTree:
+class HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee:
     def __init__(self):
         self.root = None
         self.codes = {}
@@ -149,7 +149,7 @@ class HuffmanTree:
 
 def huffman_demo():
 
-    tree = HuffmanTree()
+    tree = HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee()
 
     # 经典教材案例
     # 高频字符编码更短

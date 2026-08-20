@@ -34,6 +34,8 @@ __all__ = [
     "auto",
     "watch_vars",
     "bind_fields",
+    "hide_field",
+    "show_field",
     "set_mode",
     "set_layout",
     "set_text_flow",
@@ -236,3 +238,32 @@ def enable_breakpoints():
     强制以 line 粒度采集，前端可逐行步进和插入断点。
     """
     _enable_bp()
+
+
+def hide_field(field_key: str, cascade: bool = False):
+    """预设隐藏某个字段。
+
+    在调用 ``auto()`` 或 ``capture()`` 之前使用，生成的 HTML 中该
+    字段默认隐藏。
+
+    Parameters
+    ----------
+    field_key : str
+        格式 ``"ClassName.fieldName"``，如 ``"AVLNode.left"``。
+    cascade : bool
+        若为 True，同时隐藏引用该字段的子节点边（cascade 模式）。
+    """
+    from .runtime.config import set_field_visible
+    set_field_visible(field_key, "cascade" if cascade else "self")
+
+
+def show_field(field_key: str):
+    """预设显示某个字段（恢复默认可见状态）。
+
+    Parameters
+    ----------
+    field_key : str
+        格式 ``"ClassName.fieldName"``。
+    """
+    from .runtime.config import set_field_visible
+    set_field_visible(field_key, "visible")

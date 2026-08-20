@@ -5,10 +5,103 @@ Also handles HTML generation (``render_debugger()``).
 
 import base64
 import json
+import os
+import socket
+import subprocess
+import sys
 import tempfile
+import time
 import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# Local style server (see runtime/style_server.py). Fixed port so a running
+# server is reused across script runs; the frontend persists styles to
+# <cwd>/.dsvis/<script>.json instead of the browser's localStorage on C:.
+STYLE_SERVER_PORT = 8765
+
+
+def _read_style_config(source_file):
+    """Load the persisted per-script style from <cwd>/.dsvis/<stem>.json."""
+    if not source_file:
+        return None
+    style_file = Path.cwd() / ".dsvis" / f"{Path(source_file).stem}.json"
+    if not style_file.exists():
+        return None
+    try:
+        return json.loads(style_file.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _port_open(port: int, timeout: float = 0.4) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _probe_http(port: int, path: str = "/ping", timeout: float = 1.5) -> bool:
+    """True if a DSVis-style HTTP server responds 204 on GET <path>.
+
+    Verifying with an actual request (not just a TCP connect) prevents a
+    non-DSVis process squatting on the port from being mistaken for ours.
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout) as s:
+            s.sendall(f"GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n".encode("ascii"))
+            s.settimeout(timeout)
+            first = s.recv(64).decode("latin-1", "replace")
+            return " 204" in first.split("\r\n", 1)[0]
+    except Exception:
+        return False
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _start_server_on_port(port: int) -> bool:
+    """Launch a detached style server on *port* and wait for /ping to answer."""
+    try:
+        server_script = Path(__file__).resolve().parent / "runtime" / "style_server.py"
+        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        subprocess.Popen(
+            [sys.executable, str(server_script), "--port", str(port)],
+            cwd=str(Path.cwd()),
+            creationflags=creationflags,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(30):
+            if _probe_http(port):
+                return True
+            time.sleep(0.1)
+    except Exception:
+        pass
+    return False
+
+
+def _ensure_style_server():
+    """Return a reachable DSVis style-server port (reusing a live one or
+    starting a detached server), else None.
+
+    - Reuses the default port only if a live DSVis server answers /ping.
+    - If the default port is squatted by a non-DSVis process, starts the server
+      on a random free high port instead.
+    - Any failure degrades gracefully to None (the frontend falls back to
+      localStorage for style persistence).
+    """
+    if _probe_http(STYLE_SERVER_PORT):
+        return STYLE_SERVER_PORT
+    if _port_open(STYLE_SERVER_PORT):
+        # Squatted by something else — use a random free port.
+        port = _find_free_port()
+        return port if _start_server_on_port(port) else None
+    return STYLE_SERVER_PORT if _start_server_on_port(STYLE_SERVER_PORT) else None
 def _load_codicon_styles() -> str:
     """Return codicon CSS with the font embedded as a data URI.
 
@@ -48,7 +141,10 @@ class TextLayoutConfig:
     section_gap: int = 6
     min_card_w: int = 100
     max_card_w: int = 280
-    char_px: float = 6.0
+    # Average rendered width per char for the card fonts (11-12px). 6.0 was
+    # too small — G6 renders ~6.8-7.5px/char, so wrapped lines still overflowed
+    # the card. 7.0 is a safe upper bound.
+    char_px: float = 7.0
 
 
 @dataclass
@@ -124,7 +220,7 @@ class NodeStyle:
         if self.show_subtitle and self.subtitle:
             d["showSubtitle"] = True
             d["subtitle"] = self.subtitle
-        if self.title_col_w:
+        if self.title_col_w is not None:
             d["titleColW"] = self.title_col_w
             d["fieldColW"] = self.field_col_w
             d["gridNames"] = self.grid_names
@@ -218,13 +314,6 @@ def _layout_horizontal_node(name, rows, subtitle_text, text_cfg):
     """
     raw_header_lines = str(name).splitlines() or [str(name)]
     candidate_lengths = [len(line) for line in raw_header_lines]
-
-    if subtitle_text:
-        subtitle_lines = _wrap_multiline(subtitle_text, 999)
-        candidate_lengths.extend(len(line) for line in subtitle_lines)
-    else:
-        subtitle_lines = []
-
     candidate_lengths.extend(len(str(r.get("text", ""))) for r in rows)
     max_len = max(candidate_lengths) if candidate_lengths else 0
 
@@ -234,6 +323,10 @@ def _layout_horizontal_node(name, rows, subtitle_text, text_cfg):
 
     header_lines = _wrap_multiline(name, max_chars)
     display_name = "\n".join(header_lines)
+
+    # The type-name subtitle is wrapped to the card width too, so a long class
+    # / structure-type name wraps instead of overflowing the card ("跑出格子").
+    subtitle_lines = _wrap_multiline(subtitle_text, max_chars) if subtitle_text else []
 
     display_rows = []
     bind_groups = []
@@ -256,11 +349,13 @@ def _layout_horizontal_node(name, rows, subtitle_text, text_cfg):
 
     header_line_count = max(1, len(header_lines))
     header_h = max(text_cfg.default_header_h, header_line_count * 16)
-    if subtitle_text:
-        header_h += 14
+    if subtitle_lines:
+        header_h += len(subtitle_lines) * 14
     height = text_cfg.padding_y * 2 + header_h + max(len(display_rows), 1) * text_cfg.row_h
 
-    return card_w, height, header_h, display_name, display_rows, bind_groups, bind_blocks, ref_row_indices, ref_label_map
+    return (card_w, height, header_h, display_name,
+            display_rows, bind_groups, bind_blocks,
+            ref_row_indices, ref_label_map, subtitle_lines)
 
 
 
@@ -296,7 +391,16 @@ def _layout_vertical_node(name, rows, subtitle_text, text_cfg):
     Title spans both rows vertically. Ref rows show name only (data cell empty).
     """
     raw_header_lines = str(name).splitlines() or [str(name)]
-    display_name = "\n".join(raw_header_lines)
+    # Wrap the title to a capped column width so a long line (e.g. a class name
+    # rendered as "field\n(SomeVeryLongType)", parens already in the label)
+    # never overflows the title cell. char_px is the average rendered char
+    # width, so the wrapped longest line fits inside the column.
+    title_cap = 160
+    init_max_chars = max(4, int((title_cap - 12) / text_cfg.char_px))
+    wrapped_title = _wrap_multiline(name, init_max_chars)
+    longest_wrapped = max(len(l) for l in wrapped_title)
+    title_col_w = max(60, min(160, int(longest_wrapped * text_cfg.char_px + 12)))
+    display_name = "\n".join(wrapped_title)
 
     # Split each row into (name, value, is_ref)
     field_defs = []
@@ -307,9 +411,6 @@ def _layout_vertical_node(name, rows, subtitle_text, text_cfg):
         field_defs.append((fname, fval, is_ref, text))
 
     # column widths
-    title_col_w = int(max(len(line) for line in raw_header_lines) * text_cfg.char_px + 12)
-    title_col_w = max(60, min(160, title_col_w))
-
     field_col_w = 16
     if field_defs:
         for fname, fval, _, _raw_text in field_defs:
@@ -346,6 +447,7 @@ def _layout_vertical_node(name, rows, subtitle_text, text_cfg):
     return (card_w, card_h, header_h, display_name,
             display_rows, bind_groups, bind_blocks,
             ref_row_indices, ref_label_map,
+            [],  # subtitle_lines (vertical grid does not render a subtitle)
             title_col_w, field_col_w, grid_names, grid_values, grid_refs)
 
 
@@ -357,10 +459,17 @@ def _layout_node(name, rows, subtitle_text, text_flow, text_cfg):
     return _layout_horizontal_node(name, rows, subtitle_text, text_cfg)
 
 
-def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
+def build_g6_data(nodes, edges, layout=None, text_flow="horizontal", field_visibility=None):
     """Convert internal graph representation to G6 card format.
 
     *text_flow* sets the default text flow for all cards ("horizontal" | "vertical").
+
+    *field_visibility* is the ``get_field_visibility()`` dict
+    (``"ClassName.fieldName" -> "visible"|"self"|"cascade"``).  When a node's
+    ``__title__`` pseudo-field is hidden, the vertical layout collapses the
+    title column by serializing ``titleColW: 0`` instead of the natural
+    header width — so the generated payload is self-consistent with the
+    initial visibility (the frontend also recomputes it defensively).
     """
     g6_data: dict = {"nodes": [], "edges": []}
 
@@ -370,6 +479,7 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
 
     is_vertical = rankdir == "TB"
     text_cfg = TextLayoutConfig()
+    field_visibility = field_visibility or {}
 
     id_to_name: dict[str, str] = {}
     class_count: dict[str, int] = {}
@@ -391,8 +501,21 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
         (card_w, height, header_h, display_name,
          display_rows, bind_groups, bind_blocks,
          ref_row_indices, ref_label_map) = layout_result[:9]
+        subtitle_lines = layout_result[9] if len(layout_result) > 9 else []
         # Vertical grid extras (unpacked only when present)
-        grid_extras = layout_result[9:] if len(layout_result) > 9 else ()
+        grid_extras = layout_result[10:] if len(layout_result) > 10 else ()
+
+        # Collapse the title column when the backend knows the title is hidden.
+        # This only affects vertical-grid nodes (horizontal cards carry no grid extras).
+        title_col_w = grid_extras[0] if len(grid_extras) > 0 else 0
+        title_hidden = field_visibility.get(f"{cls}.__title__") in ("self", "cascade")
+        if title_hidden and len(grid_extras) > 0:
+            title_col_w = 0
+            # Keep the card width self-consistent: drop the title column width.
+            field_col_w = grid_extras[1] if len(grid_extras) > 1 else 0
+            num_fields = max(len(grid_extras[2]) if len(grid_extras) > 2 else 0, 1)
+            card_w = max(text_cfg.min_card_w,
+                         text_cfg.padding_x * 2 + title_col_w + num_fields * field_col_w)
 
         # ── ports + port layout descriptor ──
         use_vertical_ports = is_vertical or (text_flow == "vertical")
@@ -422,9 +545,12 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal"):
             ports=ports,
             port_layout=port_layout,
             show_subtitle=bool(subtitle_text),
-            subtitle=subtitle_text,
+            # Store the wrapped (multi-line) subtitle so the frontend renders a
+            # long class / structure-type name on multiple lines instead of
+            # letting a single G6 text run past the card edge.
+            subtitle="\n".join(subtitle_lines) if subtitle_lines else subtitle_text,
             text_flow=text_flow,
-            title_col_w=grid_extras[0] if len(grid_extras) > 0 else 0,
+            title_col_w=title_col_w,
             field_col_w=grid_extras[1] if len(grid_extras) > 1 else 0,
             grid_names=grid_extras[2] if len(grid_extras) > 2 else [],
             grid_values=grid_extras[3] if len(grid_extras) > 3 else [],
@@ -547,7 +673,7 @@ def _derive_algorithm_name(source_lines, title):
 
     return 'Algorithm'
 
-def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, display_indices=None):
+def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, display_indices=None, source_file=None):
     """Generate a self-contained HTML debugger page and open it in a browser.
 
     Layout contract
@@ -555,6 +681,14 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
     *layout* is normalised once via :func:`dsvis._normalize_layout` and
     embedded as ``__LAYOUT__``.  The frontend consumes this value as-is;
     there is no second normalisation pass.
+
+    Style persistence
+    -----------------
+    *source_file* (the user script being visualised) selects the per-script
+    style file ``<cwd>/.dsvis/<stem>.json``.  When present it is embedded as
+    ``__STYLE_CONFIG__`` so the page opens with the previously saved style;
+    ``__STYLE_SERVER__`` carries the localhost port the frontend uses to save
+    styles back to that file (never the browser's localStorage on C:).
 
     Step payload contract
     ---------------------
@@ -566,7 +700,8 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
     navigation.
     """
     from .dsvis import _normalize_layout  # deferred — avoids circular import
-    from .runtime.config import breakpoints_enabled, get_text_flow
+    from .graph_viewer import build_graph_viewer_data
+    from .runtime.config import breakpoints_enabled, get_text_flow, get_field_visibility
 
     # breakpoints state is a pure presentation hint for the frontend —
     # the scheduler already decided recording policy before reaching here.
@@ -577,33 +712,74 @@ def render_debugger(steps, source_lines, title="DSVis Debugger", layout=None, di
     normalized_layout = _normalize_layout(layout)
     step_payload = []
     for idx, step in enumerate(steps, start=1):
+        step_nodes = step.get("nodes", [])
+        step_edges = step.get("edges", [])
         step_payload.append({
             "step": idx,
             "lineno": step.get("lineno"),
             "stack": step.get("stack", {"globals": [], "frames": []}),
-            "graph": build_g6_data(step.get("nodes", []), step.get("edges", []), normalized_layout, text_flow),
+            "graph": build_g6_data(
+                step_nodes,
+                step_edges,
+                normalized_layout,
+                text_flow,
+                field_visibility=get_field_visibility(),
+            ),
+            # Independent graph-displayer payload (structureType='graph').
+            "graphView": build_graph_viewer_data(step_nodes, step_edges),
         })
 
     template_path = Path(__file__).parent / "template.html"
     styles_path = Path(__file__).parent / "styles.css"
+    g6_path = Path(__file__).parent / "g6.min.js"
     html = template_path.read_text(encoding="utf-8")
     styles = styles_path.read_text(encoding="utf-8")
+    g6_js = g6_path.read_text(encoding="utf-8") if g6_path.exists() else ""
     codicon_styles = _load_codicon_styles()
     if codicon_styles:
         styles = f"{codicon_styles}\n{styles}"
     html = html.replace("__TITLE__", title)
     html = html.replace("__STYLES__", styles)
+    html = html.replace("__G6_JS__", g6_js)
     html = html.replace("__DSVIS_ALGO__", json.dumps(_derive_algorithm_name(source_lines, title)))
     html = html.replace("__STEPS__", json.dumps(step_payload, ensure_ascii=False))
     html = html.replace("__SOURCE_LINES__", json.dumps(source_lines, ensure_ascii=False))
     html = html.replace("__LAYOUT__", json.dumps(normalized_layout))
     html = html.replace("__BREAKPOINTS_ENABLED__", json.dumps(breakpoints_enabled()))
     html = html.replace("__DISPLAY_INDICES__", json.dumps(display_indices))
+    html = html.replace("__INITIAL_VISIBILITY__", json.dumps(get_field_visibility(), ensure_ascii=False))
 
-    fd, path = tempfile.mkstemp(suffix=".html")
-    html_path = Path(path)
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(html)
+    # Style persistence: embed the saved style (if any) and the local style
+    # server port so the page can load + persist per-script styles to disk.
+    style_config = _read_style_config(source_file)
+    style_port = _ensure_style_server()
+    style_server = None
+    if style_port is not None:
+        style_server = {"port": style_port}
+        if source_file:
+            style_server["script"] = Path(source_file).name
+    html = html.replace("__STYLE_CONFIG__", json.dumps(style_config, ensure_ascii=False))
+    html = html.replace("__STYLE_SERVER__", json.dumps(style_server, ensure_ascii=False))
+
+    # ── Output location ──
+    # Default: write a stable, shareable self-contained page to
+    # <cwd>/.dsvis/out/<script-stem>.html, overwriting on each run, so the user
+    # can double-click / share / refresh the same file. Falls back to a temp
+    # file when the project directory is not writable.
+    html_path = None
+    try:
+        out_dir = Path.cwd() / ".dsvis" / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = Path(source_file).stem if source_file else "dsvis"
+        html_path = out_dir / f"{stem}.html"
+        html_path.write_text(html, encoding="utf-8")
+    except Exception:
+        html_path = None
+    if html_path is None:
+        fd, path = tempfile.mkstemp(suffix=".html")
+        html_path = Path(path)
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html)
 
     webbrowser.open(html_path.as_uri())
     print(f"[dsvis] HTML 输出：{html_path}")

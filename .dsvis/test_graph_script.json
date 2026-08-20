@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "structureType": "other",
+  "edgeProxy": {},
+  "visibility": {
+    "Graph.nodes": "visible",
+    "Graph.__title__": "visible",
+    "GraphNode.value": "visible",
+    "GraphNode.__title__": "visible",
+    "GraphNode.edges": "visible",
+    "Graph.nodes['A']": "visible",
+    "Graph.nodes['B']": "visible",
+    "Edge.to": "visible",
+    "Edge.__title__": "visible",
+    "Edge.weight": "visible",
+    "GraphNode.edges[0]": "visible",
+    "Graph.nodes['C']": "visible",
+    "GraphNode.edges[1]": "visible",
+    "Graph.nodes['D']": "visible",
+    "GraphNode.edges[2]": "visible"
+  },
+  "titleField": {},
+  "layoutExempt": [],
+  "layerEdges": [],
+  "layerEdgeKeys": {},
+  "layout": {
+    "rankdir": "TB"
+  },
+  "showSubtitle": true,
+  "uniformEdgesEnabled": true,
+  "rowDisplayMode": "both",
+  "parentFieldKey": "",
+  "graphViewer": {
+    "valueField": "",
+    "edgeValueField": "",
+    "direction": "auto",
+    "radius": 24
+  }
+}

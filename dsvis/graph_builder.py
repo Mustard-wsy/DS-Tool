@@ -164,16 +164,12 @@ def _resolve_object_fields(owner, obj, item_map, obj_id,
             _append_field(owner, attr, val)
         elif isinstance(val, (list, tuple, set, frozenset, dict, deque)):
             items = list(iter_container_items(attr, val))
-            # If ALL items are class objects this is a pure pointer array
-            # (e.g. ``children = [Node1, Node2]``).  Skip the aggregate row
-            # that would dump the entire list as text — each item already gets
-            # its own ref row below.
-            # Otherwise keep the aggregate row (e.g. BTree ``keys = [4, 8, 12]``
-            # where the items are primitives and the text matters).
-            all_refs = items and all(is_class_object(iv) for _, iv in items)
-            if not all_refs:
-                _append_field(owner, attr, val)
+            # Non-empty containers are expanded into `X[i]` rows only — no
+            # aggregate row (the expanded items fully represent the content).
+            # Empty containers keep an aggregate row (e.g. ``keys = []``) so
+            # the field stays visible/identifiable in the graph and panel.
             if not items:
+                _append_field(owner, attr, val)
                 continue
             for item_name, item_val in items:
                 _append_ref_or_field(item_name, item_val, owner, obj_id,

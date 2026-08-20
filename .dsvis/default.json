@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "structureType": "other",
+  "edgeProxy": {},
+  "visibility": {
+    "LLNode.val": "visible",
+    "LLNode.next": "visible",
+    "LLNode.__title__": "visible"
+  },
+  "titleField": {},
+  "layerEdges": [],
+  "layerEdgeKeys": {},
+  "layout": {
+    "rankdir": "TB"
+  },
+  "showSubtitle": true,
+  "uniformEdgesEnabled": true,
+  "rowDisplayMode": "both",
+  "parentFieldKey": "",
+  "graphViewer": {
+    "valueField": "",
+    "edgeValueField": "",
+    "direction": "auto",
+    "radius": 24
+  }
+}

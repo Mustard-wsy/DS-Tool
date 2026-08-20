@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "structureType": "binary-tree",
+  "edgeProxy": {},
+  "visibility": {
+    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.root": "visible",
+    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeee\neeeeeeeeeeeee.__title__": "visible",
+    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.codes": "visible",
+    "HuffmanNode.char": "visible",
+    "HuffmanNode.__title__": "self",
+    "HuffmanNode.freq": "visible",
+    "HuffmanNode.left": "self",
+    "HuffmanNode.right": "self",
+    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.codes['A']": "self",
+    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.codes['C']": "self",
+    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.codes['B']": "self",
+    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.codes['F']": "self",
+    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.codes['E']": "self",
+    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.codes['D']": "self",
+    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\neeeeeee.__title__": "visible",
+    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.__title__": "visible",
+    "HuffmanTree.root": "visible",
+    "HuffmanTree.__title__": "visible",
+    "HuffmanTree.codes": "visible",
+    "HuffmanTree.codes['A']": "visible",
+    "HuffmanTree.codes['C']": "visible",
+    "HuffmanTree.codes['B']": "visible",
+    "HuffmanTree.codes['F']": "visible",
+    "HuffmanTree.codes['E']": "visible",
+    "HuffmanTree.codes['D']": "visible"
+  },
+  "titleField": {},
+  "layoutExempt": [],
+  "layerEdges": [
+    "left",
+    "right"
+  ],
+  "layerEdgeKeys": {
+    "left": "left",
+    "right": "right"
+  },
+  "layout": {
+    "rankdir": "TB"
+  },
+  "showSubtitle": true,
+  "uniformEdgesEnabled": true,
+  "rowDisplayMode": "both",
+  "parentFieldKey": "",
+  "graphViewer": {
+    "valueField": "",
+    "edgeValueField": "",
+    "direction": "auto",
+    "radius": 24
+  }
+}

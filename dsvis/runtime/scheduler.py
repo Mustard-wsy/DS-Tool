@@ -213,6 +213,7 @@ class Scheduler:
                 title=title,
                 layout=get_layout(),
                 display_indices=display_indices,
+                source_file=self.source_file,
             )
         except Exception as e:
             print(f"[dsvis] Scheduler flush 出错：{e}")
