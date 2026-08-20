@@ -92,6 +92,10 @@ __STYLES__
             <option value="value">仅值</option>
           </select>
         </div>
+        <div class="settings-row">
+          <span>节点类型</span>
+          <label class="agent-inline"><input id="settingsShowSubtitle" type="checkbox" /> 标题显示所属类型</label>
+        </div>
         <div class="settings-note">同名字段在所有同类节点中共享可见性。</div>
         <div class="agent-settings-group">
           <div class="settings-row">
@@ -111,6 +115,7 @@ __STYLES__
             <input id="pageAgentModel" type="text" placeholder="留空使用默认 Testing API" />
           </div>
           <div class="settings-note">同时配置 URL、Token、模型时使用你的 OpenAI-compatible API；否则使用 PageAgent 默认测试接口。生产环境不要在前端保存真实密钥。</div>
+          <div id="pageAgentFileNote" class="settings-note" style="display:none;color:#c0392b;">本地文件（file://）模式下 PageAgent 不可用：浏览器禁止 file: 页面加载自引用 iframe。请通过本地服务器（如 <code>python -m http.server</code>）访问以使用 AI 助手。</div>
         </div>
         <div id="nodeTypeList"></div>
       </div>
@@ -959,6 +964,16 @@ async function initializeDsvisAgent() {
     DSVisLogger.debug('agent', 'not-enabled', {});
     return;
   }
+  // The PageAgent CDN bundle creates a self-referencing iframe sandbox on
+  // load. Chrome blocks that for file: pages ("file: URLs are unique security
+  // origins"), so loading it from a locally-opened debug page fires
+  // "Unsafe attempt to load URL file:// …". Skip loading + initialising
+  // entirely when the page is opened from the filesystem; the feature remains
+  // fully available when the page is served over http(s)://.
+  if (location.protocol === 'file:') {
+    DSVisLogger.debug('agent', 'file-mode-skip', {});
+    return;
+  }
   if (!window.PageAgent) {
     await loadPageAgentCdn();
     if (!window.PageAgent) {
@@ -1083,7 +1098,6 @@ const LAYOUT_PRESET = {
   dagreExtraX: 24,
   dagreExtraY: 18,
   gridPadding: 14,
-  treeConnectivityThreshold: 0.55,
   aspectMin: 0.6,
   aspectMax: 1.8,
 };
@@ -1696,11 +1710,15 @@ function analyzeLayoutMetrics(graphData, viewport) {
     if (e?.source !== undefined) connectedNodeIds.add(String(e.source));
     if (e?.target !== undefined) connectedNodeIds.add(String(e.target));
   }
-  const connectedRatio = connectedNodeIds.size / Math.max(nodes.length, 1);
-  const treeLike = edges.length > 0 && (
-    connectedRatio >= LAYOUT_PRESET.treeConnectivityThreshold ||
-    edges.length >= nodes.length - 1
-  );
+  // Connected nodes must never fall back to the dense grid layout: grid only
+  // packs cards into rows/columns and ignores edge relationships, so a sparse
+  // step with a couple of linked nodes would render meaningless criss-crossing
+  // edges. As soon as any nodes are joined by an edge (even a single link),
+  // lay the whole set out as a graph (dagre) so the connections read
+  // naturally. Grid is reserved for fully disconnected collections (no edges),
+  // where density is the goal.
+  const hasConnections = edges.length > 0 && connectedNodeIds.size >= 2;
+  const treeLike = hasConnections;
 
   return { nodes, maxW, maxH, cols, boundaryGapX, boundaryGapY, treeLike };
 }
@@ -3404,6 +3422,17 @@ function parseVerticalField(rowText, isRef) {
   return { name: raw, value: isRef ? '' : raw };
 }
 
+function wrapTextToChars(text, maxChars) {
+  const lines = String(text == null ? '' : text).split('\n');
+  const max = Math.max(1, maxChars || 1);
+  const out = [];
+  for (const line of lines) {
+    if (line.length <= max) { out.push(line); continue; }
+    for (let i = 0; i < line.length; i += max) out.push(line.slice(i, i + max));
+  }
+  return out.length ? out : [''];
+}
+
 function adaptNodesForTextFlow(graphData) {
   // Run whenever any node uses vertical text flow (from backend or global setting).
   const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
@@ -3432,11 +3461,24 @@ function adaptNodesForTextFlow(graphData) {
     const titleKey = `${className}.__title__`;
     const titleVisible = isFieldVisible(titleKey);
 
-    const title = titleVisible ? String(st.name || '') : '';
-    const titleW = titleVisible
-      ? Math.max(60, Math.min(180, Math.ceil(Math.max(...title.split('\n').map((x) => x.length), 1) * 6 + 12)))
+    const titleRaw = titleVisible ? String(st.name || '') : '';
+    // Wrap the title to the (capped) title column so a long class name like
+    // "tree\n(HuffmanTreeeeee...)" renders on multiple lines inside the cell
+    // instead of overflowing it. Parens in the label are already counted in
+    // the string length.
+    let titleW = titleVisible
+      ? Math.max(60, Math.min(180, Math.ceil(Math.max(...titleRaw.split('\n').map((x) => x.length), 1) * 7 + 12)))
       : 0;
-    const colW = Math.max(50, Math.min(130, Math.ceil(Math.max(1, ...parsed.map((x) => Math.max(String(x.name).length, String(x.value).length))) * 6 + 12)));
+    let titleMaxChars = titleVisible ? Math.max(4, Math.floor((titleW - 12) / 7)) : 0;
+    let title = '';
+    if (titleVisible) {
+      const titleLines2 = wrapTextToChars(titleRaw, titleMaxChars);
+      const wrappedMax = Math.max(...titleLines2.map((x) => x.length), 1);
+      titleW = Math.max(60, Math.min(180, Math.ceil(wrappedMax * 7 + 12)));
+      st.name = titleLines2.join('\n');
+      title = st.name;
+    }
+    const colW = Math.max(50, Math.min(130, Math.ceil(Math.max(1, ...parsed.map((x) => Math.max(String(x.name).length, String(x.value).length))) * 7 + 12)));
     const numFields = Math.max(1, parsed.length);
     const padX = 10, padY = 8, rowH = 20;
     const effRowMode = st.rowDisplayMode || VIS_CONFIG.rowDisplayMode || 'both';
@@ -3552,7 +3594,7 @@ function adaptBTreeNodes(graphData) {
     const keyValues = keyCols.map((i) => parseVerticalField(rows[i], refRowSet.has(i)).value);
     const numKeys = keyValues.length;
     const padX = 10, padY = 8, rowH = 20;
-    const colW = Math.max(50, Math.min(130, Math.ceil(Math.max(1, ...keyValues.map((v) => Math.max(4, String(v).length))) * 6 + 12)));
+    const colW = Math.max(50, Math.min(130, Math.ceil(Math.max(1, ...keyValues.map((v) => Math.max(4, String(v).length))) * 7 + 12)));
     // Meta fields: visible non-keys/non-children fields (t, leaf, …). They
     // default to hidden (applyBTreeMetaDefaults sets 'self'); when the user
     // toggles one visible the node renders like a binary-tree grid — a field
@@ -5305,6 +5347,12 @@ function toggleSettingsPanel() {
   const panel = document.getElementById('settingsPanel');
   if (panel) panel.classList.toggle('open', settingsPanelVisible);
   if (settingsPanelVisible) syncSettingsPanel();
+  else if (__styleAutosaveReady && STYLE_SERVER && STYLE_SERVER.port) {
+    // 关闭样式面板时立即把当前样式写入本地（.dsvis/<script>.json），
+    // 而不是等到页面关闭。
+    clearTimeout(__styleAutosaveTimer);
+    __styleAutosaveSend();
+  }
 }
 
 function syncSettingsPanel() {
@@ -5312,15 +5360,30 @@ function syncSettingsPanel() {
   if (sel) sel.value = VIS_CONFIG.textFlow;
   const rowDisp = document.getElementById('settingsRowDisplay');
   if (rowDisp) rowDisp.value = VIS_CONFIG.rowDisplayMode;
+  const showSub = document.getElementById('settingsShowSubtitle');
+  if (showSub) showSub.checked = VIS_CONFIG.showSubtitle;
   const pageAgentConfig = loadPageAgentConfig();
   const agentEnabled = document.getElementById('pageAgentEnabled');
   const agentBaseURL = document.getElementById('pageAgentBaseURL');
   const agentApiKey = document.getElementById('pageAgentApiKey');
   const agentModel = document.getElementById('pageAgentModel');
-  if (agentEnabled) agentEnabled.checked = pageAgentConfig.enabled;
-  if (agentBaseURL) agentBaseURL.value = pageAgentConfig.baseURL;
-  if (agentApiKey) agentApiKey.value = pageAgentConfig.apiKey;
-  if (agentModel) agentModel.value = pageAgentConfig.model;
+  const fileMode = location.protocol === 'file:';
+  if (fileMode) {
+    // file:// 页面：PageAgent 无法工作（自引用 iframe 被浏览器拦截，会触发
+    // "Unsafe attempt to load URL file:// …"）。禁用开关与输入框，避免用户在
+    // 本地文件下误以为已启用，并给出提示文案。
+    if (agentEnabled) { agentEnabled.checked = false; agentEnabled.disabled = true; }
+    if (agentBaseURL) agentBaseURL.disabled = true;
+    if (agentApiKey) agentApiKey.disabled = true;
+    if (agentModel) agentModel.disabled = true;
+    const note = document.getElementById('pageAgentFileNote');
+    if (note) note.style.display = '';
+  } else {
+    if (agentEnabled) agentEnabled.checked = pageAgentConfig.enabled;
+    if (agentBaseURL) agentBaseURL.value = pageAgentConfig.baseURL;
+    if (agentApiKey) agentApiKey.value = pageAgentConfig.apiKey;
+    if (agentModel) agentModel.value = pageAgentConfig.model;
+  }
   buildNodeTypeRegistry();
   const list = document.getElementById('nodeTypeList');
   if (!list) return;
@@ -5706,6 +5769,12 @@ function applyPageAgentSettingsImmediate() {
     saveVisConfig(VIS_CONFIG);
     applyVisConfig();
   });
+  const showSub = document.getElementById('settingsShowSubtitle');
+  if (showSub) showSub.addEventListener('change', () => {
+    VIS_CONFIG.showSubtitle = showSub.checked;
+    saveVisConfig(VIS_CONFIG);
+    applyVisConfig();
+  });
   for (const id of ['pageAgentEnabled', 'pageAgentBaseURL', 'pageAgentApiKey', 'pageAgentModel']) {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', applyPageAgentSettingsImmediate);
@@ -5729,12 +5798,17 @@ if (pageAgentBtn) {
     }
     panel.style.display = 'flex';
     requestAnimationFrame(() => requestAnimationFrame(() => panel.classList.add('open')));
+    const status = document.getElementById('pageAgentStatus');
+    if (location.protocol === 'file:') {
+      // file:// 下 PageAgent 不可用（自引用 iframe 被浏览器拦截）。
+      if (status) status.textContent = '本地文件模式不可用，请通过本地服务器访问页面。';
+      return;
+    }
     const config = loadPageAgentConfig();
     if (!config.enabled) {
       config.enabled = true;
       savePageAgentConfig(config);
     }
-    const status = document.getElementById('pageAgentStatus');
     if (status) status.textContent = '正在加载 CDN...';
     try {
       await reloadDsvisAgent();

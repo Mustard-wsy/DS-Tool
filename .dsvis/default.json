@@ -2,7 +2,11 @@
   "version": 1,
   "structureType": "other",
   "edgeProxy": {},
-  "visibility": {},
+  "visibility": {
+    "LLNode.val": "visible",
+    "LLNode.next": "visible",
+    "LLNode.__title__": "visible"
+  },
   "titleField": {},
   "layerEdges": [],
   "layerEdgeKeys": {},

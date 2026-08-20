@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "structureType": "graph",
+  "structureType": "other",
   "edgeProxy": {},
   "visibility": {
     "Graph.nodes": "visible",
@@ -17,9 +17,7 @@
     "Graph.nodes['C']": "visible",
     "GraphNode.edges[1]": "visible",
     "Graph.nodes['D']": "visible",
-    "GraphNode.edges[2]": "visible",
-    "Graph.nodes['E']": "visible",
-    "GraphNode.edges[3]": "visible"
+    "GraphNode.edges[2]": "visible"
   },
   "titleField": {},
   "layerEdges": [],

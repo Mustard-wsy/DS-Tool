@@ -42,9 +42,13 @@ def test_title_hidden_collapses_to_zero():
                          field_visibility={'AVLNode.__title__': 'self'})
     w = _title_col_w(data)
     assert w == 0, f"expected titleColW==0 when __title__ hidden, got {w}"
-    # Card width must also drop the title column (10+10 padding + 4*50)
-    size = data['nodes'][0]['style']['size']
-    assert size[0] <= 220, f"card width should collapse with title, got {size[0]}"
+    # Card width must drop the title column (2×10 padding + 4 field columns).
+    # fieldColW itself scales with char_px, so assert against the serialized
+    # fieldColW rather than a hard-coded number.
+    style = data['nodes'][0]['style']
+    expected_w = 20 + 4 * style['fieldColW']
+    size = style['size']
+    assert size[0] == expected_w, f"card width should collapse with title, got {size[0]} expected {expected_w}"
     print(f"[PASS] title hidden → titleColW={w}, size={size}")
 
 

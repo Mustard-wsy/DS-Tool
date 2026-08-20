@@ -100,7 +100,10 @@ class TextLayoutConfig:
     section_gap: int = 6
     min_card_w: int = 100
     max_card_w: int = 280
-    char_px: float = 6.0
+    # Average rendered width per char for the card fonts (11-12px). 6.0 was
+    # too small — G6 renders ~6.8-7.5px/char, so wrapped lines still overflowed
+    # the card. 7.0 is a safe upper bound.
+    char_px: float = 7.0
 
 
 @dataclass
@@ -270,13 +273,6 @@ def _layout_horizontal_node(name, rows, subtitle_text, text_cfg):
     """
     raw_header_lines = str(name).splitlines() or [str(name)]
     candidate_lengths = [len(line) for line in raw_header_lines]
-
-    if subtitle_text:
-        subtitle_lines = _wrap_multiline(subtitle_text, 999)
-        candidate_lengths.extend(len(line) for line in subtitle_lines)
-    else:
-        subtitle_lines = []
-
     candidate_lengths.extend(len(str(r.get("text", ""))) for r in rows)
     max_len = max(candidate_lengths) if candidate_lengths else 0
 
@@ -286,6 +282,10 @@ def _layout_horizontal_node(name, rows, subtitle_text, text_cfg):
 
     header_lines = _wrap_multiline(name, max_chars)
     display_name = "\n".join(header_lines)
+
+    # The type-name subtitle is wrapped to the card width too, so a long class
+    # / structure-type name wraps instead of overflowing the card ("跑出格子").
+    subtitle_lines = _wrap_multiline(subtitle_text, max_chars) if subtitle_text else []
 
     display_rows = []
     bind_groups = []
@@ -308,11 +308,13 @@ def _layout_horizontal_node(name, rows, subtitle_text, text_cfg):
 
     header_line_count = max(1, len(header_lines))
     header_h = max(text_cfg.default_header_h, header_line_count * 16)
-    if subtitle_text:
-        header_h += 14
+    if subtitle_lines:
+        header_h += len(subtitle_lines) * 14
     height = text_cfg.padding_y * 2 + header_h + max(len(display_rows), 1) * text_cfg.row_h
 
-    return card_w, height, header_h, display_name, display_rows, bind_groups, bind_blocks, ref_row_indices, ref_label_map
+    return (card_w, height, header_h, display_name,
+            display_rows, bind_groups, bind_blocks,
+            ref_row_indices, ref_label_map, subtitle_lines)
 
 
 
@@ -348,7 +350,16 @@ def _layout_vertical_node(name, rows, subtitle_text, text_cfg):
     Title spans both rows vertically. Ref rows show name only (data cell empty).
     """
     raw_header_lines = str(name).splitlines() or [str(name)]
-    display_name = "\n".join(raw_header_lines)
+    # Wrap the title to a capped column width so a long line (e.g. a class name
+    # rendered as "field\n(SomeVeryLongType)", parens already in the label)
+    # never overflows the title cell. char_px is the average rendered char
+    # width, so the wrapped longest line fits inside the column.
+    title_cap = 160
+    init_max_chars = max(4, int((title_cap - 12) / text_cfg.char_px))
+    wrapped_title = _wrap_multiline(name, init_max_chars)
+    longest_wrapped = max(len(l) for l in wrapped_title)
+    title_col_w = max(60, min(160, int(longest_wrapped * text_cfg.char_px + 12)))
+    display_name = "\n".join(wrapped_title)
 
     # Split each row into (name, value, is_ref)
     field_defs = []
@@ -359,9 +370,6 @@ def _layout_vertical_node(name, rows, subtitle_text, text_cfg):
         field_defs.append((fname, fval, is_ref, text))
 
     # column widths
-    title_col_w = int(max(len(line) for line in raw_header_lines) * text_cfg.char_px + 12)
-    title_col_w = max(60, min(160, title_col_w))
-
     field_col_w = 16
     if field_defs:
         for fname, fval, _, _raw_text in field_defs:
@@ -398,6 +406,7 @@ def _layout_vertical_node(name, rows, subtitle_text, text_cfg):
     return (card_w, card_h, header_h, display_name,
             display_rows, bind_groups, bind_blocks,
             ref_row_indices, ref_label_map,
+            [],  # subtitle_lines (vertical grid does not render a subtitle)
             title_col_w, field_col_w, grid_names, grid_values, grid_refs)
 
 
@@ -451,8 +460,9 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal", field_visib
         (card_w, height, header_h, display_name,
          display_rows, bind_groups, bind_blocks,
          ref_row_indices, ref_label_map) = layout_result[:9]
+        subtitle_lines = layout_result[9] if len(layout_result) > 9 else []
         # Vertical grid extras (unpacked only when present)
-        grid_extras = layout_result[9:] if len(layout_result) > 9 else ()
+        grid_extras = layout_result[10:] if len(layout_result) > 10 else ()
 
         # Collapse the title column when the backend knows the title is hidden.
         # This only affects vertical-grid nodes (horizontal cards carry no grid extras).
@@ -494,7 +504,10 @@ def build_g6_data(nodes, edges, layout=None, text_flow="horizontal", field_visib
             ports=ports,
             port_layout=port_layout,
             show_subtitle=bool(subtitle_text),
-            subtitle=subtitle_text,
+            # Store the wrapped (multi-line) subtitle so the frontend renders a
+            # long class / structure-type name on multiple lines instead of
+            # letting a single G6 text run past the card edge.
+            subtitle="\n".join(subtitle_lines) if subtitle_lines else subtitle_text,
             text_flow=text_flow,
             title_col_w=title_col_w,
             field_col_w=grid_extras[1] if len(grid_extras) > 1 else 0,
