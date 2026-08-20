@@ -4,7 +4,7 @@
   "edgeProxy": {},
   "visibility": {
     "BPlusNode.leaf": "self",
-    "BPlusNode.__title__": "self",
+    "BPlusNode.__title__": "visible",
     "BPlusNode.keys": "visible",
     "BPlusNode.children": "visible",
     "BPlusNode.next": "self",

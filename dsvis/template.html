@@ -158,6 +158,9 @@ let currentRaw = null;  // non-null when stepping through execution events (raw 
 let graph = null;
 // Minimal debug hook so automated tests can inspect the live G6 graph.
 window.__dsvisGraph = () => graph;
+// Guard: register('node','card',…) must run once even though initGraph() is
+// called repeatedly when a layout change forces a graph rebuild.
+let __dsvisCardNodeRegistered = false;
 let pendingRenderRequest = null;
 let renderRafId = null;
 let codeRows = [];
@@ -2209,6 +2212,17 @@ function prepareGraphForLayout(graphData, viewport = null) {
     return compactLayout;
   }
   const layout = computeAdaptiveLayout(layoutData, viewport);
+  // Deterministic dagre ordering. G6's dagre executor merges the *previous*
+  // layout's graph state into each incremental render (unless `nodeOrder` is
+  // provided, which flips its `keepNodeOrder` flag). Without it, stepping
+  // through the playback one step at a time leaves the layout drifting from
+  // what a direct "jump from step 0" produces — nodes land in different
+  // ranks/positions (e.g. a transient empty split-root shoved to the far right
+  // and blank cards appearing). Pinning `nodeOrder` to the current data order
+  // makes every render deterministic and identical to a fresh run.
+  if (layout && layout.type === 'dagre') {
+    layout.nodeOrder = (graphData.nodes || []).map(n => String(n.id));
+  }
   // Use sorted graph data (non-exempt edges) with the computed layout
   return { data: sortedGraphData, noLayoutEdges, layout };
 }
@@ -2743,7 +2757,10 @@ function initGraph(data) {
     }
   }
 
-  register('node', 'card', CardNode);
+  if (!__dsvisCardNodeRegistered) {
+    register('node', 'card', CardNode);
+    __dsvisCardNodeRegistered = true;
+  }
   const size = getGraphSize();
   const prepared = prepareGraphForLayout(data, size);
   graph = new G6.Graph({
@@ -3831,38 +3848,64 @@ function adaptBTreeNodes(graphData) {
     for (const mf of metaFields) { gridNames.push(mf.name); gridValues.push(mf.value); }
     for (const kv of keyValues) { gridNames.push(''); gridValues.push(kv); }
     const numCells = metaFields.length + numKeys;
-    const w = Math.max(120, padX * 2 + numCells * colW);
-    const h = padY * 2 + (hasMeta ? 2 : 1) * rowH; // name+value rows or value-only
-    st.titleColW = 0;
-    st.fieldColW = colW;
-    st.gridNames = gridNames;
-    st.gridValues = gridValues;
-    st.gridRefs = [];
-    st.rowDisplayMode = hasMeta ? 'both' : 'value';
-    st.rows = gridValues.slice();
-    delete st.metaFields;
-    delete st.btreeMeta;
-    st.size = [w, h];
-    // Ports: entry at node centre-top/bottom, children at key gaps (0..numKeys).
-    // During a split the new root may briefly hold more children than keys
-    // (children are inserted before the mid key is promoted), so size the port
-    // list to the larger of (keys + 1) and (child count).
+    // Title column (Bug 3): when the type-title field is visible the title
+    // must occupy its own leading column instead of floating over the first
+    // key cell. adaptBTreeNodes previously forced titleColW=0 unconditionally,
+    // yet the card shape still drew the title text at the left edge — covering
+    // the first key(s). Allocate the column when the title is shown.
+    const btreeCls = getNodeClassName(st);
+    const btreeTitleVisible = btreeCls ? isFieldVisible(`${btreeCls}.__title__`) : false;
+    let titleColW = 0;
+    if (btreeTitleVisible && st.name) {
+      const titleRawLines = String(st.name || '').split('\n');
+      titleColW = Math.max(50, Math.min(160, Math.ceil(Math.max(...titleRawLines.map(l => l.length), 1) * 7 + 12)));
+    }
+    // Children may briefly outnumber keys during a split/merge (children are
+    // inserted before the mid key is promoted). Size the port list to the
+    // larger of (keys + 1) and (child count) so no child pointer is dropped.
     let maxChildIdx = -1;
     rows.forEach((r, i) => {
       const m = String(names[i] ?? (r && r.name) ?? '').match(childReIdx);
       if (m) maxChildIdx = Math.max(maxChildIdx, parseInt(m[1], 10));
     });
     const portCount = Math.max(numKeys + 1, maxChildIdx + 1);
+    // Width must fit the title column AND the rightmost key-gap port, otherwise
+    // a split-in-progress node's ports overflow the card (Bug 5: a `pt3/pb3`
+    // landing at x=1.33). Also stop stretching single-key nodes to the old 120
+    // minimum — that dead space made a one-key node look two columns wide
+    // (Bug 4). The 60 floor keeps an empty (0-key) node a small, sensible card.
+    const widthCells = Math.max(numCells, metaFields.length + portCount - 1);
+    const w = Math.max(60, padX * 2 + titleColW + widthCells * colW);
+    const h = padY * 2 + (hasMeta ? 2 : 1) * rowH; // name+value rows or value-only
+    st.titleColW = titleColW;
+    st.fieldColW = colW;
+    st.gridNames = gridNames;
+    st.gridValues = gridValues;
+    st.gridRefs = [];
+    // Honour the global row-display mode: when the user chose 仅值 / 仅字段名,
+    // a visible meta field (e.g. `next`) must NOT force the two-row
+    // "name + value" layout — it should stay value-only (or name-only). Only
+    // the default "字段名 = 值" mode expands to two rows when meta fields are
+    // visible.
+    const gRowMode = VIS_CONFIG.rowDisplayMode || 'both';
+    const effRowMode = (gRowMode === 'both') ? (hasMeta ? 'both' : 'value') : gRowMode;
+    const visRows = (effRowMode !== 'value' ? 1 : 0) + (effRowMode !== 'key' ? 1 : 0);
+    st.rowDisplayMode = effRowMode;
+    st.rows = gridValues.slice();
+    delete st.metaFields;
+    delete st.btreeMeta;
+    st.size = [w, padY * 2 + Math.max(1, visRows) * rowH];
+    // Ports: entry at node centre-top/bottom, children at key gaps (0..numKeys).
     const ports = [
       { key: 'inT', placement: [0.5, 0], r: 0, fill: 'transparent', stroke: 'transparent' },
       { key: 'inB', placement: [0.5, 1], r: 0, fill: 'transparent', stroke: 'transparent' },
     ];
     const refEntries = [];
-    // Key-gap ports sit between the keys; when meta columns precede the keys,
-    // the gap x must be offset past them.
+    // Key-gap ports sit between the keys; when meta columns (or a title column)
+    // precede the keys, the gap x must be offset past them.
     const gapOffset = metaFields.length;
     for (let i = 0; i < portCount; i++) {
-      const frac = (padX + (gapOffset + i) * colW) / w;
+      const frac = (padX + titleColW + (gapOffset + i) * colW) / w;
       ports.push({ key: 'pt' + i, placement: [frac, 0], r: 0, fill: 'transparent', stroke: 'transparent' });
       ports.push({ key: 'pb' + i, placement: [frac, 1], r: 0, fill: 'transparent', stroke: 'transparent' });
       refEntries.push({ idx: i, ports: ['pb' + i, 'pt' + i] });
@@ -5289,7 +5332,20 @@ function renderStepImpl(ri, displayIndex) {
     const flowChanged = graph._dsvisLastTextFlow !== undefined && graph._dsvisLastTextFlow !== VIS_CONFIG.textFlow;
     graph._dsvisLastRowMode = VIS_CONFIG.rowDisplayMode;
     graph._dsvisLastTextFlow = VIS_CONFIG.textFlow;
-    if (rowModeChanged || flowChanged) {
+    // G6's dagre layout is history-dependent: its internal node map is ordered
+    // by *first-seen* id, so stepping one step at a time (nodes added/removed
+    // incrementally) can lay out the SAME step differently than a direct
+    // "jump from step 0" (nodes added in bulk). That made nodes land in
+    // different ranks / overlap / blank cards appearing mid-playback. Tree
+    // structures that run dagre (B-Tree / B+ / n-ary) therefore rebuild the
+    // graph on every step so G6 always lays out from the deterministic data
+    // order — stepping then matches a fresh "jump" render exactly. Structures
+    // with a pre-positioned (layout:null) or grid layout keep the incremental
+    // path and its position animation.
+    const isDagreTree = VIS_CONFIG.structureType === 'btree' ||
+      VIS_CONFIG.structureType === 'bplustree' ||
+      VIS_CONFIG.structureType === 'nary-tree';
+    if (rowModeChanged || flowChanged || isDagreTree) {
       resetGraphInstance();
       initGraph(graphData);
     } else {

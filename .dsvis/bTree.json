@@ -22,6 +22,8 @@
     "BTreeNode.children[3]": "visible"
   },
   "titleField": {},
+  "layoutExempt": [],
+  "anchor": {},
   "layerEdges": [
     "children"
   ],

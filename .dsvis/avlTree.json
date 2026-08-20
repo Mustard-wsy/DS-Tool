@@ -12,6 +12,8 @@
     "AVLNode.height": "visible"
   },
   "titleField": {},
+  "layoutExempt": [],
+  "anchor": {},
   "layerEdges": [
     "left",
     "right"
