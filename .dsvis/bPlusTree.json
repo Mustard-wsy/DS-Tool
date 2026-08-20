@@ -9,7 +9,7 @@
     "BPlusNode.children": "visible",
     "BPlusNode.next": "self",
     "BPlusTree.root": "visible",
-    "BPlusTree.__title__": "visible",
+    "BPlusTree.__title__": "self",
     "BPlusTree.t": "visible",
     "BPlusNode.keys[0]": "visible",
     "BPlusNode.keys[1]": "visible",

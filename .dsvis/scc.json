@@ -4,7 +4,7 @@
   "edgeProxy": {},
   "visibility": {
     "Node.id": "visible",
-    "Node.__title__": "visible",
+    "Node.__title__": "self",
     "Node.neighbors": "visible",
     "Node.index": "visible",
     "Node.lowlink": "visible",
@@ -19,7 +19,7 @@
     "Graph.nodes[7]": "visible",
     "Graph.nodes[8]": "visible",
     "Graph.nodes[9]": "visible",
-    "Graph.__title__": "visible",
+    "Graph.__title__": "self",
     "Node.neighbors[0]": "visible",
     "Node.neighbors[1]": "visible",
     "Node.neighbors[2]": "visible",

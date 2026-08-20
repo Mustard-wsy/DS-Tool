@@ -5,7 +5,7 @@
   "visibility": {
     "LLNode.val": "visible",
     "LLNode.next": "visible",
-    "LLNode.__title__": "visible"
+    "LLNode.__title__": "self"
   },
   "titleField": {},
   "layerEdges": [],

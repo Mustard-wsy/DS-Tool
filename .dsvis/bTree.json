@@ -4,7 +4,7 @@
   "edgeProxy": {},
   "visibility": {
     "BTree.t": "visible",
-    "BTree.__title__": "visible",
+    "BTree.__title__": "self",
     "BTreeNode.t": "self",
     "BTreeNode.__title__": "self",
     "BTreeNode.leaf": "self",

@@ -122,7 +122,7 @@ __STYLES__
   <!-- AI 助手面板 (可拖拽 / 可调整大小) -->
   <div id="pageAgentPanel" style="display:none;position:fixed;left:calc(100vw - 380px);top:calc(100vh - 420px);z-index:9999;width:360px;min-width:260px;min-height:180px;max-height:80vh;background:#fff;border:1px solid #ccc;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,0.18);flex-direction:column;overflow:hidden;">
     <div id="pageAgentPanelHeader" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#e8f0fe;border-radius:10px 10px 0 0;cursor:move;user-select:none;">
-      <span style="font-weight:700;font-size:12px;color:#0f2c63;">🤖 AI 助手</span>
+      <span style="font-weight:700;font-size:12px;color:#0f2c63;">AI 助手</span>
       <button id="pageAgentPanelClose" type="button" style="border:none;background:none;font-size:16px;cursor:pointer;color:#666;">✕</button>
     </div>
     <div id="pageAgentChat" style="flex:1;overflow-y:auto;padding:8px;font-size:12px;min-height:80px;max-height:400px;line-height:1.5;"></div>
@@ -283,7 +283,7 @@ function normalizeAnchorValue(v) {
   if (v === 'vertical' || v === 'horizontal' || v === 'title') return v;
   return null;  // 'row'/'auto'/unknown → treat as unset
 }
-/** Natural connection point for a pointer field (what the ⚡自动分配 button
+/** Natural connection point for a pointer field (what the 自动分配 button
  *  assigns): tree children → 上下中点, sibling (next) → 左右中点, container
  *  root/parent → 标题栏, everything else → 上下中点. */
 function defaultFieldConnection(key) {
@@ -303,7 +303,7 @@ function getFieldAnchor(key) {
 function resolveAnchorForField(key) {
   return getFieldAnchor(key);
 }
-/** Assign every pointer field its natural concrete connection point (the ⚡自动
+/** Assign every pointer field its natural concrete connection point (the 自动
  *  分配 button): tree children → 上下中点, next → 左右中点, root/parent → 标题栏. */
 function autoAssignPointerConnections() {
   const seen = new Set();
@@ -660,7 +660,7 @@ function buildStructureParams(container) {
 
   // ── Binary-tree: left/right/parent pointer selectors ──
   // Each pointer is a field <select> with an explicit empty option ("（空）",
-  // meaning "no applicable binary-tree setting"). A single "⚡ 自动分配" button
+  // meaning "no applicable binary-tree setting"). A single "自动分配" button
   // runs the auto-detection once and fills in all three pointers; the selects
   // default to the auto-assigned values (autoApplyStructureDefaults does this).
   if (st === 'binary-tree') {
@@ -670,7 +670,7 @@ function buildStructureParams(container) {
     var autoRow = document.createElement('div');
     autoRow.style.cssText = 'display:flex;align-items:center;gap:6px;padding:2px 0 4px;';
     var autoBtn = document.createElement('button');
-    autoBtn.textContent = '⚡ 自动分配';
+    autoBtn.textContent = '自动分配';
     autoBtn.type = 'button';
     autoBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #5b8ff9;background:#e8f0fe;border-radius:3px;';
     autoBtn.title = '自动检测并分配左/右/父指针字段';
@@ -1252,8 +1252,8 @@ const ANIMATION_CONFIG = {
   easing: 'linear',
 };
 const PANEL_STATE = {
-  stackVisible: false,
-  codeVisible: false,
+  stackVisible: true,
+  codeVisible: true,
 };
 const RESIZE_CONFIG = {
   stack: { min: 220, max: 560, collapsed: 56 },
@@ -3343,7 +3343,7 @@ function nearestPortKey(node, ports, refX, refY, keys) {
 /** Representative-point routing for pointer edges that don't use a row port.
  *
  *  SOURCE port follows the field's concrete connection point (ANCHOR panel /
- *  ⚡自动分配): 'vertical' (上下中点) leaves from the top/bottom midpoint facing
+ *  自动分配): 'vertical' (上下中点) leaves from the top/bottom midpoint facing
  *  the target — and for multi-pointer left/right uses the uniformly-spaced
  *  bottom pointer-array ports (pa0/pa1, …) so binary-tree left/right don't
  *  collapse onto one point; 'horizontal' (左右中点) leaves from the side facing
@@ -4813,13 +4813,14 @@ function buildNodeTypeRegistry() {
           if (!entry.fields.includes(key)) entry.fields.push(key);
         }
       }
-      // Add __title__ as a hideable pseudo-field
+      // Add __title__ as a hideable pseudo-field. Default: HIDDEN (users opt
+      // in per node type); a persisted style / local override still wins.
       const titleKey = `${className}.__title__`;
       if (!group.some(e => e.key === titleKey)) {
         group.push({ key: titleKey, className, fieldName: '标题', kind: 'title' });
       }
       if (!NODE_TYPE_VISIBILITY.has(titleKey)) {
-        NODE_TYPE_VISIBILITY.set(titleKey, 'visible');
+        NODE_TYPE_VISIBILITY.set(titleKey, 'self');
       }
     }
   }
@@ -6367,7 +6368,7 @@ function renderPointerPanel(list) {
   modeRow.appendChild(modeLabel);
   modeRow.appendChild(modeSel);
   const autoBtn = document.createElement('button');
-  autoBtn.textContent = '⚡ 自动分配';
+  autoBtn.textContent = '自动分配';
   autoBtn.type = 'button';
   autoBtn.style.cssText = 'font-size:10px;padding:1px 6px;cursor:pointer;white-space:nowrap;background:#eef4ff;border:1px solid #b8c9e8;border-radius:3px;color:#24406f;';
   autoBtn.title = '按字段角色分配具体连接点：子树 left/right/children → 上下中点，兄弟 next → 左右中点，容器 root/parent → 标题栏，其余 → 上下中点';
@@ -6874,7 +6875,7 @@ DSVisLogger.info('agent', 'agent-api-ready', { methods: Object.keys(window.DSVis
       '🚫 你唯一能做的事：调用下方列出的工具函数，然后用 done 回答用户。',
       '🚫 不要尝试观察页面、滚动、点击——这些工具不存在。',
       '',
-      '⚡ 工作流（最多 2 步完成）：',
+      '工作流（最多 2 步完成）：',
       '1. 如需了解当前状态 → 调 runtime.getState',
       '2. 立即调 done 回答用户。把回答写在 done 的 text 参数里。',
       '',
@@ -7563,7 +7564,7 @@ function doRestart() { restartDebugSession(); }
 
     // ② Show "thinking..." bubble with animated dots
     var thinkId = 'think-' + Date.now();
-    chat.innerHTML += '<div id="' + thinkId + '" style="color:#888;margin:4px 0;font-style:italic;">🤖 思考中<span class="think-dots"></span></div>';
+    chat.innerHTML += '<div id="' + thinkId + '" style="color:#888;margin:4px 0;font-style:italic;">思考中<span class="think-dots"></span></div>';
     chat.scrollTop = chat.scrollHeight;
 
     // Animate the dots: "." → ".." → "..." → loop

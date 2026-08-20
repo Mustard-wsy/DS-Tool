@@ -4,9 +4,9 @@
   "edgeProxy": {},
   "visibility": {
     "Graph.nodes": "visible",
-    "Graph.__title__": "visible",
+    "Graph.__title__": "self",
     "GraphNode.value": "visible",
-    "GraphNode.__title__": "visible",
+    "GraphNode.__title__": "self",
     "GraphNode.neighbors": "visible",
     "Graph.nodes['A']": "visible",
     "Graph.nodes['B']": "visible",

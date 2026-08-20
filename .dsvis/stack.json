@@ -4,10 +4,10 @@
   "edgeProxy": {},
   "visibility": {
     "LinkedStack.top": "visible",
-    "LinkedStack.__title__": "visible",
+    "LinkedStack.__title__": "self",
     "LinkedStack.size": "visible",
     "Node.value": "visible",
-    "Node.__title__": "visible",
+    "Node.__title__": "self",
     "Node.next": "visible"
   },
   "titleField": {},

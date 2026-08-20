@@ -4,7 +4,7 @@
   "edgeProxy": {},
   "visibility": {
     "RedBlackTree.root": "visible",
-    "RedBlackTree.__title__": "visible",
+    "RedBlackTree.__title__": "self",
     "RBNode.key": "visible",
     "RBNode.__title__": "self",
     "RBNode.color": "visible",
