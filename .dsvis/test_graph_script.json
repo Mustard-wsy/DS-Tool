@@ -6,7 +6,7 @@
     "Graph.nodes": "visible",
     "Graph.__title__": "visible",
     "GraphNode.value": "visible",
-    "GraphNode.__title__": "visible",
+    "GraphNode.__title__": "self",
     "GraphNode.edges": "visible",
     "Graph.nodes['A']": "visible",
     "Graph.nodes['B']": "visible",
@@ -20,7 +20,9 @@
     "GraphNode.edges[2]": "visible"
   },
   "titleField": {},
-  "layoutExempt": [],
+  "layoutExempt": [
+    "GraphNode.edges"
+  ],
   "anchor": {},
   "layerEdges": [],
   "layerEdgeKeys": {},

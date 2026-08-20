@@ -1785,11 +1785,21 @@ function analyzeLayoutMetrics(graphData, viewport, connectivityEdges = null) {
 function computeAdaptiveLayout(graphData, viewport = null) {
   const metrics = analyzeLayoutMetrics(graphData, viewport);
   const rankdir = VIS_CONFIG.textFlow === 'vertical' ? 'TB' : ((baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR');
-  
+
+  // G6's dagre reads node dimensions from `nodeSize` (a fn of the node data) —
+  // without it it falls back to a ~10px default, so the computed nodesep/ranksep
+  // leave wide cards overlapping. The layout config is computed per render and
+  // never persisted, so a function here is safe.
+  const dagreNodeSize = (d) => {
+    const _s = (d && d.style && d.style.size) || (d && d.data && d.data.size) || (d && d.size);
+    return Array.isArray(_s) && _s.length >= 2 ? [_s[0], _s[1]] : [60, 40];
+  };
+
   if (!metrics.nodes.length) {
     return {
       type: 'dagre',
       rankdir: rankdir,
+      nodeSize: dagreNodeSize,
       nodesep: rankdir === 'TB' ? 110 : 80,
       ranksep: rankdir === 'TB' ? 110 : 110,
     };
@@ -1799,6 +1809,7 @@ function computeAdaptiveLayout(graphData, viewport = null) {
     return {
       type: 'dagre',
       rankdir: rankdir,
+      nodeSize: dagreNodeSize,
       nodesep: rankdir === 'TB' 
         ? Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 44)
         : Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 44),
@@ -2162,6 +2173,19 @@ function prepareGraphForLayout(graphData, viewport = null) {
   // Strip any layout-exempt edges from the data handed to the layout engine.
   if (Array.isArray(sortedGraphData?.edges)) {
     sortedGraphData.edges = sortedGraphData.edges.filter(e => !e?.data?._noLayout);
+  }
+  // Publish each node's real card size into its custom `data` field. G6's dagre
+  // layout reads node dimensions from node.data.bboxSize / node.data.size (NOT
+  // style.size) and falls back to a ~10px default when absent — so the computed
+  // nodesep/ranksep end up far too small for wide cards and sibling nodes
+  // overlap. Mirroring style.size into data lets dagre lay out with the true
+  // widths. This is harmless for the card shape (it reads style.* only) and for
+  // grid layouts (which use the explicit `nodeSize` config instead).
+  for (const _dn of (sortedGraphData.nodes || [])) {
+    const _dnSz = _dn?.style?.size;
+    if (Array.isArray(_dnSz) && _dnSz.length >= 2) {
+      _dn.data = { ...(_dn.data || {}), size: [_dnSz[0], _dnSz[1]] };
+    }
   }
 
   // Binary trees ALWAYS use the pre-positioned textbook layout (no G6 layout),
