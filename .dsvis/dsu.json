@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "structureType": "other",
+  "edgeProxy": {},
+  "visibility": {
+    "Dsu.pa[0]": "visible",
+    "Dsu.pa[1]": "visible",
+    "Dsu.pa[2]": "visible",
+    "Dsu.pa[3]": "visible",
+    "Dsu.pa[4]": "visible",
+    "Dsu.pa[5]": "visible",
+    "Dsu.pa[6]": "visible",
+    "Dsu.pa[7]": "visible",
+    "Dsu.__title__": "visible",
+    "Dsu.size[0]": "visible",
+    "Dsu.size[1]": "visible",
+    "Dsu.size[2]": "visible",
+    "Dsu.size[3]": "visible",
+    "Dsu.size[4]": "visible",
+    "Dsu.size[5]": "visible",
+    "Dsu.size[6]": "visible",
+    "Dsu.size[7]": "visible",
+    "Dsu.pa": "visible",
+    "Dsu.size": "visible"
+  },
+  "titleField": {},
+  "layerEdges": [],
+  "layerEdgeKeys": {},
+  "layout": {
+    "rankdir": "TB"
+  },
+  "showSubtitle": true,
+  "uniformEdgesEnabled": true,
+  "rowDisplayMode": "value",
+  "parentFieldKey": "",
+  "graphViewer": {
+    "valueField": "",
+    "edgeValueField": "",
+    "direction": "auto",
+    "radius": 24
+  }
+}

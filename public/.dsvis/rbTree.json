@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "structureType": "binary-tree",
+  "edgeProxy": {},
+  "visibility": {
+    "RedBlackTree.root": "visible",
+    "RedBlackTree.__title__": "visible",
+    "RBNode.key": "visible",
+    "RBNode.__title__": "self",
+    "RBNode.color": "visible",
+    "RBNode.left": "self",
+    "RBNode.right": "self",
+    "RBNode.parent": "self"
+  },
+  "titleField": {},
+  "layerEdges": [
+    "left",
+    "right"
+  ],
+  "layerEdgeKeys": {
+    "left": "left",
+    "right": "right"
+  },
+  "layout": {
+    "rankdir": "TB"
+  },
+  "showSubtitle": true,
+  "uniformEdgesEnabled": true,
+  "rowDisplayMode": "both",
+  "parentFieldKey": "",
+  "graphViewer": {
+    "valueField": "",
+    "edgeValueField": "",
+    "direction": "auto",
+    "radius": 24
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "structureType": "other",
+  "edgeProxy": {},
+  "visibility": {},
+  "titleField": {},
+  "layerEdges": [],
+  "layerEdgeKeys": {},
+  "layout": {
+    "rankdir": "TB"
+  },
+  "showSubtitle": true,
+  "uniformEdgesEnabled": true,
+  "rowDisplayMode": "both",
+  "parentFieldKey": "",
+  "graphViewer": {
+    "valueField": "",
+    "edgeValueField": "",
+    "direction": "auto",
+    "radius": 24
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "structureType": "other",
+  "edgeProxy": {},
+  "visibility": {
+    "LinkedStack.top": "visible",
+    "LinkedStack.__title__": "visible",
+    "LinkedStack.size": "visible",
+    "Node.value": "visible",
+    "Node.__title__": "visible",
+    "Node.next": "visible"
+  },
+  "titleField": {},
+  "layerEdges": [],
+  "layerEdgeKeys": {},
+  "layout": {
+    "rankdir": "TB"
+  },
+  "showSubtitle": true,
+  "uniformEdgesEnabled": true,
+  "rowDisplayMode": "both",
+  "parentFieldKey": "",
+  "graphViewer": {
+    "valueField": "",
+    "edgeValueField": "",
+    "direction": "auto",
+    "radius": 24
+  }
+}

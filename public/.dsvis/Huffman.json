@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "structureType": "binary-tree",
+  "edgeProxy": {},
+  "visibility": {
+    "HuffmanTree.root": "visible",
+    "HuffmanTree.__title__": "visible",
+    "HuffmanTree.codes": "visible",
+    "HuffmanNode.char": "visible",
+    "HuffmanNode.__title__": "self",
+    "HuffmanNode.freq": "visible",
+    "HuffmanNode.left": "self",
+    "HuffmanNode.right": "self",
+    "HuffmanTree.codes['A']": "visible",
+    "HuffmanTree.codes['C']": "visible",
+    "HuffmanTree.codes['B']": "visible",
+    "HuffmanTree.codes['F']": "visible",
+    "HuffmanTree.codes['E']": "visible",
+    "HuffmanTree.codes['D']": "visible"
+  },
+  "titleField": {},
+  "layerEdges": [
+    "left",
+    "right"
+  ],
+  "layerEdgeKeys": {
+    "left": "left",
+    "right": "right"
+  },
+  "layout": {
+    "rankdir": "TB"
+  },
+  "showSubtitle": true,
+  "uniformEdgesEnabled": true,
+  "rowDisplayMode": "both",
+  "parentFieldKey": "",
+  "graphViewer": {
+    "valueField": "",
+    "edgeValueField": "",
+    "direction": "auto",
+    "radius": 24
+  }
+}
