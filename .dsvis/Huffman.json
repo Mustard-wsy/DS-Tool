@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "structureType": "binary-tree",
+  "structureType": "other",
   "edgeProxy": {},
   "visibility": {
     "HuffmanTree.root": "visible",
@@ -19,14 +19,8 @@
     "HuffmanTree.codes['D']": "visible"
   },
   "titleField": {},
-  "layerEdges": [
-    "left",
-    "right"
-  ],
-  "layerEdgeKeys": {
-    "left": "left",
-    "right": "right"
-  },
+  "layerEdges": [],
+  "layerEdgeKeys": {},
   "layout": {
     "rankdir": "TB"
   },

@@ -201,7 +201,7 @@ const STRUCTURE_TYPES = {
   'graph':        { name: '图',           layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
   'linkedlist':   { name: '链表/栈/队列', layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
   'hashtable':    { name: '散列表',       layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
-  'other':        { name: '其他',         layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
+  'other':        { name: '默认',         layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
 };
 
 // ── G6 availability check ──
@@ -557,49 +557,76 @@ function buildStructureParams(container) {
     }
   }
 
-  // ── Binary-tree: left/right pointer selectors ──
+  // ── Binary-tree: left/right/parent pointer selectors ──
+  // Each pointer is a field <select> with an explicit empty option ("（空）",
+  // meaning "no applicable binary-tree setting"). A single "⚡ 自动分配" button
+  // runs the auto-detection once and fills in all three pointers; the selects
+  // default to the auto-assigned values (autoApplyStructureDefaults does this).
   if (st === 'binary-tree') {
-    var row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;font-size:11px;';
+    var container2 = document.createElement('div');
+    container2.style.cssText = 'padding:4px 0;';
 
-    var leftLabel = document.createElement('span');
-    leftLabel.textContent = '左指针:';
-    row.appendChild(leftLabel);
-    var leftSel = buildFieldSelect(allFields, (VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.left) || '');
+    var autoRow = document.createElement('div');
+    autoRow.style.cssText = 'display:flex;align-items:center;gap:6px;padding:2px 0 4px;';
+    var autoBtn = document.createElement('button');
+    autoBtn.textContent = '⚡ 自动分配';
+    autoBtn.type = 'button';
+    autoBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #5b8ff9;background:#e8f0fe;border-radius:3px;';
+    autoBtn.title = '自动检测并分配左/右/父指针字段';
+    autoBtn.addEventListener('click', function() {
+      var d = autoDetectLayerFields(allFields, 'binary-tree');
+      if (d && d.left) { leftSel.value = d.left; VIS_CONFIG.layerEdgeKeys.left = d.left; }
+      else { leftSel.value = ''; VIS_CONFIG.layerEdgeKeys.left = undefined; }
+      if (d && d.right) { rightSel.value = d.right; VIS_CONFIG.layerEdgeKeys.right = d.right; }
+      else { rightSel.value = ''; VIS_CONFIG.layerEdgeKeys.right = undefined; }
+      var p = autoDetectParentField(allFields);
+      if (p) { parentSel.value = p; VIS_CONFIG.parentFieldKey = p; }
+      else { parentSel.value = ''; VIS_CONFIG.parentFieldKey = ''; }
+      rebuildLayerEdges();
+      saveVisConfig(VIS_CONFIG);
+      applyVisConfig();
+    });
+    autoRow.appendChild(autoBtn);
+    container2.appendChild(autoRow);
+
+    var makePointerRow = function(labelText, sel) {
+      var prow = document.createElement('div');
+      prow.style.cssText = 'display:flex;align-items:center;gap:6px;padding:2px 0;font-size:11px;';
+      var lab = document.createElement('span');
+      lab.textContent = labelText;
+      lab.style.cssText = 'min-width:44px;';
+      prow.appendChild(lab);
+      prow.appendChild(sel);
+      return prow;
+    };
+
+    var leftSel = buildFieldSelect(allFields, (VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.left) || '', '（空）');
     leftSel.addEventListener('change', function() {
       VIS_CONFIG.layerEdgeKeys.left = leftSel.value || undefined;
-      if (VIS_CONFIG.layerEdgeKeys.left) LAYER_EDGES.add(VIS_CONFIG.layerEdgeKeys.left);
+      rebuildLayerEdges();
       saveVisConfig(VIS_CONFIG);
       applyVisConfig();
     });
-    row.appendChild(leftSel);
+    container2.appendChild(makePointerRow('左指针:', leftSel));
 
-    var rightLabel = document.createElement('span');
-    rightLabel.textContent = ' 右指针:';
-    rightLabel.style.marginLeft = '8px';
-    row.appendChild(rightLabel);
-    var rightSel = buildFieldSelect(allFields, (VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.right) || '');
+    var rightSel = buildFieldSelect(allFields, (VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.right) || '', '（空）');
     rightSel.addEventListener('change', function() {
       VIS_CONFIG.layerEdgeKeys.right = rightSel.value || undefined;
-      if (VIS_CONFIG.layerEdgeKeys.right) LAYER_EDGES.add(VIS_CONFIG.layerEdgeKeys.right);
+      rebuildLayerEdges();
       saveVisConfig(VIS_CONFIG);
       applyVisConfig();
     });
-    row.appendChild(rightSel);
+    container2.appendChild(makePointerRow('右指针:', rightSel));
 
-    var parentLabel = document.createElement('span');
-    parentLabel.textContent = ' 父指针:';
-    parentLabel.style.marginLeft = '8px';
-    row.appendChild(parentLabel);
-    var parentSel = buildFieldSelect(allFields, getEffectiveParentField() || '');
+    var parentSel = buildFieldSelect(allFields, getEffectiveParentField() || '', '（空）');
     parentSel.addEventListener('change', function() {
       VIS_CONFIG.parentFieldKey = parentSel.value || '';
       saveVisConfig(VIS_CONFIG);
       applyVisConfig();
     });
-    row.appendChild(parentSel);
+    container2.appendChild(makePointerRow('父指针:', parentSel));
 
-    container.appendChild(row);
+    container.appendChild(container2);
   }
 
   // ── N-ary tree: children pointer selector ──
@@ -643,11 +670,15 @@ function buildStructureParams(container) {
   }
 }
 
-function buildFieldSelect(fields, selectedValue) {
+function buildFieldSelect(fields, selectedValue, emptyLabel) {
   var sel = document.createElement('select');
   sel.style.cssText = 'font-size:10px;min-width:80px;';
   var emptyOpt = document.createElement('option');
-  emptyOpt.value = ''; emptyOpt.textContent = '— 自动 —';
+  emptyOpt.value = '';
+  // Default label is "— 自动 —" for generic field pickers (graph viewer, etc).
+  // Binary-tree pointer selectors pass an explicit label ("（空）") because for
+  // them "auto" is an action (a button), not a selectable value.
+  emptyOpt.textContent = (emptyLabel === undefined) ? '— 自动 —' : emptyLabel;
   sel.appendChild(emptyOpt);
   for (var i = 0; i < fields.length; i++) {
     var o = document.createElement('option');
@@ -656,6 +687,23 @@ function buildFieldSelect(fields, selectedValue) {
     sel.appendChild(o);
   }
   return sel;
+}
+
+function rebuildLayerEdges() {
+  LAYER_EDGES.clear();
+  for (var _k in VIS_CONFIG.layerEdgeKeys) {
+    if (VIS_CONFIG.layerEdgeKeys[_k]) LAYER_EDGES.add(VIS_CONFIG.layerEdgeKeys[_k]);
+  }
+}
+
+function autoDetectParentField(allFields) {
+  var parentPat = /^(p|parent|parentnode|parent_node|father|pnode)$/i;
+  for (var _i = 0; _i < allFields.length; _i++) {
+    if (parentPat.test(allFields[_i])) return allFields[_i];
+  }
+  var def = STRUCTURE_TYPES['binary-tree'];
+  if (def && def.parentField && allFields.indexOf(def.parentField) >= 0) return def.parentField;
+  return '';
 }
 
 /** Build the independent graph-viewer settings section (structureType='graph'). */
@@ -5354,9 +5402,16 @@ function syncSettingsPanel() {
     structItems.appendChild(structSel);
 
     var applyDefaultsBtn = document.createElement('button');
-    applyDefaultsBtn.textContent = '应用默认'; applyDefaultsBtn.type = 'button';
+    applyDefaultsBtn.textContent = '恢复默认'; applyDefaultsBtn.type = 'button';
     applyDefaultsBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #5b8ff9;background:#e8f0fe;border-radius:3px';
-    applyDefaultsBtn.addEventListener('click', function() { autoApplyStructureDefaults(); });
+    applyDefaultsBtn.title = '将数据结构类型恢复为“默认”，并应用对应的默认设置';
+    applyDefaultsBtn.addEventListener('click', function() {
+      VIS_CONFIG.structureType = 'other';
+      structSel.value = 'other';
+      saveVisConfig(VIS_CONFIG);
+      buildStructureParams(structParamsDiv);
+      autoApplyStructureDefaults();
+    });
     structItems.appendChild(applyDefaultsBtn);
 
     structGroup.appendChild(structItems);
@@ -5617,47 +5672,6 @@ function syncSettingsPanel() {
       proxyGroup.appendChild(proxyItems);
       list.appendChild(proxyGroup);
     }
-
-    // ── Title substitution: keep simple per-field dropdown ──
-    const titleGroup = document.createElement('div');
-    titleGroup.className = 'node-type-group title-group';
-    const titleHeader = document.createElement('div');
-    titleHeader.className = 'node-type-group-header';
-    const thTitle = document.createElement('span');
-    thTitle.className = 'node-type-group-title';
-    thTitle.textContent = '标题替换';
-    titleHeader.appendChild(thTitle);
-    titleGroup.appendChild(titleHeader);
-    const titleItems = document.createElement('div');
-    titleItems.className = 'node-type-items';
-    const titleRow = document.createElement('div');
-    titleRow.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:10px';
-    const titleLabel = document.createElement('span');
-    titleLabel.textContent = '显示为:';
-    const titleSel = document.createElement('select');
-    titleSel.style.fontSize = '10px';
-    const noneOpt = document.createElement('option');
-    noneOpt.value = ''; noneOpt.textContent = '默认标题';
-    titleSel.appendChild(noneOpt);
-    for (const f of fields) {
-      const o = document.createElement('option');
-      o.value = f.key; o.textContent = f.fieldName;
-      if (TITLE_FIELD && TITLE_FIELD.key === f.key) o.selected = true;
-      titleSel.appendChild(o);
-    }
-    titleSel.addEventListener('change', () => {
-      if (titleSel.value) {
-        TITLE_FIELD = { className, key: titleSel.value };
-      } else {
-        TITLE_FIELD = null;
-      }
-      reapplyStep();
-    });
-    titleRow.appendChild(titleLabel);
-    titleRow.appendChild(titleSel);
-    titleItems.appendChild(titleRow);
-    titleGroup.appendChild(titleItems);
-    list.appendChild(titleGroup);
   }
 }
 
@@ -5707,25 +5721,29 @@ if (pageAgentBtn) {
   pageAgentBtn.addEventListener('click', async () => {
     const panel = document.getElementById('pageAgentPanel');
     if (!panel) return;
-    const visible = panel.style.display !== 'none';
-    panel.style.display = visible ? 'none' : 'flex';
-    if (!visible) {
-      const config = loadPageAgentConfig();
-      if (!config.enabled) {
-        config.enabled = true;
-        savePageAgentConfig(config);
+    const visible = panel.classList.contains('open');
+    if (visible) {
+      panel.classList.remove('open');
+      setTimeout(() => { if (!panel.classList.contains('open')) panel.style.display = 'none'; }, 180);
+      return;
+    }
+    panel.style.display = 'flex';
+    requestAnimationFrame(() => requestAnimationFrame(() => panel.classList.add('open')));
+    const config = loadPageAgentConfig();
+    if (!config.enabled) {
+      config.enabled = true;
+      savePageAgentConfig(config);
+    }
+    const status = document.getElementById('pageAgentStatus');
+    if (status) status.textContent = '正在加载 CDN...';
+    try {
+      await reloadDsvisAgent();
+      if (status) {
+        const useCustom = hasCustomPageAgentConfig(config);
+        status.textContent = useCustom ? '就绪 — 自定义 API' : '就绪 — 免费测试 API（可能受限）';
       }
-      const status = document.getElementById('pageAgentStatus');
-      if (status) status.textContent = '正在加载 CDN...';
-      try {
-        await reloadDsvisAgent();
-        if (status) {
-          const useCustom = hasCustomPageAgentConfig(config);
-          status.textContent = useCustom ? '就绪 — 自定义 API' : '就绪 — 免费测试 API（可能受限）';
-        }
-      } catch(e) {
-        if (status) status.textContent = 'CDN 加载失败，请检查网络: ' + (e.message || '');
-      }
+    } catch(e) {
+      if (status) status.textContent = 'CDN 加载失败，请检查网络: ' + (e.message || '');
     }
   });
 }
@@ -6786,7 +6804,11 @@ function doRestart() { restartDebugSession(); }
 
   // === Close button ===
   document.getElementById('pageAgentPanelClose').addEventListener('click', function() {
-    panel.style.display = 'none';
+    const p = document.getElementById('pageAgentPanel');
+    if (p) {
+      p.classList.remove('open');
+      setTimeout(() => { if (!p.classList.contains('open')) p.style.display = 'none'; }, 180);
+    }
   });
 
   // === Send button ===
