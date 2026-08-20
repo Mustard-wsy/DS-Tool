@@ -4,6 +4,12 @@
   "edgeProxy": {},
   "visibility": {},
   "titleField": {},
+  "layoutExempt": [],
+  "anchor": {
+    "BPlusTree.root": "title",
+    "BPlusNode.children": "vertical",
+    "BPlusNode.next": "horizontal"
+  },
   "layerEdges": [],
   "layerEdgeKeys": {},
   "layout": {
@@ -12,6 +18,7 @@
   "showSubtitle": true,
   "uniformEdgesEnabled": true,
   "rowDisplayMode": "both",
+  "pointerRep": "sequential",
   "parentFieldKey": "",
   "graphViewer": {
     "valueField": "",

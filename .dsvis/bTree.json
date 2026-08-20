@@ -4,13 +4,13 @@
   "edgeProxy": {},
   "visibility": {
     "BTree.t": "visible",
-    "BTree.__title__": "visible",
+    "BTree.__title__": "self",
     "BTreeNode.t": "self",
     "BTreeNode.__title__": "self",
     "BTreeNode.leaf": "self",
     "BTreeNode.children": "visible",
     "BTreeNode.keys": "visible",
-    "BTree.root": "self",
+    "BTree.root": "visible",
     "BTreeNode.keys[0]": "visible",
     "BTreeNode.keys[1]": "visible",
     "BTreeNode.keys[2]": "visible",
@@ -22,6 +22,8 @@
     "BTreeNode.children[3]": "visible"
   },
   "titleField": {},
+  "layoutExempt": [],
+  "anchor": {},
   "layerEdges": [
     "children"
   ],
@@ -34,6 +36,7 @@
   "showSubtitle": true,
   "uniformEdgesEnabled": true,
   "rowDisplayMode": "value",
+  "pointerRep": "sequential",
   "parentFieldKey": "",
   "graphViewer": {
     "valueField": "id",

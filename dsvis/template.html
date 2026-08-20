@@ -78,13 +78,6 @@ __STYLES__
       </div>
       <div id="settingsBody">
         <div class="settings-row">
-          <span>文本方向</span>
-          <select id="settingsTextFlow">
-            <option value="horizontal">横向</option>
-            <option value="vertical">纵向</option>
-          </select>
-        </div>
-        <div class="settings-row">
           <span>行显示</span>
           <select id="settingsRowDisplay">
             <option value="both">字段名 = 值</option>
@@ -129,7 +122,7 @@ __STYLES__
   <!-- AI 助手面板 (可拖拽 / 可调整大小) -->
   <div id="pageAgentPanel" style="display:none;position:fixed;left:calc(100vw - 380px);top:calc(100vh - 420px);z-index:9999;width:360px;min-width:260px;min-height:180px;max-height:80vh;background:#fff;border:1px solid #ccc;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,0.18);flex-direction:column;overflow:hidden;">
     <div id="pageAgentPanelHeader" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#e8f0fe;border-radius:10px 10px 0 0;cursor:move;user-select:none;">
-      <span style="font-weight:700;font-size:12px;color:#0f2c63;">🤖 AI 助手</span>
+      <span style="font-weight:700;font-size:12px;color:#0f2c63;">AI 助手</span>
       <button id="pageAgentPanelClose" type="button" style="border:none;background:none;font-size:16px;cursor:pointer;color:#666;">✕</button>
     </div>
     <div id="pageAgentChat" style="flex:1;overflow-y:auto;padding:8px;font-size:12px;min-height:80px;max-height:400px;line-height:1.5;"></div>
@@ -157,6 +150,11 @@ const STACK_UI_STATE = {
 let current = 0;
 let currentRaw = null;  // non-null when stepping through execution events (raw STEPS index)
 let graph = null;
+// Minimal debug hook so automated tests can inspect the live G6 graph.
+window.__dsvisGraph = () => graph;
+// Guard: register('node','card',…) must run once even though initGraph() is
+// called repeatedly when a layout change forces a graph rebuild.
+let __dsvisCardNodeRegistered = false;
 let pendingRenderRequest = null;
 let renderRafId = null;
 let codeRows = [];
@@ -179,8 +177,14 @@ let hiddenPanelVisible = false;
 const NODE_TYPE_REGISTRY = new Map();  // Map<className, [{key, className, fieldName, kind}]>
 const NODE_TYPE_VISIBILITY = new Map();  // Map<className.fieldName, state>
 // Fields whose edges render (arrows shown) but must NOT drive the layout.
-// Controlled by the "布局" panel; independent of visibility.
+// Controlled by the "指针" panel; independent of visibility.
 const LAYOUT_EXEMPT_KEYS = new Set();
+// Per-field connection point for pointer edges (e.g. B+Tree next):
+// 'vertical' (上下中点) | 'horizontal' (左右中点) | 'title' (标题栏). Unified with
+// LAYOUT_EXEMPT_KEYS under the "指针" management panel. Legacy values
+// ('top'/'bottom'/'v-auto'→vertical, 'left'/'right'/'h-auto'→horizontal) are
+// normalised on read via normalizeAnchorValue; 'row'/'auto' count as unset.
+const ANCHOR = new Map();
 const BIND_GROUP_REGISTRY = new Map();   // Map<className, [{groupName, fields: [key]}]>
 // EDGE_PROXY: "Type.refField" → { proxy: "Type.valueField", ratio: number|'auto', includeEnds: boolean }
 const EDGE_PROXY = new Map();
@@ -204,10 +208,7 @@ const STRUCTURE_TYPES = {
   'nary-tree':    { name: 'N叉树',        layerFields: ['children'],      parentField: 'parent', proxyRules: null, uniformEdges: true },
   'btree':        { name: 'B-Tree',       layerFields: ['children'],      parentField: null,   proxyRules: { childField: 'children', keyField: 'keys' }, uniformEdges: true },
   'bplustree':    { name: 'B+ Tree',      layerFields: ['children'],      parentField: null,   proxyRules: { childField: 'children', keyField: 'keys' }, uniformEdges: true },
-  'heap':         { name: '堆',           layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
   'graph':        { name: '图',           layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
-  'linkedlist':   { name: '链表/栈/队列', layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
-  'hashtable':    { name: '散列表',       layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
   'other':        { name: '默认',         layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
 };
 
@@ -249,12 +250,75 @@ function persistLayoutExempt() {
   try { localStorage.setItem('dsvis:layoutExempt', JSON.stringify(Array.from(LAYOUT_EXEMPT_KEYS))); } catch(_) {}
   scheduleStyleAutosave();
 }
+function persistAnchor() {
+  try { localStorage.setItem('dsvis:anchor', JSON.stringify(Object.fromEntries(ANCHOR))); } catch(_) {}
+  scheduleStyleAutosave();
+}
 /** Toggle whether a field's edges drive the layout (see LAYOUT_EXEMPT_KEYS).
  *  exempt=true → the field is layout-exempt (edges drawn, do not drive layout). */
 function setFieldLayoutExempt(key, exempt) {
   if (exempt) LAYOUT_EXEMPT_KEYS.add(key);
   else LAYOUT_EXEMPT_KEYS.delete(key);
   persistLayoutExempt();
+  syncSettingsPanel();
+  renderStep(current);
+}
+/** Set a pointer field's concrete connection point on its node:
+ *  'vertical' (上下中点) | 'horizontal' (左右中点) | 'title' (标题栏). */
+function setFieldAnchor(key, anchor) {
+  if (anchor && anchor !== 'row' && anchor !== 'auto') ANCHOR.set(key, anchor);
+  else ANCHOR.delete(key);
+  persistAnchor();
+  syncSettingsPanel();
+  renderStep(current);
+}
+/** Normalise legacy anchor values to the current concrete set:
+ *  'vertical' | 'horizontal' | 'title' (上下中点 / 左右中点 / 标题栏). */
+function normalizeAnchorValue(v) {
+  if (v === 'top' || v === 'bottom' || v === 'v-auto') return 'vertical';
+  if (v === 'left' || v === 'right' || v === 'h-auto') return 'horizontal';
+  if (v === 'vertical' || v === 'horizontal' || v === 'title') return v;
+  return null;  // 'row'/'auto'/unknown → treat as unset
+}
+/** Natural connection point for a pointer field (what the 自动分配 button
+ *  assigns): tree children → 上下中点, sibling (next) → 左右中点, container
+ *  root/parent → 标题栏, everything else → 上下中点. */
+function defaultFieldConnection(key) {
+  const fn = String(key).split('.').pop().replace(/\[.*/, '').toLowerCase();
+  if (fn === 'next') return 'horizontal';
+  if (fn === 'left' || fn === 'right' || fn === 'children') return 'vertical';
+  if (fn === 'root' || fn === 'parent') return 'title';
+  return 'vertical';
+}
+function getFieldAnchor(key) {
+  const norm = ANCHOR.has(key) ? normalizeAnchorValue(ANCHOR.get(key)) : null;
+  return norm || defaultFieldConnection(key);
+}
+/** Resolve a pointer field's concrete connection point for its edges:
+ *  'vertical' | 'horizontal' | 'title' — the exact side (top vs bottom, left vs
+ *  right) is picked automatically at draw time from relative geometry. */
+function resolveAnchorForField(key) {
+  return getFieldAnchor(key);
+}
+/** Assign every pointer field its natural concrete connection point (the 自动
+ *  分配 button): tree children → 上下中点, next → 左右中点, root/parent → 标题栏. */
+function autoAssignPointerConnections() {
+  const seen = new Set();
+  for (const step of STEPS) {
+    const g = step && step.graph;
+    if (!g || !Array.isArray(g.edges)) continue;
+    for (const e of g.edges) {
+      const raw = String(e?.data?.field_key || e?.data?.label || '').trim();
+      if (!raw) continue;
+      const key = raw.replace(/::/g, '.');
+      const base = key.replace(/\[.*\]$/, '');
+      if (!base.includes('.')) continue;
+      if (seen.has(base)) continue;
+      seen.add(base);
+      ANCHOR.set(base, defaultFieldConnection(base));
+    }
+  }
+  persistAnchor();
   syncSettingsPanel();
   renderStep(current);
 }
@@ -291,12 +355,14 @@ function exportCurrentConfig() {
     structureType: VIS_CONFIG.structureType,
     edgeProxy: proxyObj, visibility: visObj, titleField: tf,
     layoutExempt: Array.from(LAYOUT_EXEMPT_KEYS),
+    anchor: Object.fromEntries(ANCHOR),
     layerEdges: Array.from(LAYER_EDGES),
     layerEdgeKeys: { ...VIS_CONFIG.layerEdgeKeys },
     layout: { rankdir: VIS_CONFIG.textFlow === 'vertical' ? 'TB' : 'LR' },
     showSubtitle: VIS_CONFIG.showSubtitle,
     uniformEdgesEnabled: VIS_CONFIG.uniformEdgesEnabled,
     rowDisplayMode: VIS_CONFIG.rowDisplayMode,
+    pointerRep: VIS_CONFIG.pointerRep,
     // Extra knobs that were missing from the export (graph viewer + parent
     // pointer field) so a copied style fully restores the page it came from.
     parentFieldKey: VIS_CONFIG.parentFieldKey,
@@ -312,10 +378,11 @@ function importConfig(jsonText) {
   if (cfg.edgeProxy) { EDGE_PROXY.clear(); for (var _k in cfg.edgeProxy) EDGE_PROXY.set(_k, cfg.edgeProxy[_k]); }
   if (cfg.visibility) { for (var _vk in cfg.visibility) NODE_TYPE_VISIBILITY.set(_vk, cfg.visibility[_vk]); }
   if (cfg.titleField) { var _tkeys = Object.keys(cfg.titleField); if (_tkeys.length) TITLE_FIELD = { className: _tkeys[0], key: cfg.titleField[_tkeys[0]] }; }
-  if (cfg.layout && cfg.layout.rankdir) VIS_CONFIG.textFlow = cfg.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
+  if (cfg.layout && cfg.layout.rankdir) VIS_CONFIG.textFlow = 'vertical'; // horizontal no longer supported
   if (cfg.showSubtitle !== undefined) VIS_CONFIG.showSubtitle = cfg.showSubtitle;
   if (cfg.uniformEdgesEnabled !== undefined) VIS_CONFIG.uniformEdgesEnabled = cfg.uniformEdgesEnabled;
   if (cfg.rowDisplayMode) VIS_CONFIG.rowDisplayMode = cfg.rowDisplayMode;
+  if (cfg.pointerRep) VIS_CONFIG.pointerRep = cfg.pointerRep;
   if (cfg.structureType) VIS_CONFIG.structureType = cfg.structureType;
   if (cfg.layerEdgeKeys) VIS_CONFIG.layerEdgeKeys = { ...cfg.layerEdgeKeys };
   if (cfg.parentFieldKey !== undefined) VIS_CONFIG.parentFieldKey = cfg.parentFieldKey;
@@ -324,6 +391,8 @@ function importConfig(jsonText) {
   }
   LAYER_EXEMPT_KEYS.clear();
   if (Array.isArray(cfg.layoutExempt)) { for (var _le2 = 0; _le2 < cfg.layoutExempt.length; _le2++) LAYER_EXEMPT_KEYS.add(cfg.layoutExempt[_le2]); }
+  ANCHOR.clear();
+  if (cfg.anchor && typeof cfg.anchor === 'object') { for (const _a in cfg.anchor) ANCHOR.set(_a, cfg.anchor[_a]); }
   LAYER_EDGES.clear();
   if (Array.isArray(cfg.layerEdges)) { for (var _le = 0; _le < cfg.layerEdges.length; _le++) LAYER_EDGES.add(cfg.layerEdges[_le]); }
   persistProxy(); persistVisibility(); persistLayoutExempt();
@@ -428,7 +497,7 @@ function resetAllStyle() {
   LAYER_EDGES.clear();
   TITLE_FIELD = null;
   for (var _rkey of NODE_TYPE_VISIBILITY.keys()) NODE_TYPE_VISIBILITY.set(_rkey, 'visible');
-  VIS_CONFIG.textFlow = 'horizontal';
+  VIS_CONFIG.textFlow = 'vertical';
   VIS_CONFIG.showSubtitle = true;
   VIS_CONFIG.structureType = 'other';
   VIS_CONFIG.layerEdgeKeys = {};
@@ -490,12 +559,13 @@ const PAGE_AGENT_STORAGE_KEY = 'dsvis:pageAgentConfig';
 // local style server is reachable, so style changes still survive a reload.
 const STYLE_LOCAL_KEY = 'dsvis:style:local';
 const DEFAULT_VIS_CONFIG = {
-  textFlow: 'horizontal',
+  textFlow: 'vertical',
   showSubtitle: true,
   structureType: 'other',
   layerEdgeKeys: {},
   uniformEdgesEnabled: true,
   rowDisplayMode: 'both',  // 'both' | 'key' | 'value' — control what part of each field row is shown
+  pointerRep: 'sequential', // 'sequential' | 'nearest' — how pointer edges pick a node's representative point
   parentFieldKey: '',     // '' = use STRUCTURE_TYPES[type].parentField (e.g. 'parent')
   // Independent graph-displayer settings (structureType === 'graph').
   graphViewer: {
@@ -519,13 +589,15 @@ function loadVisConfig() {
   //    not the browser's localStorage on C:).
   if (FILE_STYLE) {
     if (FILE_STYLE.layout && FILE_STYLE.layout.rankdir) {
-      merged.textFlow = FILE_STYLE.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
+      // Horizontal text flow is no longer supported — always vertical.
+      merged.textFlow = 'vertical';
     }
     if (FILE_STYLE.showSubtitle !== undefined) merged.showSubtitle = FILE_STYLE.showSubtitle;
     if (FILE_STYLE.structureType) merged.structureType = FILE_STYLE.structureType;
     if (FILE_STYLE.layerEdgeKeys) merged.layerEdgeKeys = { ...FILE_STYLE.layerEdgeKeys };
     if (FILE_STYLE.uniformEdgesEnabled !== undefined) merged.uniformEdgesEnabled = FILE_STYLE.uniformEdgesEnabled;
     if (FILE_STYLE.rowDisplayMode) merged.rowDisplayMode = FILE_STYLE.rowDisplayMode;
+    if (FILE_STYLE.pointerRep) merged.pointerRep = FILE_STYLE.pointerRep;
     if (FILE_STYLE.parentFieldKey !== undefined) merged.parentFieldKey = FILE_STYLE.parentFieldKey;
     if (FILE_STYLE.graphViewer && typeof FILE_STYLE.graphViewer === 'object') {
       merged.graphViewer = { ...DEFAULT_VIS_CONFIG.graphViewer, ...FILE_STYLE.graphViewer };
@@ -585,7 +657,7 @@ function buildStructureParams(container) {
 
   // ── Binary-tree: left/right/parent pointer selectors ──
   // Each pointer is a field <select> with an explicit empty option ("（空）",
-  // meaning "no applicable binary-tree setting"). A single "⚡ 自动分配" button
+  // meaning "no applicable binary-tree setting"). A single "自动分配" button
   // runs the auto-detection once and fills in all three pointers; the selects
   // default to the auto-assigned values (autoApplyStructureDefaults does this).
   if (st === 'binary-tree') {
@@ -595,7 +667,7 @@ function buildStructureParams(container) {
     var autoRow = document.createElement('div');
     autoRow.style.cssText = 'display:flex;align-items:center;gap:6px;padding:2px 0 4px;';
     var autoBtn = document.createElement('button');
-    autoBtn.textContent = '⚡ 自动分配';
+    autoBtn.textContent = '自动分配';
     autoBtn.type = 'button';
     autoBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #5b8ff9;background:#e8f0fe;border-radius:3px;';
     autoBtn.title = '自动检测并分配左/右/父指针字段';
@@ -1090,6 +1162,55 @@ function resetGraphInstance() {
   graph = null;
 }
 
+// ── Frame freeze (avoid the white blink while a dagre tree rebuilds) ──
+// Move the current canvases into an absolutely-positioned overlay inside the
+// #graph container BEFORE the graph is destroyed. G6's destroy() only removes
+// the canvases it still manages inside the container, so moving the nodes out
+// preserves their rendered pixels (a pixel copy would NOT work — G6 renders to
+// WebGL canvases whose drawing buffers can't be read back). The viewport keeps
+// showing the previous step until the new layout is ready, then the overlay is
+// removed together with the old canvases. Returns the overlay element, or null
+// when there was nothing to freeze (e.g. first render).
+function freezeGraphFrame() {
+  const container = document.getElementById('graph');
+  if (!container) return null;
+  const canvases = Array.from(container.querySelectorAll('canvas'));
+  if (!canvases.length) return null;
+  // Reuse an existing overlay so every rebuild still registers a fresh
+  // unfreeze (avoids a stale overlay getting stuck during rapid stepping).
+  const existing = document.getElementById('__dsvis_freeze__');
+  if (existing) return existing;
+  const overlay = document.createElement('div');
+  overlay.id = '__dsvis_freeze__';
+  // Mirror the container's grid stacking so the moved layers overlay exactly
+  // like the originals (same width/height/grid-area from their inline styles).
+  overlay.style.cssText = 'position:absolute;inset:0;display:grid;isolation:isolate;z-index:9999;pointer-events:none;overflow:hidden;';
+  for (const c of canvases) {
+    overlay.appendChild(c);  // move, don't copy — keeps the rendered pixels
+  }
+  container.appendChild(overlay);
+  return overlay;
+}
+
+/** Remove the frozen-frame overlay created by freezeGraphFrame(). */
+function unfreezeGraphFrame() {
+  const ov = document.getElementById('__dsvis_freeze__');
+  if (!ov) return;
+  // Best-effort: release any WebGL contexts held by the moved canvases so
+  // rapid stepping doesn't accumulate contexts (G6's destroy() can't reach
+  // canvases that were moved out of the container).
+  for (const c of Array.from(ov.querySelectorAll('canvas'))) {
+    try {
+      const gl = c.getContext('webgl2') || c.getContext('webgl');
+      if (gl && typeof gl.getExtension === 'function') {
+        const ext = gl.getExtension('WEBGL_lose_context');
+        if (ext && typeof ext.loseContext === 'function') ext.loseContext();
+      }
+    } catch (_) { /* best-effort */ }
+  }
+  ov.remove();
+}
+
 const VIS_CONFIG = loadVisConfig();
 // On first load, auto-detect structure type if set to 'other'
 if (VIS_CONFIG.structureType === 'other') {
@@ -1128,8 +1249,8 @@ const ANIMATION_CONFIG = {
   easing: 'linear',
 };
 const PANEL_STATE = {
-  stackVisible: false,
-  codeVisible: false,
+  stackVisible: true,
+  codeVisible: true,
 };
 const RESIZE_CONFIG = {
   stack: { min: 220, max: 560, collapsed: 56 },
@@ -1747,12 +1868,26 @@ function analyzeLayoutMetrics(graphData, viewport, connectivityEdges = null) {
 function computeAdaptiveLayout(graphData, viewport = null) {
   const metrics = analyzeLayoutMetrics(graphData, viewport);
   const rankdir = VIS_CONFIG.textFlow === 'vertical' ? 'TB' : ((baseLayout && baseLayout.rankdir) ? baseLayout.rankdir : 'LR');
-  
+
+  // G6's dagre reads node dimensions from `nodeSize` (a fn of the node data) —
+  // without it it falls back to a ~10px default, so the computed nodesep/ranksep
+  // leave wide cards overlapping. The layout config is computed per render and
+  // never persisted, so a function here is safe.
+  const dagreNodeSize = (d) => {
+    const _s = (d && d.style && d.style.size) || (d && d.data && d.data.size) || (d && d.size);
+    return Array.isArray(_s) && _s.length >= 2 ? [_s[0], _s[1]] : [60, 40];
+  };
+  // Horizontal (same-rank) spacing is scaled to 2/3 of the computed value so
+  // sibling nodes sit closer together; a small floor keeps them from touching.
+  const H_GAP_SCALE = 2 / 3;
+  const H_GAP_MIN = 28;
+
   if (!metrics.nodes.length) {
     return {
       type: 'dagre',
       rankdir: rankdir,
-      nodesep: rankdir === 'TB' ? 110 : 80,
+      nodeSize: dagreNodeSize,
+      nodesep: rankdir === 'TB' ? Math.round(110 * H_GAP_SCALE) : 80,
       ranksep: rankdir === 'TB' ? 110 : 110,
     };
   }
@@ -1761,8 +1896,9 @@ function computeAdaptiveLayout(graphData, viewport = null) {
     return {
       type: 'dagre',
       rankdir: rankdir,
-      nodesep: rankdir === 'TB' 
-        ? Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 44)
+      nodeSize: dagreNodeSize,
+      nodesep: rankdir === 'TB'
+        ? Math.max(Math.round(Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 44) * H_GAP_SCALE), H_GAP_MIN)
         : Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 44),
       ranksep: rankdir === 'TB'
         ? Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 68)
@@ -2125,6 +2261,19 @@ function prepareGraphForLayout(graphData, viewport = null) {
   if (Array.isArray(sortedGraphData?.edges)) {
     sortedGraphData.edges = sortedGraphData.edges.filter(e => !e?.data?._noLayout);
   }
+  // Publish each node's real card size into its custom `data` field. G6's dagre
+  // layout reads node dimensions from node.data.bboxSize / node.data.size (NOT
+  // style.size) and falls back to a ~10px default when absent — so the computed
+  // nodesep/ranksep end up far too small for wide cards and sibling nodes
+  // overlap. Mirroring style.size into data lets dagre lay out with the true
+  // widths. This is harmless for the card shape (it reads style.* only) and for
+  // grid layouts (which use the explicit `nodeSize` config instead).
+  for (const _dn of (sortedGraphData.nodes || [])) {
+    const _dnSz = _dn?.style?.size;
+    if (Array.isArray(_dnSz) && _dnSz.length >= 2) {
+      _dn.data = { ...(_dn.data || {}), size: [_dnSz[0], _dnSz[1]] };
+    }
+  }
 
   // Binary trees ALWAYS use the pre-positioned textbook layout (no G6 layout),
   // even for tiny early steps that dagre/grid would otherwise lay out
@@ -2174,6 +2323,17 @@ function prepareGraphForLayout(graphData, viewport = null) {
     return compactLayout;
   }
   const layout = computeAdaptiveLayout(layoutData, viewport);
+  // Deterministic dagre ordering. G6's dagre executor merges the *previous*
+  // layout's graph state into each incremental render (unless `nodeOrder` is
+  // provided, which flips its `keepNodeOrder` flag). Without it, stepping
+  // through the playback one step at a time leaves the layout drifting from
+  // what a direct "jump from step 0" produces — nodes land in different
+  // ranks/positions (e.g. a transient empty split-root shoved to the far right
+  // and blank cards appearing). Pinning `nodeOrder` to the current data order
+  // makes every render deterministic and identical to a fresh run.
+  if (layout && layout.type === 'dagre') {
+    layout.nodeOrder = (graphData.nodes || []).map(n => String(n.id));
+  }
   // Use sorted graph data (non-exempt edges) with the computed layout
   return { data: sortedGraphData, noLayoutEdges, layout };
 }
@@ -2708,7 +2868,10 @@ function initGraph(data) {
     }
   }
 
-  register('node', 'card', CardNode);
+  if (!__dsvisCardNodeRegistered) {
+    register('node', 'card', CardNode);
+    __dsvisCardNodeRegistered = true;
+  }
   const size = getGraphSize();
   const prepared = prepareGraphForLayout(data, size);
   graph = new G6.Graph({
@@ -2830,9 +2993,11 @@ function registerGraphNodeType() {
       // ones, set in buildGraphViewerG6Data), not for dimming.
       const key = this.upsert('key', 'circle', {
         x: 0, y: 0, r,
-        fill: highlight ? '#ffe8d0' : '#ffffff',
-        stroke: highlight ? '#ff6a00' : '#5b8ff9',
-        lineWidth: highlight ? 3 : 1.5,
+        // Match the rest of the debugger: DELTA_COLORS.unchanged for normal
+        // nodes, DELTA_COLORS.added for newly-added (highlight) nodes.
+        fill: highlight ? DELTA_COLORS.added.fill : DELTA_COLORS.unchanged.fill,
+        stroke: highlight ? DELTA_COLORS.added.stroke : DELTA_COLORS.unchanged.stroke,
+        lineWidth: highlight ? 2.5 : 1.5,
         zIndex: -1,
       }, container);
       this.upsert('value', 'text', {
@@ -2890,11 +3055,39 @@ function graphViewerFieldValue(cardNode, fieldName) {
   return null;
 }
 
+// Global (cross-step) direction detection. build_graph_viewer_data's per-step
+// `undirected` flag is unreliable for a directed walk: mid-walk the BFS edge
+// list only contains ONE direction (e.g. A→B but not B→A yet), so the same
+// undirected edge looks directed (arrow shown) on one step and undirected (no
+// arrow) on the next — "step 4 has arrows, step 6 is just a line". Decide once
+// from the union of ALL steps' edges: directed iff some edge lacks its
+// same-value mirror across the whole trace. Cached per page load.
+let __graphGlobalDirected = null;
+function graphViewGlobalDirected() {
+  if (__graphGlobalDirected != null) return __graphGlobalDirected;
+  const seen = new Set();
+  for (const s of STEPS || []) {
+    const gv = s && s.graphView;
+    for (const e of (gv && gv.edges) || []) {
+      const a = String(e.source), b = String(e.target);
+      const v = e.value != null ? String(e.value) : '';
+      seen.add(`${a}\u0001${b}\u0001${v}`);
+    }
+  }
+  let allMirrored = true;
+  for (const key of seen) {
+    const [a, b, v] = key.split('\u0001');
+    if (!seen.has(`${b}\u0001${a}\u0001${v}`)) { allMirrored = false; break; }
+  }
+  __graphGlobalDirected = !allMirrored;
+  return __graphGlobalDirected;
+}
+
 function buildGraphViewerG6Data(gv, highlight, cardNodes) {
   const cfg = VIS_CONFIG.graphViewer || {};
   const cardById = new Map((cardNodes || []).map((n) => [String(n.id), n]));
   const directed = cfg.direction === 'auto'
-    ? !gv.undirected
+    ? graphViewGlobalDirected()
     : cfg.direction === 'directed';
   const highlightNodes = (highlight && highlight.nodes) || new Set();
   const highlightEdges = (highlight && highlight.edges) || new Set();
@@ -2929,30 +3122,90 @@ function buildGraphViewerG6Data(gv, highlight, cardNodes) {
       },
     };
   });
-  const edges = (gv.edges || []).map((e, i) => {
+  // Bidirectional edge handling: when the same node pair has edges in BOTH
+  // directions (A→B and B→A), G6 would otherwise draw two straight lines on
+  // top of each other — with both labels overlapping at the centre (looks like
+  // a double arrow showing the number twice).
+  //   * Same value on both directions → merge into ONE double-arrow edge
+  //     (startArrow + endArrow) that shows the value once.
+  //   * Different values → keep TWO separate quadratic edges that curve away
+  //     from each other (opposite curveOffset), each showing its own value —
+  //     never fused into a single double-arrow.
+  const rawEdges = (gv.edges || []).map((e) => {
     let value = e.value;
     if (cfg.edgeValueField && e.edgeId) {
       const v = graphViewerFieldValue(cardById.get(String(e.edgeId)), cfg.edgeValueField);
       if (v != null) value = v;
     }
-    const sig = graphViewEdgeSig(e);
-    const active = highlightEdges.has(sig);
     return {
-      id: `ge${i}`,
       source: String(e.source),
       target: String(e.target),
-      style: {
-        stroke: active ? '#ff6a00' : '#a0a0a0',
-        lineWidth: active ? 3 : 1.5,
-        endArrow: directed ? { fill: '#a0a0a0' } : false,
-        labelText: value != null && value !== '' ? String(value) : '',
-        labelFontSize: 11,
-        labelFill: '#666',
-        labelPlacement: 'center',
-        labelOffset: [0, -8],
-      },
+      value,
+      active: highlightEdges.has(graphViewEdgeSig(e)),
     };
   });
+  const pairMap = new Map();
+  for (const re of rawEdges) {
+    const key = re.source < re.target ? `${re.source}\u0001${re.target}` : `${re.target}\u0001${re.source}`;
+    if (!pairMap.has(key)) pairMap.set(key, []);
+    pairMap.get(key).push(re);
+  }
+  const edges = [];
+  const pushEdge = (source, target, value, active, extra) => {
+    const { type = 'line', curveOffset, bothArrow = false } = extra || {};
+    // Same palette as the rest of the debugger: ordinary edges are #888 (as in
+    // the dagre views), newly-added (active) edges use DELTA_COLORS.added.
+    const strokeColor = active ? DELTA_COLORS.added.stroke : '#888';
+    const style = {
+      stroke: strokeColor,
+      lineWidth: active ? 2.5 : 1.5,
+      endArrow: directed ? { fill: strokeColor } : false,
+      startArrow: (bothArrow && directed) ? { fill: strokeColor } : false,
+      labelText: value != null && value !== '' ? String(value) : '',
+      labelFontSize: 11,
+      labelFill: '#666',
+      labelPlacement: 'center',
+      labelOffset: [0, -8],
+    };
+    if (curveOffset != null) style.curveOffset = curveOffset;
+    // Stable edge id keyed by the unordered node pair + direction role — NOT an
+    // index. Indexed ids (ge0, ge1, …) silently swap which logical edge an id
+    // refers to whenever the backend reorders edges between two steps; the
+    // incremental update+draw branch then updates the WRONG edge (arrows/labels
+    // land on the wrong pair, or an edge can look unbound because its endpoints
+    // were re-written to a different pair). `value` is deliberately omitted —
+    // it changes almost every step (highlight/label refresh), so including it
+    // would make the id unstable across the very steps we want to update.
+    const a = source < target ? source : target;
+    const b = source < target ? target : source;
+    const dir = bothArrow ? 'both' : (source === a ? 'fwd' : 'rev');
+    // Node ids are plain timestamps, so even a long edge id stays
+    // alphanumeric. Keep it free of ':', '|' etc — G6 v5's element registry
+    // keys elements by id and reliably handles plain alphanumeric ids, while
+    // punctuation can interfere with some internal lookups and occasionally
+    // make an edge element never get created after a step that adds it.
+    const id = `ge_${a}_${b}_${dir}`;
+    edges.push({ id, source, target, type, style });
+  };
+  for (const [, list] of pairMap) {
+    if (list.length === 2) {
+      const [first, second] = list;
+      const hasBoth = first.source === second.target && first.target === second.source;
+      if (hasBoth) {
+        const sameValue = String(first.value ?? '') === String(second.value ?? '');
+        if (sameValue) {
+          // Merge: one double-arrow edge, value shown once.
+          pushEdge(first.source, first.target, first.value, first.active || second.active, { bothArrow: true });
+        } else {
+          // Keep both, curved away from each other so labels never overlap.
+          pushEdge(first.source, first.target, first.value, first.active, { type: 'quadratic', curveOffset: 26 });
+          pushEdge(second.source, second.target, second.value, second.active, { type: 'quadratic', curveOffset: -26 });
+        }
+        continue;
+      }
+    }
+    for (const re of list) pushEdge(re.source, re.target, re.value, re.active);
+  }
   return { nodes, edges };
 }
 
@@ -2965,6 +3218,11 @@ function initGraphViewer(data) {
     width: size.width,
     height: size.height,
     autoResize: true,
+    // G6 defaults to zoomRange [0.01, 10] — in the graph viewer that let users
+    // zoom the canvas in absurdly far (nodes become enormous). Clamp the ceiling
+    // to 2x (zoom-canvas zooms via zoomTo, which is clamped by this range), and
+    // keep zoom-canvas at a calmer sensitivity.
+    zoomRange: [0.1, 2],
     animation: { duration: 80, easing: 'linear' },
     data,
     layout: {
@@ -2985,7 +3243,14 @@ function initGraphViewer(data) {
       // 2) Spacing: manyBody:-350 / link:0.4 left the layout unstable and
       //    far-apart-looking. distance:130 / strength:0.8 + manyBody:-200 keeps
       //    it compact, and collide enforces a stable ~72px node separation.
-      //    velocityDecay 0.6 helps each step settle quickly.
+      //
+      //    Jitter is NOT fixed by forcing the simulation to end early: an
+      //    aggressive alphaDecay/alphaMin froze `drag-element-force`, whose
+      //    onDragStart wakes the simulation via simulation.alphaTarget(0.3)
+      //    .restart(). Instead renderGraphStep keeps the current layout when the
+      //    topology is unchanged and only re-runs d3-force when nodes/edges
+      //    actually change. velocityDecay stays at G6's default for a standard
+      //    drag feel.
       type: 'd3-force',
       link: { distance: 130, strength: 0.8 },
       manyBody: { strength: -200 },
@@ -2993,7 +3258,17 @@ function initGraphViewer(data) {
       x: { strength: 0.15, x: size.width / 2 },
       y: { strength: 0.15, y: size.height / 2 },
       center: { x: size.width / 2, y: size.height / 2 },
-      velocityDecay: 0.6,
+      velocityDecay: 0.4,
+      // Make the simulation converge FAST (not to fix jitter — the topology
+      // signature already stops re-layouts — but because G6 leaves the d3-force
+      // timer running until alpha naturally decays to alphaMin, which takes
+      // ~4s with the default alphaDecay. During that window nodes keep
+      // drifting and fight drags right after a step. A higher alphaDecay +
+      // alphaMin stops the simulation in well under a second so the graph is
+      // stable and draggable almost immediately. afterlayout/dragend also stop
+      // it explicitly as a safety net.
+      alphaDecay: 0.1,
+      alphaMin: 0.01,
     },
     node: { type: 'graph-node' },
     // Plain `drag-element` only translates the node and does NOT cooperate with
@@ -3004,21 +3279,63 @@ function initGraphViewer(data) {
     // keeps the node where it was dropped (not dragged back by the layout).
     behaviors: [
       'drag-canvas',
-      'zoom-canvas',
-      { type: 'drag-element-force', fixed: true },
+      { type: 'zoom-canvas', sensitivity: 0.8 },
+      // Plain drag-element (NOT drag-element-force): the force variant relies on
+      // the d3-force simulation's restart() to move the node, but G6 stops the
+      // simulation after the layout settles, so after stepping (or once the
+      // fast-converging alphaDecay runs out) the node no longer follows the
+      // mouse — "can't drag on this step". drag-element moves the node by
+      // writing its position directly and redrawing; it works in any layout
+      // state. fixed:true keeps the dropped node where it was put (the layout
+      // only re-runs on topology-changing steps and re-lays it out then, which
+      // is expected).
+      { type: 'drag-element', fixed: true },
     ],
   });
   graph._dsvisMode = 'graph';
+  graph.__lastGraphSig = graphViewTopologySig(data);
   graph.on('node:click', (evt) => {
     const nodeId = evt?.target?.id || evt?.item?.id || evt?.data?.id;
     if (nodeId) showGraphNodeDetails(String(nodeId));
   });
+  // While the user is dragging a node, cancel any pending auto-refit. On a
+  // topology-changing step the layout just re-ran and `scheduleGraphViewRefit`
+  // is about to fitView() the viewport; if that fires mid-drag the camera
+  // jumps and the node appears to be yanked off the cursor ("can't drag on
+  // this step"). fitView only changes the viewport, so skipping it while the
+  // user holds a node keeps the drag steady.
+  if (typeof graph.on === 'function') {
+    graph.on('node:dragstart', () => {
+      if (graph) clearTimeout(graph.__graphRefitTimer);
+      // Stop any in-flight layout iteration so the drag isn't fought by a
+      // still-running force simulation (the fast alphaDecay converges the
+      // layout, and drag-element moves nodes directly).
+      try { if (graph && typeof graph.stopLayout === 'function') graph.stopLayout(); } catch (_e) { /* benign */ }
+    });
+    graph.on('node:dragend', () => {
+      // Leave the simulation alone: alphaTarget(0) set by drag-element-force
+      // decays it to alphaMin where d3 stops the timer on its own. Explicitly
+      // stopping the layout here would break the next drag's restart().
+    });
+    // d3-force keeps its simulation ticking in the background after a layout
+    // (alpha decays over ~4s with the default alphaDecay), which makes nodes
+    // keep drifting and fights drags right after a step. The layout's
+    // alphaDecay/alphaMin are set to converge in well under a second — d3
+    // stops the timer itself once alpha < alphaMin, without breaking the
+    // restart() that drag-element-force uses. Just fit on overflow here.
+    graph.on('afterlayout', scheduleGraphViewRefit);
+  }
   // G6 v5's render() is async — the d3-force layout runs inside its promise
   // chain. Fitting synchronously right after render() would measure the nodes
   // at (0,0) before the layout has run (observed: layout sometimes never ran,
   // leaving every node stacked at the origin). Fit once the first layout has
   // settled instead.
   graph.render();
+  // First render: guard against the user stepping before the initial elements
+  // exist — same gate as renderGraphStep (coalesce + settle on edge creation).
+  __graphRenderBusy = true;
+  __graphRenderQueued = null;
+  graphStepSettleDone((data.edges || []).map((e) => e.id));
   if (typeof graph.once === 'function') {
     graph.once('afterlayout', () => {
       if (graph && typeof graph.fitView === 'function') {
@@ -3028,7 +3345,68 @@ function initGraphViewer(data) {
   }
 }
 
+// Topology signature of a graphView step: sorted node ids + collapsed undirected
+// edge keys. Used to decide whether a step really changed the graph structure —
+// if not, renderGraphStep updates styles in place (draw) instead of re-running
+// the d3-force layout (render), which is what made nodes jitter and reset the
+// user's dragged positions.
+function graphViewTopologySig(gv) {
+  const nodeIds = (gv.nodes || []).map((n) => String(n.id)).sort().join(',');
+  const edgeKeys = (gv.edges || []).map(graphViewEdgeSig).sort().join(';');
+  return `${nodeIds}#${edgeKeys}`;
+}
+
+// Serialises structural (topology-changing) renders. When the user steps faster
+// than G6 finishes a topology-changing render, the next setData+render cancels
+// the one in flight and G6 permanently drops some of the newly-added edge
+// elements — that edge's arrow disappears and its node is left "not bound to
+// the edge", so dragging the node leaves the edge/arrow behind. While a
+// structural render is settling we coalesce later step requests into the LATEST
+// one (fast-forward), then render it once the current render has finished.
+// Same-topology updates (updateNodeData/updateEdgeData + draw) are synchronous
+// and never touch this gate.
+let __graphRenderBusy = false;
+let __graphRenderQueued = null; // { ri, s } — latest pending step
+let __graphSettleTimer = null;
+
+function graphStepElementsReady(edgeIds) {
+  for (const id of edgeIds) {
+    try {
+      const el = graph.context.element.getElement(id);
+      if (!el || !el.sourceNode) return false;
+    } catch (_e) { return false; }
+  }
+  return true;
+}
+
+function graphStepSettleDone(edgeIds) {
+  // Element creation for a single render() finishes in ~20ms; poll every 20ms
+  // until every newly-added edge element is bound to its endpoints (or give up
+  // after 2s). Only then release the gate and render the latest queued step.
+  let elapsed = 0;
+  clearInterval(__graphSettleTimer);
+  __graphSettleTimer = setInterval(() => {
+    elapsed += 20;
+    if (elapsed > 2000 || graphStepElementsReady(edgeIds)) {
+      clearInterval(__graphSettleTimer);
+      __graphSettleTimer = null;
+      __graphRenderBusy = false;
+      if (__graphRenderQueued) {
+        const q = __graphRenderQueued;
+        __graphRenderQueued = null;
+        renderGraphStep(q.ri, q.s);
+      }
+    }
+  }, 20);
+}
+
 function renderGraphStep(ri, s) {
+  if (__graphRenderBusy) {
+    // A topology-changing render is still settling — fast-forward to the latest
+    // requested step instead of piling up interrupting renders.
+    __graphRenderQueued = { ri, s };
+    return;
+  }
   const gv = (s && s.graphView) || { nodes: [], edges: [], undirected: false };
   const highlight = graphViewDiff(ri, gv);
   const cardNodes = (s && s.graph && s.graph.nodes) || [];
@@ -3036,25 +3414,41 @@ function renderGraphStep(ri, s) {
   if (!graph || graph._dsvisMode !== 'graph') {
     if (graph) resetGraphInstance();
     initGraphViewer(data);
-  } else {
-    try {
-      graph.setData(data);
-      graph.render();
-      // The graph viewer only fits the view once at init. When a later step
-      // brings a larger graph, part of it would fall outside the viewport
-      // (zoom/pan kept from the previous step). Refit after the (async) layout
-      // settles — fitting synchronously right after render() would see the
-      // nodes still clustered (tiny bbox) and zoom in absurdly. Debounced
-      // 'afterlayout' refits only when the graph actually exceeds the viewport,
-      // preserving a manual pan/zoom for graphs that already fit.
-      if (typeof graph.on === 'function') {
-        graph.on('afterlayout', scheduleGraphViewRefit);
-      }
-    } catch (_e) {
-      // G6's transition diff may briefly reference elements removed by a step
-      // change ("Node/Edge not found for id: …") — benign, render stays correct.
-    }
+    return;
   }
+  const sig = graphViewTopologySig(gv);
+  const sameTopology = graph.__lastGraphSig === sig;
+  graph.__lastGraphSig = sig;
+  if (sameTopology) {
+    // Same nodes/edges as the previous step — only highlights/values may have
+    // changed. Update styles in place and draw() WITHOUT re-running the force
+    // layout: re-rendering on every step is exactly what made nodes jitter, and
+    // it also clobbered positions the user dragged to (drag-element-force with
+    // fixed:true). draw() is incremental and keeps the layout untouched.
+    try {
+      const nodeUpdates = (data.nodes || []).map((n) => ({ id: n.id, style: n.style }));
+      // style-only edge updates: topology is unchanged here, so the endpoints
+      // (source/target) are by definition the same — re-sending them makes G6
+      // disconnect+reconnect the edge on every step (the "new node not bound to
+      // its arrow" / arrow-missing symptoms) for zero benefit.
+      const edgeUpdates = (data.edges || []).map((e) => ({ id: e.id, style: e.style }));
+      if (nodeUpdates.length) graph.updateNodeData(nodeUpdates);
+      if (edgeUpdates.length) graph.updateEdgeData(edgeUpdates);
+      graph.draw();
+    } catch (_e) { /* benign */ }
+    return;
+  }
+  // Structural change: rebuild the whole G6 instance instead of incremental
+  // setData+render. Incremental render on a topology change is async — the
+  // d3-force layout runs inside render()'s promise chain — so rapid steps
+  // interrupt it and G6 permanently drops some newly-added edges (arrow
+  // missing, node "not bound" to its edge, dragging leaves the edge behind).
+  // A fresh instance renders independently and can't inherit a half-finished
+  // render; this is the same path a jump-to-step takes, which always works.
+  // initGraphViewer() arms the busy/settle gate, so rapid steps coalesce onto
+  // the latest request instead of piling up.
+  if (graph) resetGraphInstance();
+  initGraphViewer(data);
 }
 
 // Debounced "fit only if the graph overflows the viewport" for the graph
@@ -3069,6 +3463,39 @@ function scheduleGraphViewRefit() {
         graph.fitView({ padding: 40, onlyOutOfViewer: true });
       } catch (_e) { /* benign */ }
     }, 120);
+  } catch (_e) { /* benign */ }
+}
+
+// Stop the d3-force simulation G6 leaves ticking in the background after a
+// layout runs (alpha decays over ~4s by default). While it ticks, nodes keep
+// drifting/jittering and the running layout fights drags — which is why a
+// freshly-stepped graph could become "undraggable". Idempotent: safe after
+// every layout and every drag end. drag-element-force re-wakes the simulation
+// (simulation.alphaTarget(0.3).restart()) during a drag, so stopping it at
+// dragend keeps the dropped node exactly where it was put.
+// Stop the d3-force simulation G6 leaves ticking in the background after a
+// layout runs (alpha decays over ~4s by default). While it ticks, nodes keep
+// drifting/jittering and the running layout fights drags — which is why a
+// freshly-stepped graph could become "undraggable". Idempotent: safe after
+// every layout and every drag end. drag-element-force re-wakes the simulation
+// (simulation.alphaTarget(0.3).restart()) during a drag, so stopping it at
+// dragend keeps the dropped node exactly where it was put.
+//
+// NOTE: currently NOT wired up — the layout's alphaDecay/alphaMin converge the
+// simulation on their own (d3 stops the timer at alphaMin), and calling this
+// (layout.stop()) breaks drag-element-force's restart() the next time you drag.
+function stopGraphViewerSimulation() {
+  try {
+    if (!graph || !graph.context || !graph.context.layout) return;
+    // Call the G6 layout wrapper's stop() (NOT simulation.stop() — G6's
+    // d3-force driver isn't the d3 timer, so stopping the raw simulation does
+    // nothing; the layout's stop() actually halts the ticking loop).
+    const insts = graph.context.layout.getLayoutInstance() || [];
+    for (const f of insts) {
+      if (f && (f.id === 'd3-force' || f.id === 'd3-force-3d') && typeof f.stop === 'function') {
+        f.stop();
+      }
+    }
   } catch (_e) { /* benign */ }
 }
 
@@ -3145,6 +3572,104 @@ function buildPortStyles(node, usedPorts) {
   });
 }
 
+/** Whether a node's type-title field is currently visible (the title bar). */
+function nodeHasVisibleTitle(node) {
+  const st = node && node.style;
+  if (!st) return false;
+  const cls = getNodeClassName(st);
+  if (!cls) return false;
+  return isFieldVisible(cls + '.__title__');
+}
+
+/** Pick the port key (from *keys*) whose placement is nearest to (refX, refY)
+ *  in absolute coordinates. Returns null if none of the keys exist on the node. */
+function nearestPortKey(node, ports, refX, refY, keys) {
+  const st = node.style || {};
+  const w = Number(st.size && st.size[0]) || 100;
+  const h = Number(st.size && st.size[1]) || 50;
+  const nx = Number(st.x) || 0;
+  const ny = Number(st.y) || 0;
+  let best = null, bestD = Infinity;
+  for (const k of keys) {
+    const p = ports.find((q) => q.key === k);
+    if (!p) continue;
+    const ax = nx + (Number(p.placement[0]) - 0.5) * w;
+    const ay = ny + (Number(p.placement[1]) - 0.5) * h;
+    const d = (ax - refX) * (ax - refX) + (ay - refY) * (ay - refY);
+    if (d < bestD) { bestD = d; best = k; }
+  }
+  return best;
+}
+
+/** Representative-point routing for pointer edges that don't use a row port.
+ *
+ *  SOURCE port follows the field's concrete connection point (ANCHOR panel /
+ *  自动分配): 'vertical' (上下中点) leaves from the top/bottom midpoint facing
+ *  the target — and for multi-pointer left/right uses the uniformly-spaced
+ *  bottom pointer-array ports (pa0/pa1, …) so binary-tree left/right don't
+ *  collapse onto one point; 'horizontal' (左右中点) leaves from the side facing
+ *  the target; 'title' (标题栏) leaves from the title-bar midpoint.
+ *
+ *  TARGET port follows the global representative mode (VIS_CONFIG.pointerRep):
+ *    - 'sequential' (default): title-bar midpoint if the target's title is
+ *      visible, else the top/bottom midpoint facing the source.
+ *    - 'nearest': the closest of top/bottom/left/right midpoints (the title bar
+ *      is not given priority).
+ *  'horizontal' connections (e.g. next) always enter side-to-side: the target
+ *  side facing the source. */
+function resolvePointerEdgePorts(e, src, tgt) {
+  const srcSt = src.style || {}, tgtSt = tgt.style || {};
+  const srcPorts = Array.isArray(srcSt.ports) ? srcSt.ports : [];
+  const tgtPorts = Array.isArray(tgtSt.ports) ? tgtSt.ports : [];
+  const srcSet = new Set(srcPorts.map((p) => p.key));
+  const tgtSet = new Set(tgtPorts.map((p) => p.key));
+  const sx = Number(srcSt.x) || 0, sy = Number(srcSt.y) || 0;
+  const tx = Number(tgtSt.x) || 0, ty = Number(tgtSt.y) || 0;
+  const mode = VIS_CONFIG.pointerRep || 'sequential';
+  const fk = String(e?.data?.field_key || e?.data?.label || '');
+  const normFk = fk.replace(/::/g, '.').replace(/\[.*\]$/, '');
+  const rawAnchor = e?.data?._anchor;
+  const explicit = rawAnchor ? normalizeAnchorValue(rawAnchor) : null;
+  // Concrete connection point for this edge: explicit per-edge anchor (hidden
+  // fields) wins; else the field's panel config (auto-assigned or hand-picked).
+  const conn = explicit || getFieldAnchor(normFk);
+
+  // ── SOURCE port (where the edge leaves the source) ──
+  let sourcePort = null;
+  if (conn === 'horizontal') {
+    // Side connection (next / siblings): leave from the side facing the target.
+    sourcePort = tx >= sx ? 'sR' : 'sL';
+  } else if (conn === 'title') {
+    sourcePort = 'inT';
+  } else {
+    // 'vertical' (tree children): pointer-array ports (pa0, pa1, …) for
+    // binary-tree left/right — uniformly spaced bottom ports, so left/right
+    // don't collapse onto one point; otherwise the top/bottom midpoint facing
+    // the target.
+    if (e?.data?._pointerArrayPort) sourcePort = e.data._pointerArrayPort;
+    else sourcePort = ty >= sy ? 'inB' : 'inT';
+  }
+
+  // ── TARGET port (where the edge enters the target) ──
+  let targetPort = null;
+  if (conn === 'horizontal') {
+    // Sibling pointer (e.g. B+Tree next): connect side-to-side horizontally —
+    // enter the target on the side facing the source, so sibling arrows meet
+    // at the node sides instead of dropping onto the title/top.
+    targetPort = tx >= sx ? 'sL' : 'sR';
+  } else if (mode === 'nearest') {
+    targetPort = nearestPortKey(tgt, tgtPorts, sx, sy, ['inT', 'inB', 'sL', 'sR']);
+  } else {
+    if (nodeHasVisibleTitle(tgt)) targetPort = 'inT';
+    else targetPort = sy <= ty ? 'inT' : 'inB';  // top/bottom midpoint facing the source
+  }
+
+  if (sourcePort && targetPort && srcSet.has(sourcePort) && tgtSet.has(targetPort)) {
+    return { sourcePort, targetPort };
+  }
+  return null;
+}
+
 function resolvePortsForEdge(e, nodeMap) {
   const src = nodeMap.get(e.source);
   const tgt = nodeMap.get(e.target);
@@ -3173,22 +3698,34 @@ function resolvePortsForEdge(e, nodeMap) {
     };
   }
 
+  // ── Anchor / representative-point routing (hidden single-pointer edges,
+  //     or pointer fields without a rendered card row) ──
+  if (e.data && e.data._anchor) {
+    return resolvePointerEdgePorts(e, src, tgt);
+  }
+
   const refIndex = e.data ? e.data.refIndex : null;
   if (refIndex === null || refIndex === undefined) return null;
 
-  // Data-driven port resolution — reads portLayout from node style
+  // Data-driven port resolution — reads portLayout from node style.
   const pl = src?.style?.portLayout;
-  if (!pl || !Array.isArray(pl.entry) || !Array.isArray(pl.ref)) return null;
-
-  const sx = src.style?.x ?? 0, tx = tgt.style?.x ?? 0;
-  const sy = src.style?.y ?? 0, ty = tgt.style?.y ?? 0;
-  const neg = pl.direction === 'TB' ? (ty < sy) : (tx < sx);
-  const ref = pl.ref.find((r) => r.idx === refIndex);
-  if (!ref || !Array.isArray(ref.ports) || ref.ports.length < 2) return null;
-  return {
-    sourcePort: neg ? ref.ports[1] : ref.ports[0],
-    targetPort: neg ? pl.entry[1] : pl.entry[0],
-  };
+  if (pl && Array.isArray(pl.entry) && Array.isArray(pl.ref)) {
+    const sx = src.style?.x ?? 0, tx = tgt.style?.x ?? 0;
+    const sy = src.style?.y ?? 0, ty = tgt.style?.y ?? 0;
+    const neg = pl.direction === 'TB' ? (ty < sy) : (tx < sx);
+    const ref = pl.ref.find((r) => r.idx === refIndex);
+    if (ref && Array.isArray(ref.ports) && ref.ports.length >= 2) {
+      return {
+        sourcePort: neg ? ref.ports[1] : ref.ports[0],
+        targetPort: neg ? pl.entry[1] : pl.entry[0],
+      };
+    }
+  }
+  // Pointer edge without a resolvable row port (e.g. a binary-tree `left`/`right`
+  // whose field is not rendered as a card row) → representative-point routing so
+  // left/right leave from distinct sides and the target uses the mode's
+  // representative point (title-first in sequential mode).
+  return resolvePointerEdgePorts(e, src, tgt);
 }
 
 function updateEdgePorts(focusNodeId = null) {
@@ -3606,18 +4143,37 @@ function adaptNodesForTextFlow(graphData) {
     const className = getNodeClassName(st);
     const titleKey = `${className}.__title__`;
     const titleVisible = isFieldVisible(titleKey);
-
-    const titleRaw = titleVisible ? String(st.name || '') : '';
+    // "标题显示所属类型" (VIS_CONFIG.showSubtitle) independently controls the
+    // type name shown in the title column. The backend folds the type into the
+    // name ("root\n(BPlusNode)"); when the switch is off we strip that trailing
+    // line, and when the title bar itself is hidden we show just the type.
+    const sub = st.subtitle || className || '';
+    const showSub = VIS_CONFIG.showSubtitle && !!sub;
+    let titleRaw = '';
+    if (titleVisible) {
+      titleRaw = String(st.name || '');
+      if (!showSub) {
+        const lines = titleRaw.split('\n');
+        if (lines.length > 1 && lines[lines.length - 1] === '(' + sub + ')') {
+          lines.pop();
+          titleRaw = lines.join('\n');
+        }
+      }
+    }
+    // The title column exists only when the title bar is visible; the
+    // "标题显示所属类型" switch merely decorates a visible title and never
+    // brings back a title column on its own.
+    const hasTitle = titleVisible;
     // Wrap the title to the (capped) title column so a long class name like
     // "tree\n(HuffmanTreeeeee...)" renders on multiple lines inside the cell
     // instead of overflowing it. Parens in the label are already counted in
     // the string length.
-    let titleW = titleVisible
+    let titleW = hasTitle
       ? Math.max(60, Math.min(180, Math.ceil(Math.max(...titleRaw.split('\n').map((x) => x.length), 1) * 7 + 12)))
       : 0;
-    let titleMaxChars = titleVisible ? Math.max(4, Math.floor((titleW - 12) / 7)) : 0;
+    let titleMaxChars = hasTitle ? Math.max(4, Math.floor((titleW - 12) / 7)) : 0;
     let title = '';
-    if (titleVisible) {
+    if (hasTitle) {
       const titleLines2 = wrapTextToChars(titleRaw, titleMaxChars);
       const wrappedMax = Math.max(...titleLines2.map((x) => x.length), 1);
       titleW = Math.max(60, Math.min(180, Math.ceil(wrappedMax * 7 + 12)));
@@ -3764,38 +4320,67 @@ function adaptBTreeNodes(graphData) {
     for (const mf of metaFields) { gridNames.push(mf.name); gridValues.push(mf.value); }
     for (const kv of keyValues) { gridNames.push(''); gridValues.push(kv); }
     const numCells = metaFields.length + numKeys;
-    const w = Math.max(120, padX * 2 + numCells * colW);
-    const h = padY * 2 + (hasMeta ? 2 : 1) * rowH; // name+value rows or value-only
-    st.titleColW = 0;
-    st.fieldColW = colW;
-    st.gridNames = gridNames;
-    st.gridValues = gridValues;
-    st.gridRefs = [];
-    st.rowDisplayMode = hasMeta ? 'both' : 'value';
-    st.rows = gridValues.slice();
-    delete st.metaFields;
-    delete st.btreeMeta;
-    st.size = [w, h];
-    // Ports: entry at node centre-top/bottom, children at key gaps (0..numKeys).
-    // During a split the new root may briefly hold more children than keys
-    // (children are inserted before the mid key is promoted), so size the port
-    // list to the larger of (keys + 1) and (child count).
+    // Title column (Bug 3): when the type-title field is visible the title
+    // must occupy its own leading column instead of floating over the first
+    // key cell. adaptBTreeNodes previously forced titleColW=0 unconditionally,
+    // yet the card shape still drew the title text at the left edge — covering
+    // the first key(s). Allocate the column when the title is shown.
+    const btreeCls = getNodeClassName(st);
+    const btreeTitleVisible = btreeCls ? isFieldVisible(`${btreeCls}.__title__`) : false;
+    // Allocate the title column only when the title bar itself is shown; the
+    // "标题显示所属类型" switch only decorates a visible title.
+    const btreeHasTitle = btreeTitleVisible && !!st.name;
+    let titleColW = 0;
+    if (btreeHasTitle) {
+      const titleRawLines = String(st.name || '').split('\n');
+      titleColW = Math.max(50, Math.min(160, Math.ceil(Math.max(...titleRawLines.map(l => l.length), 1) * 7 + 12)));
+    }
+    // Children may briefly outnumber keys during a split/merge (children are
+    // inserted before the mid key is promoted). Size the port list to the
+    // larger of (keys + 1) and (child count) so no child pointer is dropped.
     let maxChildIdx = -1;
     rows.forEach((r, i) => {
       const m = String(names[i] ?? (r && r.name) ?? '').match(childReIdx);
       if (m) maxChildIdx = Math.max(maxChildIdx, parseInt(m[1], 10));
     });
     const portCount = Math.max(numKeys + 1, maxChildIdx + 1);
+    // Width must fit the title column AND the rightmost key-gap port, otherwise
+    // a split-in-progress node's ports overflow the card (Bug 5: a `pt3/pb3`
+    // landing at x=1.33). Also stop stretching single-key nodes to the old 120
+    // minimum — that dead space made a one-key node look two columns wide
+    // (Bug 4). The 60 floor keeps an empty (0-key) node a small, sensible card.
+    const widthCells = Math.max(numCells, metaFields.length + portCount - 1);
+    const w = Math.max(60, padX * 2 + titleColW + widthCells * colW);
+    const h = padY * 2 + (hasMeta ? 2 : 1) * rowH; // name+value rows or value-only
+    st.titleColW = titleColW;
+    st.fieldColW = colW;
+    st.gridNames = gridNames;
+    st.gridValues = gridValues;
+    st.gridRefs = [];
+    // Honour the global row-display mode: when the user chose 仅值 / 仅字段名,
+    // a visible meta field (e.g. `next`) must NOT force the two-row
+    // "name + value" layout — it should stay value-only (or name-only). Only
+    // the default "字段名 = 值" mode expands to two rows when meta fields are
+    // visible.
+    const gRowMode = VIS_CONFIG.rowDisplayMode || 'both';
+    const effRowMode = (gRowMode === 'both') ? (hasMeta ? 'both' : 'value') : gRowMode;
+    const visRows = (effRowMode !== 'value' ? 1 : 0) + (effRowMode !== 'key' ? 1 : 0);
+    st.rowDisplayMode = effRowMode;
+    st.rows = gridValues.slice();
+    delete st.metaFields;
+    delete st.btreeMeta;
+    st.size = [w, padY * 2 + Math.max(1, visRows) * rowH];
+    // Ports: entry at node centre-top/bottom, children at key gaps (0..numKeys).
     const ports = [
       { key: 'inT', placement: [0.5, 0], r: 0, fill: 'transparent', stroke: 'transparent' },
       { key: 'inB', placement: [0.5, 1], r: 0, fill: 'transparent', stroke: 'transparent' },
     ];
     const refEntries = [];
-    // Key-gap ports sit between the keys; when meta columns precede the keys,
-    // the gap x must be offset past them.
+    // Key-gap ports sit between the keys; when meta columns (or a title column)
+    // precede the keys, the gap x must be offset past them.
     const gapOffset = metaFields.length;
     for (let i = 0; i < portCount; i++) {
-      const frac = (padX + (gapOffset + i) * colW) / w;
+      const frac = (padX + titleColW + (gapOffset + i) * colW) / w;
       ports.push({ key: 'pt' + i, placement: [frac, 0], r: 0, fill: 'transparent', stroke: 'transparent' });
       ports.push({ key: 'pb' + i, placement: [frac, 1], r: 0, fill: 'transparent', stroke: 'transparent' });
       refEntries.push({ idx: i, ports: ['pb' + i, 'pt' + i] });
@@ -4227,8 +4812,62 @@ function renderStackPanel(stackData, stepIndex) {
   syncStackHighlights();
 }
 
-function filterHiddenNodes(graphData) {
-  if (!HIDDEN_NODES.size) return graphData;
+/** Ensure every node exposes the side ports (sL/sR) used by anchor edges, so
+ *  hidden single pointers (e.g. B+Tree next) can leave from the node sides. */
+function ensureSidePorts(nodes) {
+  for (const n of nodes) {
+    const st = n.style || {};
+    if (!Array.isArray(st.ports)) continue;
+    if (st.ports.some(p => p.key === 'sL' || p.key === 'sR')) continue;
+    st.ports = st.ports.concat([
+      { key: 'sL', placement: [0, 0.5], r: 0, fill: 'transparent', stroke: 'transparent' },
+      { key: 'sR', placement: [1, 0.5], r: 0, fill: 'transparent', stroke: 'transparent' },
+    ]);
+  }
+}
+
+/** Pointer array: give pointer fields that are NOT rendered as card rows (so
+ *  they have no per-row port) a set of uniformly-spaced bottom ports, and assign
+ *  each pointer edge its index-ordered port. This mirrors how B+Tree / B-Tree
+ *  child pointers emit from key-gap ports, so binary-tree left/right leave from
+ *  distinct, evenly-spaced bottom points instead of collapsing onto one point.
+ *  `next` (sibling) pointers stay horizontal and are excluded. Nodes that
+ *  already expose per-row/key-gap ports (B+Tree children via adaptBTreeNodes,
+ *  or normal card rows) are left untouched. */
+function ensurePointerArrayPorts(graphData) {
+  const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+  if (!nodes.length || !edges.length) return;
+  for (const n of nodes) {
+    const st = n.style || {};
+    if (!Array.isArray(st.ports)) continue;
+    const pl = st.portLayout;
+    if (pl && Array.isArray(pl.ref) && pl.ref.length > 0) continue;
+    const out = edges.filter((e) =>
+      String(e?.source) === String(n.id) &&
+      e?.data?.field_key && e?.data?.refIndex != null);
+    if (out.length < 2) continue;
+    const ptrEdges = out.filter((e) => {
+      const fn = String(e.data.field_key).split(/[.:]/).pop().replace(/\[.*/, '').toLowerCase();
+      return fn !== 'next';
+    });
+    if (ptrEdges.length < 2) continue;
+    ptrEdges.sort((a, b) => (a.data.refIndex || 0) - (b.data.refIndex || 0));
+    const ports = st.ports.slice();
+    const PAD = 0.1;
+    for (let i = 0; i < ptrEdges.length; i++) {
+      const frac = PAD + (1 - 2 * PAD) * (i + 0.5) / ptrEdges.length;
+      const key = 'pa' + i;
+      if (!ports.some((p) => p.key === key)) {
+        ports.push({ key, placement: [frac, 1], r: 0, fill: 'transparent', stroke: 'transparent' });
+      }
+      ptrEdges[i].data._pointerArrayPort = key;
+    }
+    st.ports = ports;
+  }
+}
+
+function filterHiddenNodes(graphData) {  if (!HIDDEN_NODES.size) return graphData;
   const hiddenSet = new Set(HIDDEN_NODES.keys());
   const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
   
@@ -4457,13 +5096,14 @@ function buildNodeTypeRegistry() {
           if (!entry.fields.includes(key)) entry.fields.push(key);
         }
       }
-      // Add __title__ as a hideable pseudo-field
+      // Add __title__ as a hideable pseudo-field. Default: HIDDEN (users opt
+      // in per node type); a persisted style / local override still wins.
       const titleKey = `${className}.__title__`;
       if (!group.some(e => e.key === titleKey)) {
         group.push({ key: titleKey, className, fieldName: '标题', kind: 'title' });
       }
       if (!NODE_TYPE_VISIBILITY.has(titleKey)) {
-        NODE_TYPE_VISIBILITY.set(titleKey, 'visible');
+        NODE_TYPE_VISIBILITY.set(titleKey, 'self');
       }
     }
   }
@@ -4700,6 +5340,7 @@ function applyNodeTypeVisibility(graphData) {
     let forceVisible = false;
     let orphan = false;
     let parentCenter = false;
+    let anchorEdge = false;
     if (hiddenKey && !isFieldVisible(hiddenKey)) {
       const state = NODE_TYPE_VISIBILITY.get(hiddenKey);
       const baseMatch = hiddenKey.match(/^(.+?)\[.*\]$/);
@@ -4715,10 +5356,14 @@ function applyNodeTypeVisibility(graphData) {
         forceVisible = true;
         parentCenter = true;
       } else if (VIS_CONFIG.uniformEdgesEnabled && stDef && stDef.uniformEdges) {
-        // ── Uniform-edge mode: orphaned edges survive, positioned uniformly ──
+        // ── Uniform-edge mode: hidden edges survive, positioned per type ──
         if (!isCascade) {
           forceVisible = true;
-          orphan = true;  // will be placed by applyUniformEdgePorts later
+          if (hiddenKey.includes('[')) {
+            orphan = true;  // container (children[i]) → uniform distribution
+          } else {
+            anchorEdge = true;  // single pointer (next/left/right/parent) → anchor midpoint
+          }
         }
         // cascade mode: edge is hidden (no proxy redirect)
       } else {
@@ -4755,6 +5400,11 @@ function applyNodeTypeVisibility(graphData) {
     // Layout-exempt: the field is visible but its edges must not drive layout.
     if (effectiveKey && isFieldNoLayout(effectiveKey) && edge && typeof edge === 'object') {
       edge.data = { ...(edge?.data || {}), _noLayout: true };
+    }
+    // Anchor for hidden single-pointer edges: leave from the node midpoint
+    // chosen by the field's anchor (row|title|top|bottom|left|right|auto).
+    if (anchorEdge && effectiveKey && edge && typeof edge === 'object') {
+      edge.data = { ...(edge?.data || {}), _anchor: resolveAnchorForField(effectiveKey) };
     }
     if (parentCenter) {
       // Parent pointer: keep the edge, resolve its routing in the post-pass.
@@ -4978,6 +5628,8 @@ function applyNodeTypeVisibility(graphData) {
     nextStyle.refRowIndices = keptRefRowIndices;
     nextStyle.refLabelMap = keptRefLabelMap;
 
+    // Subtitle only shows when the title bar is visible AND the global switch
+    // is on (a hidden title never leaves a bare type label).
     nextStyle.showSubtitle = nextStyle.showSubtitle && titleVisible && VIS_CONFIG.showSubtitle;
     nextStyle.name = effectiveName;
 
@@ -5164,7 +5816,9 @@ function renderStepImpl(ri, displayIndex) {
   const typeFilteredGraph = visResult.data;
   const adaptedGraph = adaptNodesForTextFlow(typeFilteredGraph);
   adaptBTreeNodes(adaptedGraph);
+  ensurePointerArrayPorts(adaptedGraph);
   const graphData = filterHiddenNodes(adaptedGraph);
+  ensureSidePorts(graphData.nodes);
 
   // Uniform-edge port placement (must run AFTER adaptNodesForTextFlow
   // because it overwrites the ports array for vertical-layout nodes)
@@ -5198,9 +5852,42 @@ function renderStepImpl(ri, displayIndex) {
     const flowChanged = graph._dsvisLastTextFlow !== undefined && graph._dsvisLastTextFlow !== VIS_CONFIG.textFlow;
     graph._dsvisLastRowMode = VIS_CONFIG.rowDisplayMode;
     graph._dsvisLastTextFlow = VIS_CONFIG.textFlow;
-    if (rowModeChanged || flowChanged) {
+    // G6's dagre layout is history-dependent: its internal node map is ordered
+    // by *first-seen* id, and on an in-place setData it reuses the previous
+    // layout result as input, so stepping one step at a time (nodes
+    // added/removed incrementally) can lay out the SAME step differently than
+    // a direct "jump from step 0" (nodes added in bulk) — nodes landed in
+    // different ranks, overlapped, or blank cards appeared mid-playback. Tree
+    // structures that run dagre (B-Tree / B+ / n-ary) therefore rebuild the
+    // graph on every step so G6 always lays out from the deterministic data
+    // order — stepping then matches a fresh "jump" render exactly.
+    //
+    // The rebuild destroys the canvas, which would blank the viewport for a
+    // frame or two while the new layout runs. To avoid that visual flash we
+    // freeze the current frame as an overlay (freezeGraphFrame) before
+    // destroying, then lift it (unfreezeGraphFrame) once the new step has
+    // laid out and fitted — the previous frame persists right up to the moment
+    // the new one is ready instead of a white blink.
+    const isDagreTree = VIS_CONFIG.structureType === 'btree' ||
+      VIS_CONFIG.structureType === 'bplustree' ||
+      VIS_CONFIG.structureType === 'nary-tree';
+    if (rowModeChanged || flowChanged || isDagreTree) {
+      const freeze = freezeGraphFrame();
       resetGraphInstance();
       initGraph(graphData);
+      // Lift the frozen frame once the new step has laid out and fitted.
+      if (freeze && typeof graph?.once === 'function') {
+        const liftFreeze = () => {
+          requestAnimationFrame(() => requestAnimationFrame(() => unfreezeGraphFrame()));
+        };
+        graph.once('afterlayout', liftFreeze);
+        graph.once('afterrender', liftFreeze);
+        // Safety net: never leave a stale overlay behind even if a layout
+        // event is missed during rapid stepping.
+        setTimeout(() => unfreezeGraphFrame(), 3000);
+      } else if (freeze) {
+        unfreezeGraphFrame();
+      }
     } else {
       const prepared = prepareGraphForLayout(graphData, getGraphSize());
       const nextLayout = prepared.layout;
@@ -5887,10 +6574,12 @@ function syncSettingsPanel() {
       list.appendChild(proxyGroup);
     }
   }
-  // ── Layout control panel ──
-  // Independent from visibility: which pointer (ref) fields decide the layout.
-  // Untick a field to keep its arrows drawn but exclude its edges from layout.
-  renderLayoutControlPanel(list);
+  // ── Pointer management panel ──
+  // Unified pointer options (layout participation + anchor), across all pointer
+  // (ref) fields. Untick "participate in layout" to keep arrows but exclude edges
+  // from layout; the anchor selects where a hidden field's edges attach (row port,
+  // title bar, or a node-side midpoint).
+  renderPointerPanel(list);
 }
 
 /** Render the "布局控制" panel: a checkbox per pointer (ref) field controlling
@@ -5898,7 +6587,7 @@ function syncSettingsPanel() {
  *  Pointer fields are collected from the script's actual edges (field_key /
  *  label), normalised to their base key (children[0] → children), because the
  *  node-type registry marks container parents as 'field' not 'ref'. */
-function renderLayoutControlPanel(list) {
+function renderPointerPanel(list) {
   const seen = new Set();
   const rows = [];
   for (const step of STEPS) {
@@ -5919,34 +6608,84 @@ function renderLayoutControlPanel(list) {
   }
   if (!rows.length) return;
   const group = document.createElement('div');
-  group.className = 'node-type-group layout-exempt-group';
+  group.className = 'node-type-group pointer-group';
   group.style.cssText = 'border-left:3px solid #66bb6a;';
   const header = document.createElement('div');
   header.className = 'node-type-group-header';
   const title = document.createElement('span');
   title.className = 'node-type-group-title';
-  title.textContent = '布局控制';
+  title.textContent = '指针';
   header.appendChild(title);
   const sub = document.createElement('span');
   sub.className = 'node-type-group-subtitle';
-  sub.textContent = '指针是否参与布局';
+  sub.textContent = '布局与端口';
   header.appendChild(sub);
   group.appendChild(header);
   const items = document.createElement('div');
-  items.className = 'node-type-items layout-exempt-items';
-  items.style.cssText = 'flex-direction:column;align-items:flex-start;gap:4px;';
+  items.className = 'node-type-items pointer-items';
+  items.style.cssText = 'flex-direction:column;align-items:stretch;gap:6px;';
+  // ── Global representative-point mode ──
+  // Controls where pointer edges attach to a node (the node's "representative
+  // point"). Sequential keeps a fixed priority (title bar → top/bottom midpoint
+  // → left/right midpoint) so edges don't flip when nodes are drag-sorted;
+  // nearest picks the geometrically closest of the top/bottom/left/right
+  // midpoints (the title bar is not preferred).
+  const modeRow = document.createElement('div');
+  modeRow.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:11px;color:#24406f;';
+  const modeLabel = document.createElement('span');
+  modeLabel.textContent = '代表点';
+  modeLabel.style.cssText = 'flex:1;white-space:nowrap;';
+  const modeSel = document.createElement('select');
+  modeSel.style.cssText = 'font-size:10px;padding:1px 2px;';
+  modeSel.title = '指针边连接到节点的代表点：顺序模式（标题栏→上下中点→左右中点，拖动排序稳定）或优先最近（最近的上下左右中点，不考虑标题栏）';
+  const modeOpts = [['sequential', '顺序模式'], ['nearest', '优先最近']];
+  for (const [v, t] of modeOpts) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = t;
+    modeSel.appendChild(o);
+  }
+  modeSel.value = VIS_CONFIG.pointerRep || 'sequential';
+  modeSel.addEventListener('change', () => {
+    VIS_CONFIG.pointerRep = modeSel.value;
+    saveVisConfig(VIS_CONFIG);
+    applyVisConfig();
+  });
+  modeRow.appendChild(modeLabel);
+  modeRow.appendChild(modeSel);
+  const autoBtn = document.createElement('button');
+  autoBtn.textContent = '自动分配';
+  autoBtn.type = 'button';
+  autoBtn.style.cssText = 'font-size:10px;padding:1px 6px;cursor:pointer;white-space:nowrap;background:#eef4ff;border:1px solid #b8c9e8;border-radius:3px;color:#24406f;';
+  autoBtn.title = '按字段角色分配具体连接点：子树 left/right/children → 上下中点，兄弟 next → 左右中点，容器 root/parent → 标题栏，其余 → 上下中点';
+  autoBtn.addEventListener('click', () => autoAssignPointerConnections());
+  modeRow.appendChild(autoBtn);
+  items.appendChild(modeRow);
   for (const r of rows) {
-    const label = document.createElement('label');
-    label.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;color:#24406f;cursor:pointer;';
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:11px;color:#24406f;';
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = !isFieldNoLayout(r.key);
+    cb.title = '参与布局';
     cb.addEventListener('change', () => setFieldLayoutExempt(r.key, !cb.checked));
-    label.appendChild(cb);
-    const span = document.createElement('span');
-    span.textContent = r.key;
-    label.appendChild(span);
-    items.appendChild(label);
+    row.appendChild(cb);
+    const name = document.createElement('span');
+    name.textContent = r.key;
+    name.style.cssText = 'flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    row.appendChild(name);
+    const sel = document.createElement('select');
+    sel.style.cssText = 'font-size:10px;padding:1px 2px;';
+    sel.title = '该字段指针边在节点上的连接点：上下中点（按目标位置自动选上/下）、左右中点（按目标位置自动选左/右）、标题栏';
+    const opts = [['vertical', '上下中点'], ['horizontal', '左右中点'], ['title', '标题栏']];
+    for (const [v, t] of opts) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = t;
+      sel.appendChild(o);
+    }
+    sel.value = getFieldAnchor(r.key);
+    sel.addEventListener('change', () => setFieldAnchor(r.key, sel.value));
+    row.appendChild(sel);
+    items.appendChild(row);
   }
   group.appendChild(items);
   list.appendChild(group);
@@ -6124,7 +6863,8 @@ function createAgentAPI() {
     },
     setTextFlow(flow) {
       if (!['horizontal', 'vertical'].includes(flow)) throw new Error(`Invalid textFlow: ${flow}`);
-      VIS_CONFIG.textFlow = flow;
+      // Horizontal text flow is no longer supported — silently use vertical.
+      VIS_CONFIG.textFlow = 'vertical';
       applyVisConfig();
       DSVisLogger.info('agent', 'text-flow-updated', { flow });
       return this.getPresentationConfig();
@@ -6420,7 +7160,7 @@ DSVisLogger.info('agent', 'agent-api-ready', { methods: Object.keys(window.DSVis
       '🚫 你唯一能做的事：调用下方列出的工具函数，然后用 done 回答用户。',
       '🚫 不要尝试观察页面、滚动、点击——这些工具不存在。',
       '',
-      '⚡ 工作流（最多 2 步完成）：',
+      '工作流（最多 2 步完成）：',
       '1. 如需了解当前状态 → 调 runtime.getState',
       '2. 立即调 done 回答用户。把回答写在 done 的 text 参数里。',
       '',
@@ -6785,13 +7525,14 @@ DSVisLogger.info('agent', 'agent-api-ready', { methods: Object.keys(window.DSVis
 
   // ── presentation (10) ──
   dsvis.define('presentation.setTextFlow', {
-    description: '设置文本方向（horizontal=横向, vertical=纵向）',
-    params: { flow: { type: 'string', description: '"horizontal" 或 "vertical"' } },
+    description: '设置文本方向（仅支持 vertical；horizontal 将静默按纵向处理）',
+    params: { flow: { type: 'string', description: '"vertical"（horizontal 不再支持）' } },
     handler(args) {
-      if (!['horizontal', 'vertical'].includes(args.flow)) throw new Error('flow 必须为 horizontal 或 vertical');
-      VIS_CONFIG.textFlow = args.flow;
+      if (!['horizontal', 'vertical'].includes(args.flow)) throw new Error('flow 必须为 vertical（horizontal 已不再支持）');
+      // Horizontal text flow is no longer supported — silently use vertical.
+      VIS_CONFIG.textFlow = 'vertical';
       applyVisConfig();
-      return `文本方向已设为 ${args.flow}`;
+      return '文本方向已设为 vertical';
     },
   });
   dsvis.define('presentation.showPanel', {
@@ -7108,7 +7849,7 @@ function doRestart() { restartDebugSession(); }
 
     // ② Show "thinking..." bubble with animated dots
     var thinkId = 'think-' + Date.now();
-    chat.innerHTML += '<div id="' + thinkId + '" style="color:#888;margin:4px 0;font-style:italic;">🤖 思考中<span class="think-dots"></span></div>';
+    chat.innerHTML += '<div id="' + thinkId + '" style="color:#888;margin:4px 0;font-style:italic;">思考中<span class="think-dots"></span></div>';
     chat.scrollTop = chat.scrollHeight;
 
     // Animate the dots: "." → ".." → "..." → loop
@@ -7203,6 +7944,15 @@ if (FILE_STYLE && Array.isArray(FILE_STYLE.layoutExempt)) {
     if (leRaw) { const _arr0 = JSON.parse(leRaw); LAYOUT_EXEMPT_KEYS.clear(); for (const _k0 of _arr0) LAYOUT_EXEMPT_KEYS.add(_k0); }
   } catch(_) {}
 }
+if (FILE_STYLE && FILE_STYLE.anchor && typeof FILE_STYLE.anchor === 'object') {
+  ANCHOR.clear();
+  for (const _a0 in FILE_STYLE.anchor) ANCHOR.set(_a0, FILE_STYLE.anchor[_a0]);
+} else {
+  try {
+    const anRaw = localStorage.getItem('dsvis:anchor');
+    if (anRaw) { const _aObj = JSON.parse(anRaw); ANCHOR.clear(); for (const _k1 in _aObj) ANCHOR.set(_k1, _aObj[_k1]); }
+  } catch(_) {}
+}
 if (FILE_STYLE && Array.isArray(FILE_STYLE.layerEdges)) {
   LAYER_EDGES = new Set(FILE_STYLE.layerEdges);
 } else {
@@ -7280,12 +8030,13 @@ function applyStyleLocalFallback() {
     if (raw) cfg = JSON.parse(raw);
   } catch (_) {}
   if (!cfg || typeof cfg !== 'object') return;
-  if (cfg.layout && cfg.layout.rankdir) VIS_CONFIG.textFlow = cfg.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
+  if (cfg.layout && cfg.layout.rankdir) VIS_CONFIG.textFlow = 'vertical'; // horizontal no longer supported
   if (cfg.showSubtitle !== undefined) VIS_CONFIG.showSubtitle = cfg.showSubtitle;
   if (cfg.structureType) VIS_CONFIG.structureType = cfg.structureType;
   if (cfg.layerEdgeKeys) VIS_CONFIG.layerEdgeKeys = { ...cfg.layerEdgeKeys };
   if (cfg.uniformEdgesEnabled !== undefined) VIS_CONFIG.uniformEdgesEnabled = cfg.uniformEdgesEnabled;
   if (cfg.rowDisplayMode) VIS_CONFIG.rowDisplayMode = cfg.rowDisplayMode;
+  if (cfg.pointerRep) VIS_CONFIG.pointerRep = cfg.pointerRep;
   if (cfg.parentFieldKey !== undefined) VIS_CONFIG.parentFieldKey = cfg.parentFieldKey;
   if (cfg.graphViewer && typeof cfg.graphViewer === 'object') {
     VIS_CONFIG.graphViewer = { ...(VIS_CONFIG.graphViewer || {}), ...cfg.graphViewer };
@@ -7305,6 +8056,10 @@ function applyStyleLocalFallback() {
   if (Array.isArray(cfg.layoutExempt)) {
     LAYOUT_EXEMPT_KEYS.clear();
     for (const k of cfg.layoutExempt) LAYOUT_EXEMPT_KEYS.add(k);
+  }
+  if (cfg.anchor && typeof cfg.anchor === 'object') {
+    ANCHOR.clear();
+    for (const k in cfg.anchor) ANCHOR.set(k, cfg.anchor[k]);
   }
 }
 
