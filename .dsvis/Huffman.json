@@ -1,13 +1,13 @@
 {
   "version": 1,
-  "structureType": "binary-tree",
+  "structureType": "other",
   "edgeProxy": {},
   "visibility": {
     "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.root": "visible",
-    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeee\neeeeeeeeeeeee.__title__": "visible",
+    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.__title__": "visible",
     "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.codes": "visible",
     "HuffmanNode.char": "visible",
-    "HuffmanNode.__title__": "self",
+    "HuffmanNode.__title__": "visible",
     "HuffmanNode.freq": "visible",
     "HuffmanNode.left": "self",
     "HuffmanNode.right": "self",
@@ -17,8 +17,8 @@
     "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.codes['F']": "self",
     "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.codes['E']": "self",
     "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.codes['D']": "self",
+    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeee\neeeeeeeeeeeee.__title__": "visible",
     "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\neeeeeee.__title__": "visible",
-    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.__title__": "visible",
     "HuffmanTree.root": "visible",
     "HuffmanTree.__title__": "visible",
     "HuffmanTree.codes": "visible",
@@ -31,20 +31,19 @@
   },
   "titleField": {},
   "layoutExempt": [],
-  "layerEdges": [
-    "left",
-    "right"
-  ],
-  "layerEdgeKeys": {
-    "left": "left",
-    "right": "right"
+  "anchor": {
+    "HuffmanNode.right": "title",
+    "HuffmanTreeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.root": "title"
   },
+  "layerEdges": [],
+  "layerEdgeKeys": {},
   "layout": {
     "rankdir": "TB"
   },
   "showSubtitle": true,
   "uniformEdgesEnabled": true,
   "rowDisplayMode": "both",
+  "pointerRep": "sequential",
   "parentFieldKey": "",
   "graphViewer": {
     "valueField": "",

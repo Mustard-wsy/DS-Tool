@@ -78,12 +78,6 @@ __STYLES__
       </div>
       <div id="settingsBody">
         <div class="settings-row">
-          <span>文本方向</span>
-          <select id="settingsTextFlow">
-            <option value="vertical">纵向</option>
-          </select>
-        </div>
-        <div class="settings-row">
           <span>行显示</span>
           <select id="settingsRowDisplay">
             <option value="both">字段名 = 值</option>
@@ -185,9 +179,11 @@ const NODE_TYPE_VISIBILITY = new Map();  // Map<className.fieldName, state>
 // Fields whose edges render (arrows shown) but must NOT drive the layout.
 // Controlled by the "指针" panel; independent of visibility.
 const LAYOUT_EXEMPT_KEYS = new Set();
-// Per-field anchor for pointer edges (e.g. B+Tree next): 'row'(default)|
-// 'title'|'top'|'bottom'|'left'|'right'|'auto'. Unified with LAYOUT_EXEMPT_KEYS
-// under the "指针" management panel.
+// Per-field connection point for pointer edges (e.g. B+Tree next):
+// 'vertical' (上下中点) | 'horizontal' (左右中点) | 'title' (标题栏). Unified with
+// LAYOUT_EXEMPT_KEYS under the "指针" management panel. Legacy values
+// ('top'/'bottom'/'v-auto'→vertical, 'left'/'right'/'h-auto'→horizontal) are
+// normalised on read via normalizeAnchorValue; 'row'/'auto' count as unset.
 const ANCHOR = new Map();
 const BIND_GROUP_REGISTRY = new Map();   // Map<className, [{groupName, fields: [key]}]>
 // EDGE_PROXY: "Type.refField" → { proxy: "Type.valueField", ratio: number|'auto', includeEnds: boolean }
@@ -270,27 +266,64 @@ function setFieldLayoutExempt(key, exempt) {
   syncSettingsPanel();
   renderStep(current);
 }
-/** Set how a pointer field's hidden edges anchor to its node:
- *  'row'(default, visible→row port) | 'title' | 'top' | 'bottom' | 'left' | 'right' | 'auto'. */
+/** Set a pointer field's concrete connection point on its node:
+ *  'vertical' (上下中点) | 'horizontal' (左右中点) | 'title' (标题栏). */
 function setFieldAnchor(key, anchor) {
-  if (anchor && anchor !== 'row') ANCHOR.set(key, anchor);
+  if (anchor && anchor !== 'row' && anchor !== 'auto') ANCHOR.set(key, anchor);
   else ANCHOR.delete(key);
   persistAnchor();
   syncSettingsPanel();
   renderStep(current);
 }
-function getFieldAnchor(key) {
-  return ANCHOR.get(key) || 'row';
+/** Normalise legacy anchor values to the current concrete set:
+ *  'vertical' | 'horizontal' | 'title' (上下中点 / 左右中点 / 标题栏). */
+function normalizeAnchorValue(v) {
+  if (v === 'top' || v === 'bottom' || v === 'v-auto') return 'vertical';
+  if (v === 'left' || v === 'right' || v === 'h-auto') return 'horizontal';
+  if (v === 'vertical' || v === 'horizontal' || v === 'title') return v;
+  return null;  // 'row'/'auto'/unknown → treat as unset
 }
-/** Resolve a pointer field's anchor for hidden edges.
- *  Explicit config wins; else preset by layout role:
- *    - layout-deciding pointer → 'v-auto' (top/bottom midpoint by target y)
- *    - layout-exempt / side pointer (e.g. next) → 'h-auto' (left/right by target x)
- *  Explicit 'auto' behaves like the preset. */
+/** Natural connection point for a pointer field (what the ⚡自动分配 button
+ *  assigns): tree children → 上下中点, sibling (next) → 左右中点, container
+ *  root/parent → 标题栏, everything else → 上下中点. */
+function defaultFieldConnection(key) {
+  const fn = String(key).split('.').pop().replace(/\[.*/, '').toLowerCase();
+  if (fn === 'next') return 'horizontal';
+  if (fn === 'left' || fn === 'right' || fn === 'children') return 'vertical';
+  if (fn === 'root' || fn === 'parent') return 'title';
+  return 'vertical';
+}
+function getFieldAnchor(key) {
+  const norm = ANCHOR.has(key) ? normalizeAnchorValue(ANCHOR.get(key)) : null;
+  return norm || defaultFieldConnection(key);
+}
+/** Resolve a pointer field's concrete connection point for its edges:
+ *  'vertical' | 'horizontal' | 'title' — the exact side (top vs bottom, left vs
+ *  right) is picked automatically at draw time from relative geometry. */
 function resolveAnchorForField(key) {
-  const explicit = getFieldAnchor(key);
-  if (explicit !== 'row') return explicit;
-  return isFieldNoLayout(key) ? 'h-auto' : 'v-auto';
+  return getFieldAnchor(key);
+}
+/** Assign every pointer field its natural concrete connection point (the ⚡自动
+ *  分配 button): tree children → 上下中点, next → 左右中点, root/parent → 标题栏. */
+function autoAssignPointerConnections() {
+  const seen = new Set();
+  for (const step of STEPS) {
+    const g = step && step.graph;
+    if (!g || !Array.isArray(g.edges)) continue;
+    for (const e of g.edges) {
+      const raw = String(e?.data?.field_key || e?.data?.label || '').trim();
+      if (!raw) continue;
+      const key = raw.replace(/::/g, '.');
+      const base = key.replace(/\[.*\]$/, '');
+      if (!base.includes('.')) continue;
+      if (seen.has(base)) continue;
+      seen.add(base);
+      ANCHOR.set(base, defaultFieldConnection(base));
+    }
+  }
+  persistAnchor();
+  syncSettingsPanel();
+  renderStep(current);
 }
 function loadVisibility() {
   // 1. Persisted per-script style file (authoritative — not localStorage).
@@ -332,6 +365,7 @@ function exportCurrentConfig() {
     showSubtitle: VIS_CONFIG.showSubtitle,
     uniformEdgesEnabled: VIS_CONFIG.uniformEdgesEnabled,
     rowDisplayMode: VIS_CONFIG.rowDisplayMode,
+    pointerRep: VIS_CONFIG.pointerRep,
     // Extra knobs that were missing from the export (graph viewer + parent
     // pointer field) so a copied style fully restores the page it came from.
     parentFieldKey: VIS_CONFIG.parentFieldKey,
@@ -351,6 +385,7 @@ function importConfig(jsonText) {
   if (cfg.showSubtitle !== undefined) VIS_CONFIG.showSubtitle = cfg.showSubtitle;
   if (cfg.uniformEdgesEnabled !== undefined) VIS_CONFIG.uniformEdgesEnabled = cfg.uniformEdgesEnabled;
   if (cfg.rowDisplayMode) VIS_CONFIG.rowDisplayMode = cfg.rowDisplayMode;
+  if (cfg.pointerRep) VIS_CONFIG.pointerRep = cfg.pointerRep;
   if (cfg.structureType) VIS_CONFIG.structureType = cfg.structureType;
   if (cfg.layerEdgeKeys) VIS_CONFIG.layerEdgeKeys = { ...cfg.layerEdgeKeys };
   if (cfg.parentFieldKey !== undefined) VIS_CONFIG.parentFieldKey = cfg.parentFieldKey;
@@ -533,6 +568,7 @@ const DEFAULT_VIS_CONFIG = {
   layerEdgeKeys: {},
   uniformEdgesEnabled: true,
   rowDisplayMode: 'both',  // 'both' | 'key' | 'value' — control what part of each field row is shown
+  pointerRep: 'sequential', // 'sequential' | 'nearest' — how pointer edges pick a node's representative point
   parentFieldKey: '',     // '' = use STRUCTURE_TYPES[type].parentField (e.g. 'parent')
   // Independent graph-displayer settings (structureType === 'graph').
   graphViewer: {
@@ -564,6 +600,7 @@ function loadVisConfig() {
     if (FILE_STYLE.layerEdgeKeys) merged.layerEdgeKeys = { ...FILE_STYLE.layerEdgeKeys };
     if (FILE_STYLE.uniformEdgesEnabled !== undefined) merged.uniformEdgesEnabled = FILE_STYLE.uniformEdgesEnabled;
     if (FILE_STYLE.rowDisplayMode) merged.rowDisplayMode = FILE_STYLE.rowDisplayMode;
+    if (FILE_STYLE.pointerRep) merged.pointerRep = FILE_STYLE.pointerRep;
     if (FILE_STYLE.parentFieldKey !== undefined) merged.parentFieldKey = FILE_STYLE.parentFieldKey;
     if (FILE_STYLE.graphViewer && typeof FILE_STYLE.graphViewer === 'object') {
       merged.graphViewer = { ...DEFAULT_VIS_CONFIG.graphViewer, ...FILE_STYLE.graphViewer };
@@ -1794,13 +1831,17 @@ function computeAdaptiveLayout(graphData, viewport = null) {
     const _s = (d && d.style && d.style.size) || (d && d.data && d.data.size) || (d && d.size);
     return Array.isArray(_s) && _s.length >= 2 ? [_s[0], _s[1]] : [60, 40];
   };
+  // Horizontal (same-rank) spacing is scaled to 2/3 of the computed value so
+  // sibling nodes sit closer together; a small floor keeps them from touching.
+  const H_GAP_SCALE = 2 / 3;
+  const H_GAP_MIN = 28;
 
   if (!metrics.nodes.length) {
     return {
       type: 'dagre',
       rankdir: rankdir,
       nodeSize: dagreNodeSize,
-      nodesep: rankdir === 'TB' ? 110 : 80,
+      nodesep: rankdir === 'TB' ? Math.round(110 * H_GAP_SCALE) : 80,
       ranksep: rankdir === 'TB' ? 110 : 110,
     };
   }
@@ -1810,8 +1851,8 @@ function computeAdaptiveLayout(graphData, viewport = null) {
       type: 'dagre',
       rankdir: rankdir,
       nodeSize: dagreNodeSize,
-      nodesep: rankdir === 'TB' 
-        ? Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 44)
+      nodesep: rankdir === 'TB'
+        ? Math.max(Math.round(Math.max(metrics.boundaryGapX + LAYOUT_PRESET.dagreExtraX, 44) * H_GAP_SCALE), H_GAP_MIN)
         : Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 44),
       ranksep: rankdir === 'TB'
         ? Math.max(metrics.boundaryGapY + LAYOUT_PRESET.dagreExtraY, 68)
@@ -3221,6 +3262,104 @@ function buildPortStyles(node, usedPorts) {
   });
 }
 
+/** Whether a node's type-title field is currently visible (the title bar). */
+function nodeHasVisibleTitle(node) {
+  const st = node && node.style;
+  if (!st) return false;
+  const cls = getNodeClassName(st);
+  if (!cls) return false;
+  return isFieldVisible(cls + '.__title__');
+}
+
+/** Pick the port key (from *keys*) whose placement is nearest to (refX, refY)
+ *  in absolute coordinates. Returns null if none of the keys exist on the node. */
+function nearestPortKey(node, ports, refX, refY, keys) {
+  const st = node.style || {};
+  const w = Number(st.size && st.size[0]) || 100;
+  const h = Number(st.size && st.size[1]) || 50;
+  const nx = Number(st.x) || 0;
+  const ny = Number(st.y) || 0;
+  let best = null, bestD = Infinity;
+  for (const k of keys) {
+    const p = ports.find((q) => q.key === k);
+    if (!p) continue;
+    const ax = nx + (Number(p.placement[0]) - 0.5) * w;
+    const ay = ny + (Number(p.placement[1]) - 0.5) * h;
+    const d = (ax - refX) * (ax - refX) + (ay - refY) * (ay - refY);
+    if (d < bestD) { bestD = d; best = k; }
+  }
+  return best;
+}
+
+/** Representative-point routing for pointer edges that don't use a row port.
+ *
+ *  SOURCE port follows the field's concrete connection point (ANCHOR panel /
+ *  ⚡自动分配): 'vertical' (上下中点) leaves from the top/bottom midpoint facing
+ *  the target — and for multi-pointer left/right uses the uniformly-spaced
+ *  bottom pointer-array ports (pa0/pa1, …) so binary-tree left/right don't
+ *  collapse onto one point; 'horizontal' (左右中点) leaves from the side facing
+ *  the target; 'title' (标题栏) leaves from the title-bar midpoint.
+ *
+ *  TARGET port follows the global representative mode (VIS_CONFIG.pointerRep):
+ *    - 'sequential' (default): title-bar midpoint if the target's title is
+ *      visible, else the top/bottom midpoint facing the source.
+ *    - 'nearest': the closest of top/bottom/left/right midpoints (the title bar
+ *      is not given priority).
+ *  'horizontal' connections (e.g. next) always enter side-to-side: the target
+ *  side facing the source. */
+function resolvePointerEdgePorts(e, src, tgt) {
+  const srcSt = src.style || {}, tgtSt = tgt.style || {};
+  const srcPorts = Array.isArray(srcSt.ports) ? srcSt.ports : [];
+  const tgtPorts = Array.isArray(tgtSt.ports) ? tgtSt.ports : [];
+  const srcSet = new Set(srcPorts.map((p) => p.key));
+  const tgtSet = new Set(tgtPorts.map((p) => p.key));
+  const sx = Number(srcSt.x) || 0, sy = Number(srcSt.y) || 0;
+  const tx = Number(tgtSt.x) || 0, ty = Number(tgtSt.y) || 0;
+  const mode = VIS_CONFIG.pointerRep || 'sequential';
+  const fk = String(e?.data?.field_key || e?.data?.label || '');
+  const normFk = fk.replace(/::/g, '.').replace(/\[.*\]$/, '');
+  const rawAnchor = e?.data?._anchor;
+  const explicit = rawAnchor ? normalizeAnchorValue(rawAnchor) : null;
+  // Concrete connection point for this edge: explicit per-edge anchor (hidden
+  // fields) wins; else the field's panel config (auto-assigned or hand-picked).
+  const conn = explicit || getFieldAnchor(normFk);
+
+  // ── SOURCE port (where the edge leaves the source) ──
+  let sourcePort = null;
+  if (conn === 'horizontal') {
+    // Side connection (next / siblings): leave from the side facing the target.
+    sourcePort = tx >= sx ? 'sR' : 'sL';
+  } else if (conn === 'title') {
+    sourcePort = 'inT';
+  } else {
+    // 'vertical' (tree children): pointer-array ports (pa0, pa1, …) for
+    // binary-tree left/right — uniformly spaced bottom ports, so left/right
+    // don't collapse onto one point; otherwise the top/bottom midpoint facing
+    // the target.
+    if (e?.data?._pointerArrayPort) sourcePort = e.data._pointerArrayPort;
+    else sourcePort = ty >= sy ? 'inB' : 'inT';
+  }
+
+  // ── TARGET port (where the edge enters the target) ──
+  let targetPort = null;
+  if (conn === 'horizontal') {
+    // Sibling pointer (e.g. B+Tree next): connect side-to-side horizontally —
+    // enter the target on the side facing the source, so sibling arrows meet
+    // at the node sides instead of dropping onto the title/top.
+    targetPort = tx >= sx ? 'sL' : 'sR';
+  } else if (mode === 'nearest') {
+    targetPort = nearestPortKey(tgt, tgtPorts, sx, sy, ['inT', 'inB', 'sL', 'sR']);
+  } else {
+    if (nodeHasVisibleTitle(tgt)) targetPort = 'inT';
+    else targetPort = sy <= ty ? 'inT' : 'inB';  // top/bottom midpoint facing the source
+  }
+
+  if (sourcePort && targetPort && srcSet.has(sourcePort) && tgtSet.has(targetPort)) {
+    return { sourcePort, targetPort };
+  }
+  return null;
+}
+
 function resolvePortsForEdge(e, nodeMap) {
   const src = nodeMap.get(e.source);
   const tgt = nodeMap.get(e.target);
@@ -3249,54 +3388,34 @@ function resolvePortsForEdge(e, nodeMap) {
     };
   }
 
-  // ── Anchor routing (hidden single-pointer edges, e.g. B+Tree next) ──
-  // The edge leaves from the node midpoint chosen by the field's anchor:
-  //   title/top → top-centre (inT) · bottom → bottom-centre (inB)
-  //   left → sL · right → sR · auto/h-auto → side by target x · v-auto → top/bottom by target y
+  // ── Anchor / representative-point routing (hidden single-pointer edges,
+  //     or pointer fields without a rendered card row) ──
   if (e.data && e.data._anchor) {
-    const a = e.data._anchor;
-    const sx = src.style?.x ?? 0, sy = src.style?.y ?? 0;
-    const tx = tgt.style?.x ?? 0, ty = tgt.style?.y ?? 0;
-    const srcPorts = new Set((src?.style?.ports || []).map((p) => p.key));
-    const tgtPorts = new Set((tgt?.style?.ports || []).map((p) => p.key));
-    const has = (id) => srcPorts.has(id);
-    const hasT = (id) => tgtPorts.has(id);
-    let sourcePort, targetPort;
-    if (a === 'left') { sourcePort = 'sL'; targetPort = 'sR'; }
-    else if (a === 'right') { sourcePort = 'sR'; targetPort = 'sL'; }
-    else if (a === 'bottom') { sourcePort = 'inB'; targetPort = ty <= sy ? 'inT' : 'inB'; }
-    else if (a === 'title' || a === 'top') { sourcePort = 'inT'; targetPort = ty >= sy ? 'inB' : 'inT'; }
-    else if (a === 'h-auto') { sourcePort = tx >= sx ? 'sR' : 'sL'; targetPort = tx >= sx ? 'sL' : 'sR'; }
-    else if (a === 'v-auto') { sourcePort = ty >= sy ? 'inB' : 'inT'; targetPort = ty >= sy ? 'inT' : 'inB'; }
-    else { // 'auto': dominant axis decides side vs top/bottom
-      if (Math.abs(tx - sx) >= Math.abs(ty - sy)) {
-        sourcePort = tx >= sx ? 'sR' : 'sL'; targetPort = tx >= sx ? 'sL' : 'sR';
-      } else {
-        sourcePort = ty >= sy ? 'inB' : 'inT'; targetPort = ty >= sy ? 'inT' : 'inB';
-      }
-    }
-    if (has(sourcePort) && hasT(targetPort)) {
-      return { sourcePort, targetPort };
-    }
-    return null;
+    return resolvePointerEdgePorts(e, src, tgt);
   }
 
   const refIndex = e.data ? e.data.refIndex : null;
   if (refIndex === null || refIndex === undefined) return null;
 
-  // Data-driven port resolution — reads portLayout from node style
+  // Data-driven port resolution — reads portLayout from node style.
   const pl = src?.style?.portLayout;
-  if (!pl || !Array.isArray(pl.entry) || !Array.isArray(pl.ref)) return null;
-
-  const sx = src.style?.x ?? 0, tx = tgt.style?.x ?? 0;
-  const sy = src.style?.y ?? 0, ty = tgt.style?.y ?? 0;
-  const neg = pl.direction === 'TB' ? (ty < sy) : (tx < sx);
-  const ref = pl.ref.find((r) => r.idx === refIndex);
-  if (!ref || !Array.isArray(ref.ports) || ref.ports.length < 2) return null;
-  return {
-    sourcePort: neg ? ref.ports[1] : ref.ports[0],
-    targetPort: neg ? pl.entry[1] : pl.entry[0],
-  };
+  if (pl && Array.isArray(pl.entry) && Array.isArray(pl.ref)) {
+    const sx = src.style?.x ?? 0, tx = tgt.style?.x ?? 0;
+    const sy = src.style?.y ?? 0, ty = tgt.style?.y ?? 0;
+    const neg = pl.direction === 'TB' ? (ty < sy) : (tx < sx);
+    const ref = pl.ref.find((r) => r.idx === refIndex);
+    if (ref && Array.isArray(ref.ports) && ref.ports.length >= 2) {
+      return {
+        sourcePort: neg ? ref.ports[1] : ref.ports[0],
+        targetPort: neg ? pl.entry[1] : pl.entry[0],
+      };
+    }
+  }
+  // Pointer edge without a resolvable row port (e.g. a binary-tree `left`/`right`
+  // whose field is not rendered as a card row) → representative-point routing so
+  // left/right leave from distinct sides and the target uses the mode's
+  // representative point (title-first in sequential mode).
+  return resolvePointerEdgePorts(e, src, tgt);
 }
 
 function updateEdgePorts(focusNodeId = null) {
@@ -4375,6 +4494,47 @@ function ensureSidePorts(nodes) {
   }
 }
 
+/** Pointer array: give pointer fields that are NOT rendered as card rows (so
+ *  they have no per-row port) a set of uniformly-spaced bottom ports, and assign
+ *  each pointer edge its index-ordered port. This mirrors how B+Tree / B-Tree
+ *  child pointers emit from key-gap ports, so binary-tree left/right leave from
+ *  distinct, evenly-spaced bottom points instead of collapsing onto one point.
+ *  `next` (sibling) pointers stay horizontal and are excluded. Nodes that
+ *  already expose per-row/key-gap ports (B+Tree children via adaptBTreeNodes,
+ *  or normal card rows) are left untouched. */
+function ensurePointerArrayPorts(graphData) {
+  const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+  if (!nodes.length || !edges.length) return;
+  for (const n of nodes) {
+    const st = n.style || {};
+    if (!Array.isArray(st.ports)) continue;
+    const pl = st.portLayout;
+    if (pl && Array.isArray(pl.ref) && pl.ref.length > 0) continue;
+    const out = edges.filter((e) =>
+      String(e?.source) === String(n.id) &&
+      e?.data?.field_key && e?.data?.refIndex != null);
+    if (out.length < 2) continue;
+    const ptrEdges = out.filter((e) => {
+      const fn = String(e.data.field_key).split(/[.:]/).pop().replace(/\[.*/, '').toLowerCase();
+      return fn !== 'next';
+    });
+    if (ptrEdges.length < 2) continue;
+    ptrEdges.sort((a, b) => (a.data.refIndex || 0) - (b.data.refIndex || 0));
+    const ports = st.ports.slice();
+    const PAD = 0.1;
+    for (let i = 0; i < ptrEdges.length; i++) {
+      const frac = PAD + (1 - 2 * PAD) * (i + 0.5) / ptrEdges.length;
+      const key = 'pa' + i;
+      if (!ports.some((p) => p.key === key)) {
+        ports.push({ key, placement: [frac, 1], r: 0, fill: 'transparent', stroke: 'transparent' });
+      }
+      ptrEdges[i].data._pointerArrayPort = key;
+    }
+    st.ports = ports;
+  }
+}
+
 function filterHiddenNodes(graphData) {  if (!HIDDEN_NODES.size) return graphData;
   const hiddenSet = new Set(HIDDEN_NODES.keys());
   const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
@@ -5321,6 +5481,7 @@ function renderStepImpl(ri, displayIndex) {
   const typeFilteredGraph = visResult.data;
   const adaptedGraph = adaptNodesForTextFlow(typeFilteredGraph);
   adaptBTreeNodes(adaptedGraph);
+  ensurePointerArrayPorts(adaptedGraph);
   const graphData = filterHiddenNodes(adaptedGraph);
   ensureSidePorts(graphData.nodes);
 
@@ -6108,6 +6269,42 @@ function renderPointerPanel(list) {
   const items = document.createElement('div');
   items.className = 'node-type-items pointer-items';
   items.style.cssText = 'flex-direction:column;align-items:stretch;gap:6px;';
+  // ── Global representative-point mode ──
+  // Controls where pointer edges attach to a node (the node's "representative
+  // point"). Sequential keeps a fixed priority (title bar → top/bottom midpoint
+  // → left/right midpoint) so edges don't flip when nodes are drag-sorted;
+  // nearest picks the geometrically closest of the top/bottom/left/right
+  // midpoints (the title bar is not preferred).
+  const modeRow = document.createElement('div');
+  modeRow.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:11px;color:#24406f;';
+  const modeLabel = document.createElement('span');
+  modeLabel.textContent = '代表点';
+  modeLabel.style.cssText = 'flex:1;white-space:nowrap;';
+  const modeSel = document.createElement('select');
+  modeSel.style.cssText = 'font-size:10px;padding:1px 2px;';
+  modeSel.title = '指针边连接到节点的代表点：顺序模式（标题栏→上下中点→左右中点，拖动排序稳定）或优先最近（最近的上下左右中点，不考虑标题栏）';
+  const modeOpts = [['sequential', '顺序模式'], ['nearest', '优先最近']];
+  for (const [v, t] of modeOpts) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = t;
+    modeSel.appendChild(o);
+  }
+  modeSel.value = VIS_CONFIG.pointerRep || 'sequential';
+  modeSel.addEventListener('change', () => {
+    VIS_CONFIG.pointerRep = modeSel.value;
+    saveVisConfig(VIS_CONFIG);
+    applyVisConfig();
+  });
+  modeRow.appendChild(modeLabel);
+  modeRow.appendChild(modeSel);
+  const autoBtn = document.createElement('button');
+  autoBtn.textContent = '⚡ 自动分配';
+  autoBtn.type = 'button';
+  autoBtn.style.cssText = 'font-size:10px;padding:1px 6px;cursor:pointer;white-space:nowrap;background:#eef4ff;border:1px solid #b8c9e8;border-radius:3px;color:#24406f;';
+  autoBtn.title = '按字段角色分配具体连接点：子树 left/right/children → 上下中点，兄弟 next → 左右中点，容器 root/parent → 标题栏，其余 → 上下中点';
+  autoBtn.addEventListener('click', () => autoAssignPointerConnections());
+  modeRow.appendChild(autoBtn);
+  items.appendChild(modeRow);
   for (const r of rows) {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:11px;color:#24406f;';
@@ -6123,8 +6320,8 @@ function renderPointerPanel(list) {
     row.appendChild(name);
     const sel = document.createElement('select');
     sel.style.cssText = 'font-size:10px;padding:1px 2px;';
-    sel.title = '锚点：字段隐藏后边连向（字段行=可见时行端口，预设按布局/侧向自动）';
-    const opts = [['row', '字段行'], ['title', '标题栏'], ['top', '上'], ['bottom', '下'], ['left', '左'], ['right', '右'], ['auto', '自动']];
+    sel.title = '该字段指针边在节点上的连接点：上下中点（按目标位置自动选上/下）、左右中点（按目标位置自动选左/右）、标题栏';
+    const opts = [['vertical', '上下中点'], ['horizontal', '左右中点'], ['title', '标题栏']];
     for (const [v, t] of opts) {
       const o = document.createElement('option');
       o.value = v; o.textContent = t;
@@ -7484,6 +7681,7 @@ function applyStyleLocalFallback() {
   if (cfg.layerEdgeKeys) VIS_CONFIG.layerEdgeKeys = { ...cfg.layerEdgeKeys };
   if (cfg.uniformEdgesEnabled !== undefined) VIS_CONFIG.uniformEdgesEnabled = cfg.uniformEdgesEnabled;
   if (cfg.rowDisplayMode) VIS_CONFIG.rowDisplayMode = cfg.rowDisplayMode;
+  if (cfg.pointerRep) VIS_CONFIG.pointerRep = cfg.pointerRep;
   if (cfg.parentFieldKey !== undefined) VIS_CONFIG.parentFieldKey = cfg.parentFieldKey;
   if (cfg.graphViewer && typeof cfg.graphViewer === 'object') {
     VIS_CONFIG.graphViewer = { ...(VIS_CONFIG.graphViewer || {}), ...cfg.graphViewer };

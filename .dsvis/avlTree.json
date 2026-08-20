@@ -28,6 +28,7 @@
   "showSubtitle": true,
   "uniformEdgesEnabled": true,
   "rowDisplayMode": "both",
+  "pointerRep": "sequential",
   "parentFieldKey": "",
   "graphViewer": {
     "valueField": "",

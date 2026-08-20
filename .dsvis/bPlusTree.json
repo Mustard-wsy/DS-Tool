@@ -4,7 +4,7 @@
   "edgeProxy": {},
   "visibility": {
     "BPlusNode.leaf": "self",
-    "BPlusNode.__title__": "visible",
+    "BPlusNode.__title__": "self",
     "BPlusNode.keys": "visible",
     "BPlusNode.children": "visible",
     "BPlusNode.next": "self",
@@ -26,7 +26,11 @@
   "layoutExempt": [
     "BPlusNode.next"
   ],
-  "anchor": {},
+  "anchor": {
+    "BPlusTree.root": "title",
+    "BPlusNode.children": "vertical",
+    "BPlusNode.next": "horizontal"
+  },
   "layerEdges": [
     "children"
   ],
@@ -39,6 +43,7 @@
   "showSubtitle": true,
   "uniformEdgesEnabled": true,
   "rowDisplayMode": "value",
+  "pointerRep": "sequential",
   "parentFieldKey": "",
   "graphViewer": {
     "valueField": "",
