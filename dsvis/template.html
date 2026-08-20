@@ -3,8 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <title>__TITLE__</title>
-<script src="https://unpkg.com/@antv/g6@5.0.51/dist/g6.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/page-agent@1.12.2/dist/iife/page-agent.demo.js?autoInit=false&showPanel=false" crossorigin="anonymous" defer></script>
+<script>__G6_JS__</script>
 <style>
 __STYLES__
 </style>
@@ -85,6 +84,18 @@ __STYLES__
             <option value="vertical">纵向</option>
           </select>
         </div>
+        <div class="settings-row">
+          <span>行显示</span>
+          <select id="settingsRowDisplay">
+            <option value="both">字段名 = 值</option>
+            <option value="key">仅字段名</option>
+            <option value="value">仅值</option>
+          </select>
+        </div>
+        <div class="settings-row">
+          <span>节点类型</span>
+          <label class="agent-inline"><input id="settingsShowSubtitle" type="checkbox" /> 标题显示所属类型</label>
+        </div>
         <div class="settings-note">同名字段在所有同类节点中共享可见性。</div>
         <div class="agent-settings-group">
           <div class="settings-row">
@@ -106,9 +117,6 @@ __STYLES__
           <div class="settings-note">同时配置 URL、Token、模型时使用你的 OpenAI-compatible API；否则使用 PageAgent 默认测试接口。生产环境不要在前端保存真实密钥。</div>
         </div>
         <div id="nodeTypeList"></div>
-        <div class="settings-actions">
-          <button id="settingsApplyBtn" type="button">应用</button>
-        </div>
       </div>
     </div>
   </div>
@@ -159,11 +167,20 @@ let selectedFrameKey = null;
 const BREAKPOINTS = new Set();
 let BREAKPOINTS_ENABLED = __BREAKPOINTS_ENABLED__;
 const DSVIS_ALGO = __DSVIS_ALGO__;
+const INITIAL_VISIBILITY = __INITIAL_VISIBILITY__;
+// Persisted per-script style (loaded by the backend from <cwd>/.dsvis/<script>.json)
+// — authoritative over localStorage so styles live in the project, not on C:.
+const FILE_STYLE = __STYLE_CONFIG__ || null;
+// Local style server ({port, script}) the frontend uses to persist styles to disk.
+const STYLE_SERVER = __STYLE_SERVER__ || null;
 const HIDDEN_NODES = new Map();  // Map<nodeId, label> — hidden nodes
 const HIDDEN_NODES_CASCADE = new Set();  // nodeIds whose descendants also cascade-hide
 let hiddenPanelVisible = false;
 const NODE_TYPE_REGISTRY = new Map();  // Map<className, [{key, className, fieldName, kind}]>
-const NODE_TYPE_VISIBILITY = new Map();  // Map<className.fieldName, boolean>
+const NODE_TYPE_VISIBILITY = new Map();  // Map<className.fieldName, state>
+// Fields whose edges render (arrows shown) but must NOT drive the layout.
+// Controlled by the "布局" panel; independent of visibility.
+const LAYOUT_EXEMPT_KEYS = new Set();
 const BIND_GROUP_REGISTRY = new Map();   // Map<className, [{groupName, fields: [key]}]>
 // EDGE_PROXY: "Type.refField" → { proxy: "Type.valueField", ratio: number|'auto', includeEnds: boolean }
 const EDGE_PROXY = new Map();
@@ -183,7 +200,7 @@ let debugSessionStopped = false;
 // - layerFields: for tree types, the field labels that serve as hierarchy edges.
 // - proxyRules:  for BTree types, the proxy-from→proxy-to mappings.
 const STRUCTURE_TYPES = {
-  'binary-tree':  { name: '二叉树',       layerFields: ['left','right'], parentField: null,   proxyRules: null, uniformEdges: true },
+  'binary-tree':  { name: '二叉树',       layerFields: ['left','right'], parentField: 'parent', proxyRules: null, uniformEdges: true },
   'nary-tree':    { name: 'N叉树',        layerFields: ['children'],      parentField: 'parent', proxyRules: null, uniformEdges: true },
   'btree':        { name: 'B-Tree',       layerFields: ['children'],      parentField: null,   proxyRules: { childField: 'children', keyField: 'keys' }, uniformEdges: true },
   'bplustree':    { name: 'B+ Tree',      layerFields: ['children'],      parentField: null,   proxyRules: { childField: 'children', keyField: 'keys' }, uniformEdges: true },
@@ -191,14 +208,34 @@ const STRUCTURE_TYPES = {
   'graph':        { name: '图',           layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
   'linkedlist':   { name: '链表/栈/队列', layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
   'hashtable':    { name: '散列表',       layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
-  'other':        { name: '其他',         layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
+  'other':        { name: '默认',         layerFields: [],                parentField: null,   proxyRules: null, uniformEdges: false },
 };
+
+// ── G6 availability check ──
+if (typeof G6 === 'undefined') {
+  (function showG6Error() {
+    var g = document.getElementById('graph');
+    if (g) {
+      g.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#c00;font-size:14px;text-align:center;padding:20px;">'
+        + '<div><p style="font-size:48px;margin:0 0 12px;">&#9888;</p>'
+        + '<p><b>G6 图形库加载失败</b></p>'
+        + '<p style="font-size:12px;color:#666;">请检查网络连接，确保可以访问 CDN（unpkg.com 或 jsdelivr.net）</p>'
+        + '<p style="font-size:12px;color:#666;">如使用代理/VPN，请尝试切换节点后刷新页面</p></div></div>';
+    }
+  })();
+}
 
 // ── Persistence helpers ──
 function persistProxy() {
   try { localStorage.setItem(PROXY_STORAGE_KEY, JSON.stringify([...EDGE_PROXY])); } catch(_) {}
+  scheduleStyleAutosave();
 }
 function loadProxy() {
+  // Persisted per-script style file wins over localStorage.
+  if (FILE_STYLE && FILE_STYLE.edgeProxy) {
+    for (const _k in FILE_STYLE.edgeProxy) EDGE_PROXY.set(_k, FILE_STYLE.edgeProxy[_k]);
+    return;
+  }
   try {
     const raw = localStorage.getItem(PROXY_STORAGE_KEY);
     if (raw) { const arr = JSON.parse(raw); for (const [k, v] of arr) EDGE_PROXY.set(k, v); }
@@ -206,8 +243,38 @@ function loadProxy() {
 }
 function persistVisibility() {
   try { localStorage.setItem(VISIBILITY_STORAGE_KEY, JSON.stringify([...NODE_TYPE_VISIBILITY])); } catch(_) {}
+  scheduleStyleAutosave();
+}
+function persistLayoutExempt() {
+  try { localStorage.setItem('dsvis:layoutExempt', JSON.stringify(Array.from(LAYOUT_EXEMPT_KEYS))); } catch(_) {}
+  scheduleStyleAutosave();
+}
+/** Toggle whether a field's edges drive the layout (see LAYOUT_EXEMPT_KEYS).
+ *  exempt=true → the field is layout-exempt (edges drawn, do not drive layout). */
+function setFieldLayoutExempt(key, exempt) {
+  if (exempt) LAYOUT_EXEMPT_KEYS.add(key);
+  else LAYOUT_EXEMPT_KEYS.delete(key);
+  persistLayoutExempt();
+  syncSettingsPanel();
+  renderStep(current);
 }
 function loadVisibility() {
+  // 1. Persisted per-script style file (authoritative — not localStorage).
+  if (FILE_STYLE && FILE_STYLE.visibility) {
+    for (const _fk in FILE_STYLE.visibility) {
+      NODE_TYPE_VISIBILITY.set(_fk, FILE_STYLE.visibility[_fk]);
+    }
+    return;
+  }
+  // 2. Apply Python-script initial visibility (base defaults)
+  if (INITIAL_VISIBILITY && typeof INITIAL_VISIBILITY === 'object') {
+    for (var _ik in INITIAL_VISIBILITY) {
+      if (Object.prototype.hasOwnProperty.call(INITIAL_VISIBILITY, _ik)) {
+        NODE_TYPE_VISIBILITY.set(_ik, INITIAL_VISIBILITY[_ik]);
+      }
+    }
+  }
+  // 3. Apply localStorage overrides (UI changes persist across reloads)
   try {
     const raw = localStorage.getItem(VISIBILITY_STORAGE_KEY);
     if (raw) { const arr = JSON.parse(raw); for (const [k, v] of arr) NODE_TYPE_VISIBILITY.set(k, v); }
@@ -220,17 +287,24 @@ function exportCurrentConfig() {
   const visObj = Object.fromEntries(NODE_TYPE_VISIBILITY);
   const tf = TITLE_FIELD ? { [TITLE_FIELD.className]: TITLE_FIELD.key } : {};
   return {
+    version: 1,
     structureType: VIS_CONFIG.structureType,
     edgeProxy: proxyObj, visibility: visObj, titleField: tf,
+    layoutExempt: Array.from(LAYOUT_EXEMPT_KEYS),
     layerEdges: Array.from(LAYER_EDGES),
     layerEdgeKeys: { ...VIS_CONFIG.layerEdgeKeys },
     layout: { rankdir: VIS_CONFIG.textFlow === 'vertical' ? 'TB' : 'LR' },
     showSubtitle: VIS_CONFIG.showSubtitle,
     uniformEdgesEnabled: VIS_CONFIG.uniformEdgesEnabled,
+    rowDisplayMode: VIS_CONFIG.rowDisplayMode,
+    // Extra knobs that were missing from the export (graph viewer + parent
+    // pointer field) so a copied style fully restores the page it came from.
+    parentFieldKey: VIS_CONFIG.parentFieldKey,
+    graphViewer: { ...(VIS_CONFIG.graphViewer || {}) },
   };
 }
 
-/** Import a previously exported config. */
+/** Import a previously exported config (merge: only keys present in the JSON are applied). */
 function importConfig(jsonText) {
   var cfg;
   try { cfg = JSON.parse(jsonText); } catch(_) { throw new Error('无效的 JSON'); }
@@ -241,16 +315,133 @@ function importConfig(jsonText) {
   if (cfg.layout && cfg.layout.rankdir) VIS_CONFIG.textFlow = cfg.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
   if (cfg.showSubtitle !== undefined) VIS_CONFIG.showSubtitle = cfg.showSubtitle;
   if (cfg.uniformEdgesEnabled !== undefined) VIS_CONFIG.uniformEdgesEnabled = cfg.uniformEdgesEnabled;
+  if (cfg.rowDisplayMode) VIS_CONFIG.rowDisplayMode = cfg.rowDisplayMode;
   if (cfg.structureType) VIS_CONFIG.structureType = cfg.structureType;
   if (cfg.layerEdgeKeys) VIS_CONFIG.layerEdgeKeys = { ...cfg.layerEdgeKeys };
+  if (cfg.parentFieldKey !== undefined) VIS_CONFIG.parentFieldKey = cfg.parentFieldKey;
+  if (cfg.graphViewer && typeof cfg.graphViewer === 'object') {
+    VIS_CONFIG.graphViewer = { ...(VIS_CONFIG.graphViewer || {}), ...cfg.graphViewer };
+  }
+  LAYER_EXEMPT_KEYS.clear();
+  if (Array.isArray(cfg.layoutExempt)) { for (var _le2 = 0; _le2 < cfg.layoutExempt.length; _le2++) LAYER_EXEMPT_KEYS.add(cfg.layoutExempt[_le2]); }
   LAYER_EDGES.clear();
   if (Array.isArray(cfg.layerEdges)) { for (var _le = 0; _le < cfg.layerEdges.length; _le++) LAYER_EDGES.add(cfg.layerEdges[_le]); }
-  persistProxy(); persistVisibility();
+  persistProxy(); persistVisibility(); persistLayoutExempt();
   try { localStorage.setItem('dsvis:layerEdges', JSON.stringify(Array.from(LAYER_EDGES))); } catch(_) {}
   try { localStorage.setItem('dsvis:titleField', JSON.stringify(TITLE_FIELD)); } catch(_) {}
   saveVisConfig(VIS_CONFIG);
   applyVisConfig();
   if (settingsPanelVisible) syncSettingsPanel();
+}
+
+// ── Style copy / import UI helpers ──
+
+/** Lightweight non-blocking toast at the bottom of the page. */
+function showToast(msg, isError) {
+  let el = document.getElementById('dsvisToast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'dsvisToast';
+    el.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:30000;padding:8px 16px;border-radius:6px;font-size:12px;color:#fff;background:rgba(0,0,0,0.78);box-shadow:0 2px 8px rgba(0,0,0,0.2);pointer-events:none;opacity:0;transition:opacity .2s;max-width:80vw;white-space:pre-wrap;';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.background = isError ? 'rgba(200,40,40,0.9)' : 'rgba(0,0,0,0.78)';
+  el.style.opacity = '1';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.opacity = '0'; }, 2400);
+}
+
+/** Copy the current style JSON to the clipboard (with a readable fallback). */
+function copyCurrentStyle() {
+  const data = exportCurrentConfig();
+  const json = JSON.stringify(data, null, 2);
+  const done = () => showToast('样式已复制到剪贴板');
+  const fail = () => {
+    // Clipboard unavailable (e.g. non-secure context) — show a copyable modal.
+    showStyleModal(json, false);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(json).then(done, fail);
+  } else {
+    fail();
+  }
+}
+
+/**
+ * Modal for pasting (import) or manually copying (fallback) style JSON.
+ * A multiline textarea replaces the old prompt() so long pretty-printed JSON
+ * pastes cleanly instead of being mangled by the browser's single-line prompt.
+ */
+function showStyleModal(initialText, isImport) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:25000;background:rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;';
+  const box = document.createElement('div');
+  box.style.cssText = 'background:#fff;border-radius:8px;padding:14px;width:min(580px,92vw);box-shadow:0 6px 24px rgba(0,0,0,0.25);box-sizing:border-box;';
+  const title = document.createElement('div');
+  title.textContent = isImport ? '粘贴样式 JSON' : '复制样式（手动复制下方内容）';
+  title.style.cssText = 'font-weight:700;font-size:13px;margin-bottom:8px;color:#0f2c63;';
+  const ta = document.createElement('textarea');
+  ta.placeholder = isImport ? '粘贴从其他页面复制的样式 JSON…' : '';
+  ta.value = initialText || '';
+  ta.style.cssText = 'width:100%;height:200px;font-family:monospace;font-size:11px;padding:8px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box;resize:vertical;';
+  if (!isImport) ta.readOnly = true;
+  const err = document.createElement('div');
+  err.style.cssText = 'color:#c00;font-size:11px;margin-top:6px;min-height:14px;';
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:10px;';
+  const cancel = document.createElement('button');
+  cancel.textContent = '取消'; cancel.type = 'button';
+  cancel.style.cssText = 'padding:6px 14px;font-size:12px;cursor:pointer;border:1px solid #ccc;background:#fff;border-radius:6px;';
+  const ok = document.createElement('button');
+  ok.textContent = isImport ? '导入' : '关闭'; ok.type = 'button';
+  ok.style.cssText = 'padding:6px 14px;font-size:12px;cursor:pointer;border:none;background:#5b8ff9;color:#fff;border-radius:6px;';
+  btnRow.appendChild(cancel);
+  btnRow.appendChild(ok);
+  box.appendChild(title);
+  box.appendChild(ta);
+  box.appendChild(err);
+  box.appendChild(btnRow);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  cancel.addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  ok.addEventListener('click', () => {
+    if (!isImport) { close(); return; }
+    const text = ta.value.trim();
+    if (!text) { close(); return; }
+    try {
+      importConfig(text);
+      close();
+      showToast('样式已导入并应用');
+    } catch (e) {
+      err.textContent = '导入失败: ' + e.message;
+    }
+  });
+  setTimeout(() => ta.focus(), 0);
+}
+
+/** Reset all style/config back to the built-in defaults. */
+function resetAllStyle() {
+  EDGE_PROXY.clear();
+  LAYER_EDGES.clear();
+  TITLE_FIELD = null;
+  for (var _rkey of NODE_TYPE_VISIBILITY.keys()) NODE_TYPE_VISIBILITY.set(_rkey, 'visible');
+  VIS_CONFIG.textFlow = 'horizontal';
+  VIS_CONFIG.showSubtitle = true;
+  VIS_CONFIG.structureType = 'other';
+  VIS_CONFIG.layerEdgeKeys = {};
+  VIS_CONFIG.uniformEdgesEnabled = true;
+  VIS_CONFIG.rowDisplayMode = 'both';
+  VIS_CONFIG.parentFieldKey = '';
+  VIS_CONFIG.graphViewer = { ...DEFAULT_VIS_CONFIG.graphViewer };
+  saveVisConfig(VIS_CONFIG);
+  persistProxy(); persistVisibility();
+  try { localStorage.removeItem('dsvis:layerEdges'); } catch(_) {}
+  try { localStorage.removeItem('dsvis:titleField'); } catch(_) {}
+  applyVisConfig();
+  showToast('样式已重置为默认');
 }
 
 // ── Heuristic layer-field detection ──
@@ -295,15 +486,27 @@ function autoDetectLayerFields(nodeFields, structType) {
 // ── Visualisation configuration ──
 const VIS_CONFIG_STORAGE_KEY = 'dsvis:config';
 const PAGE_AGENT_STORAGE_KEY = 'dsvis:pageAgentConfig';
+// Server-less fallback: the full exported style is persisted here when no
+// local style server is reachable, so style changes still survive a reload.
+const STYLE_LOCAL_KEY = 'dsvis:style:local';
 const DEFAULT_VIS_CONFIG = {
   textFlow: 'horizontal',
   showSubtitle: true,
   structureType: 'other',
   layerEdgeKeys: {},
-  uniformEdgesEnabled: true,   // distribute orphaned edges evenly (tree types only)
+  uniformEdgesEnabled: true,
+  rowDisplayMode: 'both',  // 'both' | 'key' | 'value' — control what part of each field row is shown
+  parentFieldKey: '',     // '' = use STRUCTURE_TYPES[type].parentField (e.g. 'parent')
+  // Independent graph-displayer settings (structureType === 'graph').
+  graphViewer: {
+    valueField: '',     // '' = auto (backend priority list)
+    edgeValueField: '', // '' = auto
+    direction: 'auto',  // 'auto' | 'directed' | 'undirected'
+    radius: 24,
+  },
 };
 const DEFAULT_PAGE_AGENT_CONFIG = {
-  enabled: false,
+  enabled: true,  // PageAgent 默认可用（file:// 下同样适用，见 initializeDsvisAgent）
   baseURL: '',
   apiKey: '',
   model: '',
@@ -311,20 +514,41 @@ const DEFAULT_PAGE_AGENT_CONFIG = {
 };
 
 function loadVisConfig() {
+  const merged = { ...DEFAULT_VIS_CONFIG };
+  // 1. Persisted per-script style file (authoritative — lives in the project,
+  //    not the browser's localStorage on C:).
+  if (FILE_STYLE) {
+    if (FILE_STYLE.layout && FILE_STYLE.layout.rankdir) {
+      merged.textFlow = FILE_STYLE.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
+    }
+    if (FILE_STYLE.showSubtitle !== undefined) merged.showSubtitle = FILE_STYLE.showSubtitle;
+    if (FILE_STYLE.structureType) merged.structureType = FILE_STYLE.structureType;
+    if (FILE_STYLE.layerEdgeKeys) merged.layerEdgeKeys = { ...FILE_STYLE.layerEdgeKeys };
+    if (FILE_STYLE.uniformEdgesEnabled !== undefined) merged.uniformEdgesEnabled = FILE_STYLE.uniformEdgesEnabled;
+    if (FILE_STYLE.rowDisplayMode) merged.rowDisplayMode = FILE_STYLE.rowDisplayMode;
+    if (FILE_STYLE.parentFieldKey !== undefined) merged.parentFieldKey = FILE_STYLE.parentFieldKey;
+    if (FILE_STYLE.graphViewer && typeof FILE_STYLE.graphViewer === 'object') {
+      merged.graphViewer = { ...DEFAULT_VIS_CONFIG.graphViewer, ...FILE_STYLE.graphViewer };
+    }
+    return merged;
+  }
+  // 2. Fallback: localStorage (backwards compatible for pages generated before
+  //    the style-file feature).
   try {
     const raw = localStorage.getItem(VIS_CONFIG_STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_VIS_CONFIG };
+    if (!raw) return merged;
     const parsed = JSON.parse(raw);
-    // Merge: only accept known keys, fall back to defaults for missing/invalid
-    const merged = { ...DEFAULT_VIS_CONFIG };
     for (const key of Object.keys(DEFAULT_VIS_CONFIG)) {
       if (key in parsed && typeof parsed[key] === typeof DEFAULT_VIS_CONFIG[key]) {
         merged[key] = parsed[key];
       }
     }
+    if (parsed.graphViewer && typeof parsed.graphViewer === 'object') {
+      merged.graphViewer = { ...DEFAULT_VIS_CONFIG.graphViewer, ...parsed.graphViewer };
+    }
     return merged;
   } catch (_) {
-    return { ...DEFAULT_VIS_CONFIG };
+    return merged;
   }
 }
 
@@ -332,6 +556,7 @@ function saveVisConfig(config) {
   try {
     localStorage.setItem(VIS_CONFIG_STORAGE_KEY, JSON.stringify(config));
   } catch (_) { /* storage unavailable — silently ignore */ }
+  scheduleStyleAutosave();
 }
 
 // ── Structure type helpers ──
@@ -358,37 +583,76 @@ function buildStructureParams(container) {
     }
   }
 
-  // ── Binary-tree: left/right pointer selectors ──
+  // ── Binary-tree: left/right/parent pointer selectors ──
+  // Each pointer is a field <select> with an explicit empty option ("（空）",
+  // meaning "no applicable binary-tree setting"). A single "⚡ 自动分配" button
+  // runs the auto-detection once and fills in all three pointers; the selects
+  // default to the auto-assigned values (autoApplyStructureDefaults does this).
   if (st === 'binary-tree') {
-    var row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;font-size:11px;';
+    var container2 = document.createElement('div');
+    container2.style.cssText = 'padding:4px 0;';
 
-    var leftLabel = document.createElement('span');
-    leftLabel.textContent = '左指针:';
-    row.appendChild(leftLabel);
-    var leftSel = buildFieldSelect(allFields, (VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.left) || '');
+    var autoRow = document.createElement('div');
+    autoRow.style.cssText = 'display:flex;align-items:center;gap:6px;padding:2px 0 4px;';
+    var autoBtn = document.createElement('button');
+    autoBtn.textContent = '⚡ 自动分配';
+    autoBtn.type = 'button';
+    autoBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #5b8ff9;background:#e8f0fe;border-radius:3px;';
+    autoBtn.title = '自动检测并分配左/右/父指针字段';
+    autoBtn.addEventListener('click', function() {
+      var d = autoDetectLayerFields(allFields, 'binary-tree');
+      if (d && d.left) { leftSel.value = d.left; VIS_CONFIG.layerEdgeKeys.left = d.left; }
+      else { leftSel.value = ''; VIS_CONFIG.layerEdgeKeys.left = undefined; }
+      if (d && d.right) { rightSel.value = d.right; VIS_CONFIG.layerEdgeKeys.right = d.right; }
+      else { rightSel.value = ''; VIS_CONFIG.layerEdgeKeys.right = undefined; }
+      var p = autoDetectParentField(allFields);
+      if (p) { parentSel.value = p; VIS_CONFIG.parentFieldKey = p; }
+      else { parentSel.value = ''; VIS_CONFIG.parentFieldKey = ''; }
+      rebuildLayerEdges();
+      saveVisConfig(VIS_CONFIG);
+      applyVisConfig();
+    });
+    autoRow.appendChild(autoBtn);
+    container2.appendChild(autoRow);
+
+    var makePointerRow = function(labelText, sel) {
+      var prow = document.createElement('div');
+      prow.style.cssText = 'display:flex;align-items:center;gap:6px;padding:2px 0;font-size:11px;';
+      var lab = document.createElement('span');
+      lab.textContent = labelText;
+      lab.style.cssText = 'min-width:44px;';
+      prow.appendChild(lab);
+      prow.appendChild(sel);
+      return prow;
+    };
+
+    var leftSel = buildFieldSelect(allFields, (VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.left) || '', '（空）');
     leftSel.addEventListener('change', function() {
       VIS_CONFIG.layerEdgeKeys.left = leftSel.value || undefined;
-      if (VIS_CONFIG.layerEdgeKeys.left) LAYER_EDGES.add(VIS_CONFIG.layerEdgeKeys.left);
+      rebuildLayerEdges();
       saveVisConfig(VIS_CONFIG);
       applyVisConfig();
     });
-    row.appendChild(leftSel);
+    container2.appendChild(makePointerRow('左指针:', leftSel));
 
-    var rightLabel = document.createElement('span');
-    rightLabel.textContent = ' 右指针:';
-    rightLabel.style.marginLeft = '8px';
-    row.appendChild(rightLabel);
-    var rightSel = buildFieldSelect(allFields, (VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.right) || '');
+    var rightSel = buildFieldSelect(allFields, (VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.right) || '', '（空）');
     rightSel.addEventListener('change', function() {
       VIS_CONFIG.layerEdgeKeys.right = rightSel.value || undefined;
-      if (VIS_CONFIG.layerEdgeKeys.right) LAYER_EDGES.add(VIS_CONFIG.layerEdgeKeys.right);
+      rebuildLayerEdges();
       saveVisConfig(VIS_CONFIG);
       applyVisConfig();
     });
-    row.appendChild(rightSel);
+    container2.appendChild(makePointerRow('右指针:', rightSel));
 
-    container.appendChild(row);
+    var parentSel = buildFieldSelect(allFields, getEffectiveParentField() || '', '（空）');
+    parentSel.addEventListener('change', function() {
+      VIS_CONFIG.parentFieldKey = parentSel.value || '';
+      saveVisConfig(VIS_CONFIG);
+      applyVisConfig();
+    });
+    container2.appendChild(makePointerRow('父指针:', parentSel));
+
+    container.appendChild(container2);
   }
 
   // ── N-ary tree: children pointer selector ──
@@ -432,11 +696,15 @@ function buildStructureParams(container) {
   }
 }
 
-function buildFieldSelect(fields, selectedValue) {
+function buildFieldSelect(fields, selectedValue, emptyLabel) {
   var sel = document.createElement('select');
   sel.style.cssText = 'font-size:10px;min-width:80px;';
   var emptyOpt = document.createElement('option');
-  emptyOpt.value = ''; emptyOpt.textContent = '— 自动 —';
+  emptyOpt.value = '';
+  // Default label is "— 自动 —" for generic field pickers (graph viewer, etc).
+  // Binary-tree pointer selectors pass an explicit label ("（空）") because for
+  // them "auto" is an action (a button), not a selectable value.
+  emptyOpt.textContent = (emptyLabel === undefined) ? '— 自动 —' : emptyLabel;
   sel.appendChild(emptyOpt);
   for (var i = 0; i < fields.length; i++) {
     var o = document.createElement('option');
@@ -447,11 +715,103 @@ function buildFieldSelect(fields, selectedValue) {
   return sel;
 }
 
+function rebuildLayerEdges() {
+  LAYER_EDGES.clear();
+  for (var _k in VIS_CONFIG.layerEdgeKeys) {
+    if (VIS_CONFIG.layerEdgeKeys[_k]) LAYER_EDGES.add(VIS_CONFIG.layerEdgeKeys[_k]);
+  }
+}
+
+function autoDetectParentField(allFields) {
+  var parentPat = /^(p|parent|parentnode|parent_node|father|pnode)$/i;
+  for (var _i = 0; _i < allFields.length; _i++) {
+    if (parentPat.test(allFields[_i])) return allFields[_i];
+  }
+  var def = STRUCTURE_TYPES['binary-tree'];
+  if (def && def.parentField && allFields.indexOf(def.parentField) >= 0) return def.parentField;
+  return '';
+}
+
+/** Build the independent graph-viewer settings section (structureType='graph'). */
+function buildGraphViewerSettings(container) {
+  const gv = VIS_CONFIG.graphViewer || {};
+  const group = document.createElement('div');
+  group.className = 'node-type-group';
+  group.style.cssText = 'border-left:3px solid #7cd675;';
+  const header = document.createElement('div');
+  header.className = 'node-type-group-header';
+  const title = document.createElement('span');
+  title.className = 'node-type-group-title';
+  title.textContent = '图查看器';
+  header.appendChild(title);
+  group.appendChild(header);
+  const items = document.createElement('div');
+  items.className = 'node-type-items';
+  items.style.cssText = 'flex-direction:column;align-items:stretch;gap:6px;';
+
+  const ri = currentRaw != null ? currentRaw : toReal(current);
+  const curGv = STEPS[ri] && STEPS[ri].graphView;
+  const vertexFields = [], edgeFields = [], seenV = {}, seenE = {};
+  for (const n of (curGv && curGv.nodes) || []) {
+    for (const f of (n.fields || [])) { if (!seenV[f]) { seenV[f] = 1; vertexFields.push(f); } }
+  }
+  for (const e of (curGv && curGv.edges) || []) {
+    for (const f of (e.fields || [])) { if (!seenE[f]) { seenE[f] = 1; edgeFields.push(f); } }
+  }
+
+  const makeRow = (label, control) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;';
+    const lab = document.createElement('span');
+    lab.textContent = label;
+    lab.style.cssText = 'min-width:70px;';
+    row.appendChild(lab);
+    row.appendChild(control);
+    return row;
+  };
+  const onChange = (cb) => (evt) => { cb(evt.target.value); saveVisConfig(VIS_CONFIG); applyVisConfig(); };
+
+  const vfSel = buildFieldSelect(vertexFields, gv.valueField);
+  vfSel.addEventListener('change', onChange((v) => { VIS_CONFIG.graphViewer.valueField = v; }));
+  items.appendChild(makeRow('顶点值字段', vfSel));
+
+  const efSel = buildFieldSelect(edgeFields, gv.edgeValueField);
+  efSel.addEventListener('change', onChange((v) => { VIS_CONFIG.graphViewer.edgeValueField = v; }));
+  items.appendChild(makeRow('边值字段', efSel));
+
+  const dirSel = document.createElement('select');
+  dirSel.style.cssText = 'font-size:10px;min-width:80px;';
+  const dirOpts = [['auto', '自动检测'], ['directed', '强制有向'], ['undirected', '强制无向']];
+  for (const [v, label] of dirOpts) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = label;
+    if (v === gv.direction) o.selected = true;
+    dirSel.appendChild(o);
+  }
+  dirSel.addEventListener('change', onChange((v) => { VIS_CONFIG.graphViewer.direction = v; }));
+  items.appendChild(makeRow('方向', dirSel));
+
+  const radInput = document.createElement('input');
+  radInput.type = 'number';
+  radInput.min = '10'; radInput.max = '60'; radInput.step = '1';
+  radInput.value = gv.radius || 24;
+  radInput.style.cssText = 'font-size:10px;width:70px;';
+  radInput.addEventListener('change', onChange((v) => { VIS_CONFIG.graphViewer.radius = Math.max(10, Math.min(60, Number(v) || 24)); }));
+  items.appendChild(makeRow('节点半径', radInput));
+
+  group.appendChild(items);
+  container.appendChild(group);
+}
+
 /** Apply default layer-edge auto-detection and rebuild LAYER_EDGES */
 function autoApplyStructureDefaults() {
   var st = VIS_CONFIG.structureType;
   var def = STRUCTURE_TYPES[st];
   if (!def) return;
+
+  // Make sure the field registry exists before reading field names / applying
+  // per-structure default field visibility.
+  buildNodeTypeRegistry();
 
   // Collect field names
   var allFields = [];
@@ -463,6 +823,9 @@ function autoApplyStructureDefaults() {
       if (!seen2[fn]) { seen2[fn] = true; allFields.push(fn); }
     }
   }
+
+  // B-tree: non-keys/non-children fields (t, leaf, …) default to hidden.
+  applyBTreeMetaDefaults();
 
   var detected = autoDetectLayerFields(allFields, st);
   if (detected) VIS_CONFIG.layerEdgeKeys = detected;
@@ -587,18 +950,51 @@ function hideAutoCreatedPanel() {
   }, 800);
 }
 
+/**
+ * Lazily load the PageAgent CDN bundle. The static <script> tag was removed
+ * from the page head because page-agent.demo.js creates an iframe sandbox on
+ * load; when the page is opened from a local file, that iframe tries to load
+ * a file:// URL and the browser blocks it with
+ * "Unsafe attempt to load URL file:// … (file: URLs are unique security
+ * origins)". Loading on demand (only when the user enables PageAgent) avoids
+ * the error while keeping the feature available.
+ */
+function loadPageAgentCdn() {
+  return new Promise((resolve) => {
+    if (window.PageAgent) { resolve(true); return; }
+    if (window.__pageAgentCdnPromise) {
+      window.__pageAgentCdnPromise.then((ok) => resolve(ok));
+      return;
+    }
+    window.__pageAgentCdnPromise = new Promise((res) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/page-agent@1.12.2/dist/iife/page-agent.demo.js?autoInit=false&showPanel=false';
+      s.crossOrigin = 'anonymous';
+      s.onload = () => res(true);
+      s.onerror = () => res(false);
+      document.head.appendChild(s);
+    });
+    window.__pageAgentCdnPromise.then((ok) => resolve(ok));
+  });
+}
+
 async function initializeDsvisAgent() {
   if (window.__dsvisAgentInitialized) return;
-  if (!window.PageAgent) {
-    DSVisLogger.warn('agent', 'cdn-not-loaded', {});
-    // CDN script not yet loaded — retry on load
-    window.addEventListener('load', () => { initializeDsvisAgent(); }, { once: true });
-    return;
-  }
   const config = loadPageAgentConfig();
   if (!config.enabled) {
     DSVisLogger.debug('agent', 'not-enabled', {});
     return;
+  }
+  // PageAgent works fine under file:// with the current CDN build
+  // (page-agent@1.12.2?autoInit=false&showPanel=false): it does not create the
+  // self-referencing iframe that older builds did, so there is no
+  // "Unsafe attempt to load URL file:// …" warning. It is enabled by default.
+  if (!window.PageAgent) {
+    await loadPageAgentCdn();
+    if (!window.PageAgent) {
+      DSVisLogger.warn('agent', 'cdn-not-loaded', {});
+      return;
+    }
   }
   try {
     // The PageAgent class ALWAYS creates a Panel DOM node. We remove it
@@ -657,11 +1053,13 @@ async function reloadDsvisAgent() {
 function applyVisConfig() {
   saveVisConfig(VIS_CONFIG);
   resetGraphInstance();
-  if (currentRaw != null) {
-    renderStepRaw(currentRaw);
-  } else {
-    renderStep(current);
-  }
+  // Rebuild synchronously (not via the rAF-scheduled renderStep) so there is no
+  // window between destroying the old graph and creating the new one — avoids
+  // stale/partial frames (blank columns / leftover dividers) when switching
+  // display modes.
+  const ri = currentRaw != null ? currentRaw : toReal(current);
+  const di = currentRaw != null ? current : toDisplay(ri);
+  renderStepImpl(ri, di);
 }
 
 /** Re-render current step without destroying the graph (for settings changes). */
@@ -715,7 +1113,6 @@ const LAYOUT_PRESET = {
   dagreExtraX: 24,
   dagreExtraY: 18,
   gridPadding: 14,
-  treeConnectivityThreshold: 0.55,
   aspectMin: 0.6,
   aspectMax: 1.8,
 };
@@ -1293,7 +1690,7 @@ function findFrameStepIndex(frameKeyValue, preferredIndex = current) {
  * End Replay Navigation Section
  * ======================================================================== */
 
-function analyzeLayoutMetrics(graphData, viewport) {
+function analyzeLayoutMetrics(graphData, viewport, connectivityEdges = null) {
   const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
   const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
   let maxH = 80;
@@ -1323,16 +1720,26 @@ function analyzeLayoutMetrics(graphData, viewport) {
     Math.min(LAYOUT_PRESET.aspectMax, width / Math.max(height, 1))
   );
   const cols = Math.max(1, Math.ceil(Math.sqrt(nodes.length * aspect)));
+  // Connectivity is judged against *connectivityEdges* when provided (the full
+  // graph's edges) instead of only *graphData.edges*. B-tree/n-ary trees lay
+  // out with a LAYER_EDGES-filtered subgraph, but early steps may only carry
+  // root/next/parent links (no children layer edge yet) — those nodes are still
+  // connected and must NOT fall back to the dense grid.
+  const edgeList = Array.isArray(connectivityEdges) ? connectivityEdges : edges;
   const connectedNodeIds = new Set();
-  for (const e of edges) {
+  for (const e of edgeList) {
     if (e?.source !== undefined) connectedNodeIds.add(String(e.source));
     if (e?.target !== undefined) connectedNodeIds.add(String(e.target));
   }
-  const connectedRatio = connectedNodeIds.size / Math.max(nodes.length, 1);
-  const treeLike = edges.length > 0 && (
-    connectedRatio >= LAYOUT_PRESET.treeConnectivityThreshold ||
-    edges.length >= nodes.length - 1
-  );
+  // Connected nodes must never fall back to the dense grid layout: grid only
+  // packs cards into rows/columns and ignores edge relationships, so a sparse
+  // step with a couple of linked nodes would render meaningless criss-crossing
+  // edges. As soon as any nodes are joined by an edge (even a single link),
+  // lay the whole set out as a graph (dagre) so the connections read
+  // naturally. Grid is reserved for fully disconnected collections (no edges),
+  // where density is the goal.
+  const hasConnections = edgeList.length > 0 && connectedNodeIds.size >= 2;
+  const treeLike = hasConnections;
 
   return { nodes, maxW, maxH, cols, boundaryGapX, boundaryGapY, treeLike };
 }
@@ -1398,57 +1805,306 @@ function applyCompactGridLayout(graphData, viewport = null) {
 
 // Post-dagre: enforce left-child-left, right-child-right for binary trees.
 // Runs after G6's dagre layout finishes, swapping sibling x positions if needed.
+// Pure layout calculator shared by the pre-position pass (prepareGraphForLayout,
+// which then disables G6's layout so nodes render directly in place) and the
+// afterlayout correction (applyTextbookLayout). Produces "textbook" binary tree
+// positions: leaves evenly spaced in pre-order (ll, lr, rl, rr), internal nodes
+// at the midpoint of their children, rows stacked at a fixed rank gap, and
+// non-tree nodes (containers) pinned above the root. Returns { id: [x, y] }.
+function computeTextbookPositions(nodes, edges, leftKey, rightKey) {
+  var children = {};
+  var hasParent = {};
+  for (var _ei = 0; _ei < edges.length; _ei++) {
+    var e = edges[_ei];
+    var label = e && e.data && e.data.label;
+    if (!label) continue;
+    var src = String(e.source), tgt = String(e.target);
+    if (leftKey && label === leftKey) { if (!children[src]) children[src] = []; children[src].push(tgt); hasParent[tgt] = true; }
+    if (rightKey && label === rightKey) { if (!children[src]) children[src] = []; children[src].push(tgt); hasParent[tgt] = true; }
+  }
+
+  // Roots = nodes that own left/right children but have no left/right parent.
+  var roots = [];
+  for (var _ni = 0; _ni < nodes.length; _ni++) {
+    var nid = String(nodes[_ni].id);
+    if ((children[nid] || []).length && !hasParent[nid]) roots.push(nid);
+  }
+  if (!roots.length) {
+    if (!nodes.length) return null;
+    roots.push(String(nodes[0].id));
+  }
+
+  var inTree = {};
+  // Cycle guard: during AVL rotations the captured left/right edges can form a
+  // temporary cycle (a node briefly points back at an ancestor). Without the
+  // visited check these DFS passes blow the stack.
+  var collect = function(id) {
+    if (inTree[id]) return;
+    inTree[id] = true;
+    var ch = children[id] || [];
+    for (var _c = 0; _c < ch.length; _c++) collect(ch[_c]);
+  };
+  for (var _r = 0; _r < roots.length; _r++) collect(roots[_r]);
+
+  // Only tree nodes influence the horizontal spacing (container excluded).
+  var maxW = 60;
+  for (var _ni2 = 0; _ni2 < nodes.length; _ni2++) {
+    if (inTree[String(nodes[_ni2].id)]) {
+      var sz = nodes[_ni2].style && nodes[_ni2].style.size;
+      if (sz && sz[0] > maxW) maxW = sz[0];
+    }
+  }
+
+  var leafCount = {};
+  var dfsCount = function(id) {
+    if (leafCount[id] != null) return; // memo + cycle guard
+    var ch = children[id] || [];
+    if (!ch.length) { leafCount[id] = 1; return; }
+    var t = 0;
+    for (var _ci = 0; _ci < ch.length; _ci++) { dfsCount(ch[_ci]); t += leafCount[ch[_ci]] || 0; }
+    leafCount[id] = t;
+  };
+  for (var _ri = 0; _ri < roots.length; _ri++) dfsCount(roots[_ri]);
+  var totalLeaves = 0;
+  for (var _ri2 = 0; _ri2 < roots.length; _ri2++) totalLeaves += leafCount[roots[_ri2]] || 0;
+
+  // Evenly spaced leaf slots; internal node x = midpoint of its children.
+  var SPACING = maxW + 30;
+  var pos = {};
+  var slot = 0;
+  var assign = function(id) {
+    if (pos[id] != null) return; // cycle guard
+    var ch = children[id] || [];
+    if (!ch.length) {
+      pos[id] = (slot - (totalLeaves - 1) / 2) * SPACING; slot++;
+    } else {
+      for (var _ci2 = 0; _ci2 < ch.length; _ci2++) assign(ch[_ci2]);
+      var p0 = pos[ch[0]], p1 = pos[ch[ch.length - 1]];
+      if (p0 != null && p1 != null) pos[id] = (p0 + p1) / 2;
+      else { pos[id] = (slot - (totalLeaves - 1) / 2) * SPACING; slot++; }
+    }
+  };
+  for (var _ri3 = 0; _ri3 < roots.length; _ri3++) assign(roots[_ri3]);
+
+  // Row y from root depth at a fixed rank gap (no dagre dependency).
+  var ROW_GAP = 124;
+  var CONTAINER_GAP = 140;
+  var depth = {};
+  var queue = [];
+  for (var _r4 = 0; _r4 < roots.length; _r4++) { depth[roots[_r4]] = 0; queue.push(roots[_r4]); }
+  while (queue.length) {
+    var idq = queue.shift();
+    var chq = children[idq] || [];
+    for (var _c5 = 0; _c5 < chq.length; _c5++) {
+      if (depth[chq[_c5]] == null) { depth[chq[_c5]] = depth[idq] + 1; queue.push(chq[_c5]); }
+    }
+  }
+
+  var result = {};
+  for (var _ni3 = 0; _ni3 < nodes.length; _ni3++) {
+    var id3 = String(nodes[_ni3].id);
+    if (pos[id3] != null) result[id3] = [pos[id3], (depth[id3] != null ? depth[id3] : 0) * ROW_GAP];
+  }
+
+  // Non-tree nodes (containers / not-yet-linked nodes) sit one rank above the
+  // root, spread horizontally around the root's x.
+  var treeRootX = roots.length && pos[roots[0]] != null ? pos[roots[0]] : 0;
+  var nonTree = [];
+  for (var _n4 = 0; _n4 < nodes.length; _n4++) {
+    if (!inTree[String(nodes[_n4].id)]) nonTree.push(nodes[_n4]);
+  }
+  if (nonTree.length) {
+    var ntW = 60;
+    for (var _nt = 0; _nt < nonTree.length; _nt++) {
+      var sz2 = nonTree[_nt].style && nonTree[_nt].style.size;
+      if (sz2 && sz2[0] > ntW) ntW = sz2[0];
+    }
+    var ntGap = ntW + 30;
+    for (var _nt2 = 0; _nt2 < nonTree.length; _nt2++) {
+      var nx = treeRootX + (_nt2 - (nonTree.length - 1) / 2) * ntGap;
+      result[String(nonTree[_nt2].id)] = [nx, -CONTAINER_GAP];
+    }
+  }
+  return result; // { id: [x, y] }
+}
+
+function applyTextbookLayout() {
+  // G6 v5: node data lives on graph.getData() with x/y in node.style (the
+  // old graph.getNodes()/getEdges() v4 API does not exist here). Recompute the
+  // textbook positions and animate into place with translateElementTo(…, true)
+  // so the layout animation is kept. When the pre-position pass already placed
+  // the nodes (prepareGraphForLayout + disabled layout), this is a no-op.
+  var leftKey = VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.left;
+  var rightKey = VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.right;
+  if (!leftKey && !rightKey) return;
+  var data = graph.getData ? graph.getData() : { nodes: [], edges: [] };
+  var posMap = computeTextbookPositions(
+    Array.isArray(data.nodes) ? data.nodes : [],
+    Array.isArray(data.edges) ? data.edges : [],
+    leftKey, rightKey
+  );
+  if (!posMap) return;
+  var updates = {};
+  for (var _i = 0; _i < data.nodes.length; _i++) {
+    var id = String(data.nodes[_i].id);
+    if (posMap[id]) updates[id] = posMap[id];
+  }
+  if (Object.keys(updates).length && typeof graph.translateElementTo === 'function') {
+    graph.translateElementTo(updates, true);
+  }
+}
+
 function enforceLeftRightOrdering() {
   if (!graph) return;
   if (VIS_CONFIG.structureType !== 'binary-tree') return;
   var leftKey = VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.left;
   var rightKey = VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.right;
   if (!leftKey && !rightKey) return;
-
   try {
-    var nodes = graph.getNodes ? graph.getNodes() : [];
-    var edges = graph.getEdges ? graph.getEdges() : [];
-    var nodeMap = {};
-    for (var _ni = 0; _ni < nodes.length; _ni++) {
-      nodeMap[nodes[_ni].getID()] = nodes[_ni];
-    }
-
-    // Build parent → { leftChildId, rightChildId }
-    var siblings = {};
-    for (var _ei = 0; _ei < edges.length; _ei++) {
-      var e = edges[_ei];
-      var model = e.getModel();
-      var label = model && model.data && model.data.label;
-      if (!label) continue;
-      var src = e.getSource().getID();
-      var tgt = e.getTarget().getID();
-      if (leftKey && label === leftKey) { if (!siblings[src]) siblings[src] = {}; siblings[src].left = tgt; }
-      if (rightKey && label === rightKey) { if (!siblings[src]) siblings[src] = {}; siblings[src].right = tgt; }
-    }
-
-    // Swap x positions where left is to the right of right
-    for (var pid in siblings) {
-      var sib = siblings[pid];
-      if (!sib.left || !sib.right) continue;
-      var lNode = nodeMap[sib.left], rNode = nodeMap[sib.right];
-      if (!lNode || !rNode) continue;
-      var lm = lNode.getModel(), rm = rNode.getModel();
-      var lx = lm.x != null ? lm.x : 0, rx = rm.x != null ? rm.x : 0;
-      if (lx > rx) {
-        lm.x = rx; rm.x = lx;
-      }
-    }
+    applyTextbookLayout();
+    // G6's dagre layout keeps applying its computed positions in the frames
+    // right after 'afterlayout', which would overwrite our translateElementTo
+    // positions. Re-apply once the layout wrap-up frames settle (double rAF).
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        try {
+          applyTextbookLayout();
+          // The textbook pass moves nodes (container pinned above the root)
+          // *after* the 'afterlayout' fitGraph already ran, so those nodes can
+          // land outside the viewport. Refit now that positions have settled.
+          if (typeof fitGraph === 'function') fitGraph();
+        } catch (_) { /* best-effort */ }
+      });
+    });
   } catch (_) { /* best-effort */ }
 }
 
+/** Post-layout pass for array-child trees (B-tree / B+ / n-ary): after dagre
+ *  settles, reorder each parent's children (children[0..n]) left→right by array
+ *  index, mirroring the binary-tree left/right ordering, so sibling edges do
+ *  not cross. Only touches siblings on the same rank (same y) and preserves
+ *  their existing gaps (swaps x positions in index order). */
+function enforceArrayChildrenOrdering() {
+  if (!graph) return;
+  if (VIS_CONFIG.structureType === 'binary-tree' || VIS_CONFIG.structureType === 'graph') return;
+  if (!LAYER_EDGES.size) return;
+  try {
+    const apply = () => {
+      const data = graph.getData ? graph.getData() : { nodes: [], edges: [] };
+      const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+      const edges = Array.isArray(data.edges) ? data.edges : [];
+      if (nodes.length < 3) return;
+      const nodeX = new Map();
+      const nodeY = new Map();
+      for (const n of nodes) {
+        nodeX.set(String(n.id), Number(n.style && n.style.x) || 0);
+        nodeY.set(String(n.id), Number(n.style && n.style.y) || 0);
+      }
+      // Group children by parent, tracking their array index (children[0..n]).
+      const childrenByParent = new Map();
+      const idxRe = /\[(\d+)\]\s*$/;
+      for (const e of edges) {
+        const label = String(e?.data?.label || '').trim();
+        const fk = String(e?.data?.field_key || '').trim();
+        let idx = -1;
+        for (const le of LAYER_EDGES) {
+          const m = label.match(idxRe) || fk.match(idxRe);
+          if ((label === le || fk === le || label.startsWith(le + '[') || fk.includes('::' + le + '[')) && m) {
+            idx = parseInt(m[1]);
+            break;
+          }
+        }
+        if (idx < 0) continue;
+        const parent = String(e.source);
+        if (!childrenByParent.has(parent)) childrenByParent.set(parent, []);
+        childrenByParent.get(parent).push({ idx, child: String(e.target) });
+      }
+      const updates = {};
+      for (const [parent, kids] of childrenByParent.entries()) {
+        if (kids.length < 2) continue;
+        const rowY = nodeY.get(kids[0].child);
+        if (kids.some(k => nodeY.get(k.child) !== rowY)) continue;
+        const xs = kids.map(k => nodeX.get(k.child)).sort((a, b) => a - b);
+        const sorted = [...kids].sort((a, b) => a.idx - b.idx);
+        for (let i = 0; i < sorted.length; i++) {
+          updates[sorted[i].child] = [xs[i], rowY];
+        }
+      }
+      const keys = Object.keys(updates);
+      if (keys.length && typeof graph.translateElementTo === 'function') {
+        graph.translateElementTo(updates, true);
+      }
+    };
+    apply();
+    // dagre keeps applying its computed positions in wrap-up frames; re-apply
+    // once the layout settles (double rAF), like enforceLeftRightOrdering.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        try { apply(); } catch (_) {}
+      });
+    });
+  } catch (_) { /* best-effort */ }
+}
+
+/** After a layout settles, re-add layout-exempt ("nolayout") edges so their
+ *  arrows render without moving any node (G6 addData does not relayout).
+ *  Idempotent: re-attaching replaces the previous handler. */
+function attachNoLayoutEdges(graph, noLayoutEdges) {
+  if (!graph) return;
+  if (graph.__noLayoutAdd && typeof graph.off === 'function') {
+    graph.off('afterlayout', graph.__noLayoutAdd);
+    graph.off('afterrender', graph.__noLayoutAdd);
+  }
+  graph.__noLayoutAdd = null;
+  if (!noLayoutEdges || !noLayoutEdges.length) return;
+  const add = () => {
+    try {
+      const cur = (typeof graph.getData === 'function' && graph.getData()) || {};
+      const curEdges = Array.isArray(cur.edges) ? cur.edges : [];
+      const already = curEdges.some(e => e?.data?._noLayout);
+      if (!already && typeof graph.addData === 'function') {
+        graph.addData({ edges: noLayoutEdges });
+      }
+    } catch (_) {}
+  };
+  graph.__noLayoutAdd = add;
+  if (typeof graph.on === 'function') {
+    graph.on('afterlayout', add);
+    graph.on('afterrender', add);
+  }
+}
+
 function prepareGraphForLayout(graphData, viewport = null) {
+  // ── Layout-exempt ("nolayout") edges ──
+  // Fields set to 'nolayout' stay visible (their arrows render) but must NOT
+  // drive the layout. Split them out here: layout computation only sees the
+  // non-exempt edges; the renderer re-adds the exempt ones after layout so
+  // they are drawn without moving any node (see attachNoLayoutEdges).
+  const fullEdges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+  const noLayoutEdges = fullEdges.filter(e => e?.data?._noLayout);
+  const layoutEdges = fullEdges.filter(e => !e?.data?._noLayout);
+  const layoutSource = { ...(graphData || {}), edges: layoutEdges };
+
   // If LAYER_EDGES is set, use only layer-edges for layout calculation
-  let layoutData = graphData;
+  let layoutData = layoutSource;
   if (LAYER_EDGES.size > 0) {
-    const allEdges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+    const allEdges = layoutEdges;
+    // A container field is stored with indexed ref labels ("children[0]",
+    // field_key "Type::children[0]") while the layer edge is the bare field
+    // name ("children").  Match both the exact name and any indexed variant so
+    // a B-tree/n-ary tree keeps its tree layout instead of falling back to grid.
+    const matchesLayerEdge = (label, fk) => {
+      if (LAYER_EDGES.has(label) || LAYER_EDGES.has(fk)) return true;
+      for (const le of LAYER_EDGES) {
+        if (label.startsWith(le + '[')) return true;
+        if (fk && (fk.includes('::' + le + '[') || fk.includes('.' + le + '['))) return true;
+      }
+      return false;
+    };
     const layerEdges = allEdges.filter(e => {
       const label = String(e?.data?.label || '').trim();
-      return LAYER_EDGES.has(label) || LAYER_EDGES.has(e?.data?.field_key || '');
+      const fk = String(e?.data?.field_key || '').trim();
+      return matchesLayerEdge(label, fk);
     });
     const layerNodeIds = new Set();
     for (const e of layerEdges) {
@@ -1464,16 +2120,62 @@ function prepareGraphForLayout(graphData, viewport = null) {
   // Detect left/right edge labels from actual data, then sort nodes so that
   // left-subtree nodes precede right-subtree nodes.  Dagre processes nodes in
   // data order, which strongly influences sibling positioning within a rank.
-  const sortedGraphData = reorderTreeNodesByLeftRight(graphData || layoutData);
+  const sortedGraphData = reorderTreeNodesByLeftRight(graphData || layoutSource);
+  // Strip any layout-exempt edges from the data handed to the layout engine.
+  if (Array.isArray(sortedGraphData?.edges)) {
+    sortedGraphData.edges = sortedGraphData.edges.filter(e => !e?.data?._noLayout);
+  }
 
-  const metrics = analyzeLayoutMetrics(layoutData, viewport || getGraphSize());
+  // Binary trees ALWAYS use the pre-positioned textbook layout (no G6 layout),
+  // even for tiny early steps that dagre/grid would otherwise lay out
+  // differently. Mixing grid/dagre layouts mid-playback makes nodes visibly
+  // "flash then fix" as the 'afterlayout' correction moves them — exactly the
+  // jitter seen during step-through. The same positions are reused by
+  // applyTextbookLayout() as a no-op safety net.
+  //
+  // Left/right labels come from VIS_CONFIG.layerEdgeKeys (the style panel),
+  // NOT data sniffing: early capture steps can have incomplete edges (e.g. a
+  // merge step records no left/right edge yet), so detectLeftRightLabels would
+  // bail and fall back to grid/dagre.
+  if (VIS_CONFIG.structureType === 'binary-tree') {
+    const lk = VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.left;
+    const rk = VIS_CONFIG.layerEdgeKeys && VIS_CONFIG.layerEdgeKeys.right;
+    if (lk && rk) {
+      try {
+        const tb = computeTextbookPositions(
+          Array.isArray(sortedGraphData?.nodes) ? sortedGraphData.nodes : [],
+          Array.isArray(sortedGraphData?.edges) ? sortedGraphData.edges : [],
+          lk, rk
+        );
+        if (tb) {
+          for (const _pn of (sortedGraphData.nodes || [])) {
+            const pp = tb[String(_pn.id)];
+            if (pp && _pn.style) { _pn.style.x = pp[0]; _pn.style.y = pp[1]; }
+          }
+          return { data: sortedGraphData, noLayoutEdges, layout: null };
+        }
+      } catch (_e) { /* fall through to dagre/grid below */ }
+    }
+  }
+
+  const metrics = analyzeLayoutMetrics(
+    layoutData,
+    viewport || getGraphSize(),
+    // Connectivity must see the FULL (non-exempt) edge set, not just the
+    // LAYER_EDGES-filtered subgraph: B-tree / n-ary early steps may only carry
+    // root/next/parent links (no children layer edge yet) — those connected
+    // nodes should use dagre, not the dense grid. Layout computation still
+    // uses layoutData.
+    layoutEdges
+  );
   if (!metrics.treeLike) {
-    const compactLayout = applyCompactGridLayout(LAYER_EDGES.size > 0 ? graphData : layoutData, viewport || getGraphSize());
+    const compactLayout = applyCompactGridLayout(LAYER_EDGES.size > 0 ? layoutSource : layoutData, viewport || getGraphSize());
+    compactLayout.noLayoutEdges = noLayoutEdges;
     return compactLayout;
   }
   const layout = computeAdaptiveLayout(layoutData, viewport);
-  // Use sorted graph data (all edges) with the computed layout
-  return { data: sortedGraphData, layout };
+  // Use sorted graph data (non-exempt edges) with the computed layout
+  return { data: sortedGraphData, noLayoutEdges, layout };
 }
 
 // ── Binary tree left/right ordering ──
@@ -1566,6 +2268,7 @@ function getGraphSize() {
 }
 
 function initGraph(data) {
+  if (typeof G6 === 'undefined') return;  // CDN not loaded — error already shown
   const { register, BaseNode } = G6;
 
   class CardNode extends BaseNode {
@@ -1594,14 +2297,6 @@ function initGraph(data) {
         lineWidth: attributes.lineWidth || 1,
         zIndex: -1
       }, container);
-      // [DEBUG-vflow] — log keyShape bbox
-      if (textFlow === 'vertical' && !this.__vkeyShown) {
-        this.__vkeyShown = true;
-        console.log('[DEBUG-vflow] keyShape bbox',
-          'x:', -w/2, 'y:', -h/2, 'w:', w, 'h:', h,
-          'cardW:', w, 'cardH:', h,
-          'textFlow:', textFlow, 'name:', String(name).substring(0,30));
-      }
       const prevHeaderLineCount = this.__prevHeaderLineCount || 0;
       const subtitleText = attributes.subtitle || '';
       if (textFlow !== 'vertical') {
@@ -1659,31 +2354,48 @@ function initGraph(data) {
         const gridNames = Array.isArray(attributes.gridNames) ? attributes.gridNames : [];
         const gridValues = Array.isArray(attributes.gridValues) ? attributes.gridValues : [];
         const gridRefs = Array.isArray(attributes.gridRefs) ? attributes.gridRefs : [];
-        const numFields = Math.max(gridNames.length, 1);
+        // B-tree nodes (titleColW collapsed to 0) may have zero key cells when
+        // the key list is empty (split-in-progress new root). Allow numFields 0
+        // there so no empty grid cell is drawn; other vertical nodes keep >= 1.
+        const numFields = (titleColW === 0) ? gridNames.length : Math.max(gridNames.length, 1);
         const rowDeltaTypes = Array.isArray(attributes.rowDeltaTypes) ? attributes.rowDeltaTypes : [];
 
         const gridRowH = 20;
         const gridTop = -h/2 + paddingY;
         const gridLeft = -w/2 + paddingX;
+        const rowMode = attributes.rowDisplayMode || VIS_CONFIG.rowDisplayMode || 'both';
+        const showKey = rowMode !== 'value';
+        const showVal = rowMode !== 'key';
+        const visibleRows = (showKey ? 1 : 0) + (showVal ? 1 : 0);
 
         // Grid separator lines
         const nodeStroke = attributes.stroke || DELTA_COLORS.unchanged.stroke;
-        // Horizontal divider between header and data rows (skip title col because it spans 2 rows)
-        this.upsert('grid-hdiv', 'line', {
-          x1: gridLeft + titleColW, y1: gridTop + gridRowH,
-          x2: gridLeft + titleColW + numFields * fieldColW, y2: gridTop + gridRowH,
-          stroke: nodeStroke, lineWidth: 0.5, zIndex: 0
-        }, container);
+        const gridBodyH = Math.max(1, visibleRows) * gridRowH;
+        if (visibleRows > 1) {
+          this.upsert('grid-hdiv', 'line', {
+            x1: gridLeft + titleColW, y1: gridTop + gridRowH,
+            x2: gridLeft + titleColW + numFields * fieldColW, y2: gridTop + gridRowH,
+            stroke: nodeStroke, lineWidth: 0.5, zIndex: 0
+          }, container);
+        } else {
+          this.upsert('grid-hdiv', 'line', {
+            x1: -w/2, y1: -h/2, x2: -w/2, y2: -h/2,
+            stroke: 'transparent', lineWidth: 0, zIndex: -99
+          }, container);
+        }
 
-        // Title cell (spans 2 rows)
+        // Title cell (spans the visible body rows)
         this.upsert('vtitle-bg', 'rect', {
-          x: gridLeft, y: gridTop, width: titleColW, height: 2 * gridRowH,
+          x: gridLeft, y: gridTop, width: titleColW, height: gridBodyH,
           fill: attributes.fill || DELTA_COLORS.unchanged.fill, stroke: 'none', radius: 0, zIndex: -1
         }, container);
         const titleLines = String(name).split('\n');
+        const titleLineGap = 12;
+        const titleBlockH = Math.max(titleLines.length, 1) * titleLineGap;
+        const titleStartY = gridTop + gridBodyH / 2 - titleBlockH / 2 + titleLineGap / 2;
         titleLines.forEach((line, ti) => {
           this.upsert(`vtitle-${ti}`, 'text', {
-            x: gridLeft + 4, y: gridTop + gridRowH - 2 - (titleLines.length - 1 - ti) * 12,
+            x: gridLeft + 4, y: titleStartY + ti * titleLineGap,
             text: line, fontSize: 12, fill: '#0f2c63', fontWeight: 700,
             textBaseline: 'middle'
           }, container);
@@ -1691,7 +2403,7 @@ function initGraph(data) {
         const prevVTitleLineCount = this.__prevVTitleLineCount || 0;
         for (let ti = titleLines.length; ti < prevVTitleLineCount; ti++) {
           this.upsert(`vtitle-${ti}`, 'text', {
-            x: gridLeft + 4, y: gridTop + gridRowH / 2,
+            x: gridLeft + 4, y: titleStartY,
             text: '', fontSize: 12, fill: 'transparent', textBaseline: 'middle'
           }, container);
         }
@@ -1729,7 +2441,7 @@ function initGraph(data) {
           const x = gridLeft + titleColW + run.start * fieldColW + 1;
           const width = Math.max((run.end - run.start + 1) * fieldColW - 2, 2);
           this.upsert(`vbind-block-${ri}`, 'rect', {
-            x, y: gridTop + 1, width, height: Math.max(2 * gridRowH - 2, 2), radius: 3,
+            x, y: gridTop + 1, width, height: Math.max(gridBodyH - 2, 2), radius: 3,
             fill: 'transparent', stroke: nodeStroke, lineWidth: vBindLineWidth, zIndex: 0
           }, container);
         });
@@ -1747,12 +2459,23 @@ function initGraph(data) {
           const colX = gridLeft + titleColW + i * fieldColW;
           const isRef = gridRefs.includes(i);
 
-          // Vertical divider
-          this.upsert(`vdiv-${i}`, 'line', {
-            x1: colX, y1: gridTop,
-            x2: colX, y2: gridTop + 2 * gridRowH,
-            stroke: nodeStroke, lineWidth: 0.5, zIndex: 0
-          }, container);
+          // Vertical divider — skip the leftmost one when title column is hidden
+          // (otherwise it creates a visual line just inside the card's rounded border).
+          // When the title column is collapsed we must ALSO hide any divider that
+          // a previous render drew there: incremental updates reuse shapes, and the
+          // stale divider would linger as an extra separator line.
+          if (i !== 0 || titleColW !== 0) {
+            this.upsert(`vdiv-${i}`, 'line', {
+              x1: colX, y1: gridTop,
+              x2: colX, y2: gridTop + visibleRows * gridRowH,
+              stroke: nodeStroke, lineWidth: 0.5, zIndex: 0
+            }, container);
+          } else {
+            this.upsert(`vdiv-${i}`, 'line', {
+              x1: -w/2, y1: -h/2, x2: -w/2, y2: -h/2,
+              stroke: 'transparent', lineWidth: 0, zIndex: -99
+            }, container);
+          }
 
           const rowDeltaType = rowDeltaTypes[i] || null;
           const rowColor = rowDeltaType === 'added'
@@ -1761,28 +2484,45 @@ function initGraph(data) {
               ? DELTA_COLORS.changed.line
               : (isRef ? '#c97200' : '#333');
 
-          this.upsert(`vh-bg-${i}`, 'rect', {
-            x: colX, y: gridTop, width: fieldColW, height: gridRowH,
-            fill: 'transparent', stroke: 'none', zIndex: -1
-          }, container);
-          this.upsert(`vh-${i}`, 'text', {
-            x: colX + 3, y: gridTop + gridRowH / 2,
-            text: String(gridNames[i] || ''),
-            fontSize: 11, fill: rowColor,
-            fontWeight: (isRef || rowDeltaType) ? 600 : 400,
-            textBaseline: 'middle'
-          }, container);
+          let rowY = gridTop;
+          if (showKey) {
+            this.upsert(`vh-bg-${i}`, 'rect', {
+              x: colX, y: rowY, width: fieldColW, height: gridRowH,
+              fill: 'transparent', stroke: 'none', zIndex: -1
+            }, container);
+            this.upsert(`vh-${i}`, 'text', {
+              x: colX + 3, y: rowY + gridRowH / 2,
+              text: String(gridNames[i] || ''),
+              fontSize: 11, fill: rowColor,
+              fontWeight: (isRef || rowDeltaType) ? 600 : 400,
+              textBaseline: 'middle'
+            }, container);
+            rowY += gridRowH;
+          } else {
+            this.upsert(`vh-bg-${i}`, 'rect', {
+              x: -w/2, y: -h/2, width: 0, height: 0,
+              fill: 'transparent', stroke: 'transparent', zIndex: -99
+            }, container);
+            this.upsert(`vh-${i}`, 'text', {
+              x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+            }, container);
+          }
 
           // Data row cell
-          const dataY = gridTop + gridRowH;
-          const valText = isRef ? '' : String(gridValues[i] || '');
-          this.upsert(`vd-${i}`, 'text', {
-            x: colX + 3, y: dataY + gridRowH / 2,
-            text: valText,
-            fontSize: 11, fill: rowColor,
-            fontWeight: rowDeltaType ? 600 : 400,
-            textBaseline: 'middle'
-          }, container);
+          if (showVal) {
+            const valText = isRef ? '' : String(gridValues[i] || '');
+            this.upsert(`vd-${i}`, 'text', {
+              x: colX + 3, y: rowY + gridRowH / 2,
+              text: valText,
+              fontSize: 11, fill: rowColor,
+              fontWeight: rowDeltaType ? 600 : 400,
+              textBaseline: 'middle'
+            }, container);
+          } else {
+            this.upsert(`vd-${i}`, 'text', {
+              x: -w/2, y: -h/2, text: '', fontSize: 1, fill: 'transparent', zIndex: -99
+            }, container);
+          }
         }
 
         // Cleanup old elements
@@ -1901,6 +2641,10 @@ function initGraph(data) {
         }
         this.__prevBindRunCount = runs.length;
 
+        // Compute horizontal row display mode
+        const hRowMode = (attributes.rowDisplayMode || VIS_CONFIG.rowDisplayMode || 'both');
+        const refRowSet = new Set(Array.isArray(attributes.refRowIndices) ? attributes.refRowIndices : []);
+
         rows.forEach((row, i) => {
           const bindGroup = rowBindGroups[i];
           const inRun = coveredByRun.has(i);
@@ -1918,8 +2662,20 @@ function initGraph(data) {
             : rowDeltaType === 'changed'
               ? DELTA_COLORS.changed.line
               : '#333';
+          // Apply rowDisplayMode to horizontal text
+          let displayText = row;
+          if (hRowMode !== 'both') {
+            const isRefRow = refRowSet.has(i);
+            if (isRefRow) {
+              displayText = (hRowMode === 'value') ? '' : row;  // refs have no value part
+            } else {
+              const eqIdx = row.indexOf(' = ');
+              if (hRowMode === 'key') displayText = eqIdx >= 0 ? row.substring(0, eqIdx) : row;
+              else if (hRowMode === 'value') displayText = eqIdx >= 0 ? row.substring(eqIdx + 3) : row;
+            }
+          }
           this.upsert(`r-${i}`, 'text', {
-            x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: row,
+            x: -w/2 + paddingX, y: -h/2 + headerH + paddingY + i * rowH + 2, text: displayText,
             fontSize:11, fill: rowColor, fontWeight: rowDeltaType ? 600 : 400, textBaseline:'top', zIndex: 2
           }, container);
         });
@@ -1948,11 +2704,6 @@ function initGraph(data) {
         }
       }
       this.__prevRowCount = rows.length;
-      // [DEBUG-vflow] — confirm function returns
-      if (textFlow === 'vertical' && !this.__vretShown) {
-        this.__vretShown = true;
-        console.log('[DEBUG-vflow] drawKeyShape returning key:', typeof key, 'isNull:', key === null);
-      }
       return key;
     }
   }
@@ -1970,7 +2721,9 @@ function initGraph(data) {
       easing: ANIMATION_CONFIG.easing,
     },
     data: prepared.data,
-    layout: prepared.layout,
+    // Binary-tree pre-positioned data ships layout:null (no G6 layout), so the
+    // nodes render exactly where prepareGraphForLayout placed them.
+    layout: prepared.layout == null ? null : prepared.layout,
     node:{
       type:'card',
       style: { port: true }
@@ -1996,6 +2749,12 @@ function initGraph(data) {
   graph.on('element:dragstart', onDragStart);
   graph.on('element:drag', onDragMove);
   graph.on('element:dragend', onDragEnd);
+  // Re-add layout-exempt edges after the layout settles (arrows only).
+  attachNoLayoutEdges(graph, prepared.noLayoutEdges || []);
+  // Reorder array-child siblings (children[i]) left→right once layout settles.
+  if (typeof graph.once === 'function') {
+    graph.once('afterlayout', enforceArrayChildrenOrdering);
+  }
   // Right-click on node → hide it and suppress browser context menu.
   // Right-click on empty canvas → normal browser menu (save image, etc.).
   graph.on('node:contextmenu', (evt) => {
@@ -2049,6 +2808,329 @@ function initGraph(data) {
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════
+// Independent graph viewer (structureType === 'graph')
+// A minimal "graph displayer": circle nodes showing the vertex value, edges
+// with weight labels and direction. Deliberately decoupled from the card
+// pipeline (no ports, no field visibility, no dagre).
+// ════════════════════════════════════════════════════════════════════════
+let __dsvisGraphNodeRegistered = false;
+
+function registerGraphNodeType() {
+  if (__dsvisGraphNodeRegistered || typeof G6 === 'undefined') return;
+  const { register, BaseNode } = G6;
+  class GraphNodeShape extends BaseNode {
+    drawKeyShape(attributes, container) {
+      const r = Number(attributes.r) || 24;
+      const raw = attributes.value != null ? String(attributes.value) : '';
+      const text = raw.length > 8 ? raw.slice(0, 8) + '…' : raw;
+      const highlight = !!attributes.highlight;
+      // Nodes keep their normal, fully opaque look — connected/disconnected is
+      // only used for z-index layering (connected nodes sit above disconnected
+      // ones, set in buildGraphViewerG6Data), not for dimming.
+      const key = this.upsert('key', 'circle', {
+        x: 0, y: 0, r,
+        fill: highlight ? '#ffe8d0' : '#ffffff',
+        stroke: highlight ? '#ff6a00' : '#5b8ff9',
+        lineWidth: highlight ? 3 : 1.5,
+        zIndex: -1,
+      }, container);
+      this.upsert('value', 'text', {
+        x: 0, y: 0, text,
+        fontSize: r > 30 ? 12 : 10,
+        fill: '#333',
+        textAlign: 'center',
+        textBaseline: 'middle',
+      }, container);
+      return key;
+    }
+  }
+  register('node', 'graph-node', GraphNodeShape);
+  __dsvisGraphNodeRegistered = true;
+}
+
+function graphViewEdgeSig(e) {
+  // Collapsed undirected edges → order-independent key.
+  const a = String(e.source), b = String(e.target);
+  return a < b ? `${a}|${b}|${e.value}` : `${b}|${a}|${e.value}`;
+}
+
+function graphViewDiff(ri, gv) {
+  const nodes = new Set(), edges = new Set();
+  if (ri <= 0 || !STEPS[ri - 1]) return { nodes, edges };
+  const prev = STEPS[ri - 1].graphView || { nodes: [], edges: [] };
+  const prevNodeIds = new Set((prev.nodes || []).map((n) => String(n.id)));
+  const prevEdgeKeys = new Set((prev.edges || []).map(graphViewEdgeSig));
+  for (const n of gv.nodes || []) {
+    if (!prevNodeIds.has(String(n.id))) nodes.add(String(n.id));
+  }
+  for (const e of gv.edges || []) {
+    if (!prevEdgeKeys.has(graphViewEdgeSig(e))) edges.add(graphViewEdgeSig(e));
+  }
+  return { nodes, edges };
+}
+
+function graphViewerStripQuotes(s) {
+  const t = String(s).trim();
+  if (t.length >= 2 && t[0] === t[t.length - 1] && (t[0] === "'" || t[0] === '"')) return t.slice(1, -1);
+  return t;
+}
+
+function graphViewerFieldValue(cardNode, fieldName) {
+  if (!cardNode) return null;
+  const rows = Array.isArray(cardNode.style?.rows) ? cardNode.style.rows : [];
+  for (const r of rows) {
+    if (r.kind !== 'field') continue;
+    const m = /^([^=]+)=\s*(.*)$/.exec(String(r.text || ''));
+    const name = m ? m[1].trim() : String(r.name || '').trim();
+    if (name === fieldName) {
+      return m ? graphViewerStripQuotes(m[2]) : null;
+    }
+  }
+  return null;
+}
+
+function buildGraphViewerG6Data(gv, highlight, cardNodes) {
+  const cfg = VIS_CONFIG.graphViewer || {};
+  const cardById = new Map((cardNodes || []).map((n) => [String(n.id), n]));
+  const directed = cfg.direction === 'auto'
+    ? !gv.undirected
+    : cfg.direction === 'directed';
+  const highlightNodes = (highlight && highlight.nodes) || new Set();
+  const highlightEdges = (highlight && highlight.edges) || new Set();
+  // Connection degree per node — used only to layer nodes by z-index (connected
+  // nodes render above disconnected ones) so that as edges appear the connected
+  // subgraph is never hidden behind still-disconnected nodes. No visual dimming
+  // is applied; all nodes keep their normal look.
+  const degree = new Map();
+  for (const e of gv.edges || []) {
+    degree.set(String(e.source), (degree.get(String(e.source)) || 0) + 1);
+    degree.set(String(e.target), (degree.get(String(e.target)) || 0) + 1);
+  }
+  const nodes = (gv.nodes || []).map((n) => {
+    let value = n.value;
+    if (cfg.valueField) {
+      const v = graphViewerFieldValue(cardById.get(String(n.id)), cfg.valueField);
+      if (v != null) value = v;
+    }
+    const connected = (degree.get(String(n.id)) || 0) > 0;
+    return {
+      id: String(n.id),
+      type: 'graph-node',
+      style: {
+        r: Number(cfg.radius) || 24,
+        value,
+        highlight: highlightNodes.has(String(n.id)),
+        connected,
+        // Connected nodes render above disconnected ones (higher zIndex), so
+        // as edges appear the connected part never gets hidden behind the
+        // still-disconnected nodes.
+        zIndex: connected ? 2 : 0,
+      },
+    };
+  });
+  const edges = (gv.edges || []).map((e, i) => {
+    let value = e.value;
+    if (cfg.edgeValueField && e.edgeId) {
+      const v = graphViewerFieldValue(cardById.get(String(e.edgeId)), cfg.edgeValueField);
+      if (v != null) value = v;
+    }
+    const sig = graphViewEdgeSig(e);
+    const active = highlightEdges.has(sig);
+    return {
+      id: `ge${i}`,
+      source: String(e.source),
+      target: String(e.target),
+      style: {
+        stroke: active ? '#ff6a00' : '#a0a0a0',
+        lineWidth: active ? 3 : 1.5,
+        endArrow: directed ? { fill: '#a0a0a0' } : false,
+        labelText: value != null && value !== '' ? String(value) : '',
+        labelFontSize: 11,
+        labelFill: '#666',
+        labelPlacement: 'center',
+        labelOffset: [0, -8],
+      },
+    };
+  });
+  return { nodes, edges };
+}
+
+function initGraphViewer(data) {
+  if (typeof G6 === 'undefined') return;
+  registerGraphNodeType();
+  const size = getGraphSize();
+  graph = new G6.Graph({
+    container: 'graph',
+    width: size.width,
+    height: size.height,
+    autoResize: true,
+    animation: { duration: 80, easing: 'linear' },
+    data,
+    layout: {
+      // G6's `force` resolves to a custom layout that fails to separate nodes
+      // (overlap) and never stabilises (jitter). The d3-based `d3-force` is
+      // correct — BUT its options must be nested (`link`/`manyBody`/`collide`/
+      // `center`/`x`/`y` objects); top-level `linkDistance`/`nodeStrength`/
+      // `preventOverlap` are silently ignored by d3-force.
+      //
+      // Two force problems were observed and fixed:
+      // 1) Drift: with only `center`, every step render re-ran the simulation
+      //    from the current (already spread) positions, so the graph kept
+      //    drifting apart over consecutive steps (measured bbox growing
+      //    1100→2052px). `center` only translates the graph centroid — it does
+      //    NOT pull nodes back. The `x`/`y` centering forces (forceX/forceY)
+      //    pull each node toward the canvas centre, which stops the drift
+      //    (bbox now holds steady at ~197px).
+      // 2) Spacing: manyBody:-350 / link:0.4 left the layout unstable and
+      //    far-apart-looking. distance:130 / strength:0.8 + manyBody:-200 keeps
+      //    it compact, and collide enforces a stable ~72px node separation.
+      //    velocityDecay 0.6 helps each step settle quickly.
+      type: 'd3-force',
+      link: { distance: 130, strength: 0.8 },
+      manyBody: { strength: -200 },
+      collide: { radius: (Number(VIS_CONFIG.graphViewer.radius) || 24) + 12, strength: 0.8 },
+      x: { strength: 0.15, x: size.width / 2 },
+      y: { strength: 0.15, y: size.height / 2 },
+      center: { x: size.width / 2, y: size.height / 2 },
+      velocityDecay: 0.6,
+    },
+    node: { type: 'graph-node' },
+    // Plain `drag-element` only translates the node and does NOT cooperate with
+    // the d3-force layout: the running force simulation keeps pulling the node
+    // back, so edges/arrows appear to not follow the drag. `drag-element-force`
+    // is G6's behavior built for d3-force layouts — it fixes the dragged node
+    // and recomputes the layout in real time so edges follow. `fixed: true`
+    // keeps the node where it was dropped (not dragged back by the layout).
+    behaviors: [
+      'drag-canvas',
+      'zoom-canvas',
+      { type: 'drag-element-force', fixed: true },
+    ],
+  });
+  graph._dsvisMode = 'graph';
+  graph.on('node:click', (evt) => {
+    const nodeId = evt?.target?.id || evt?.item?.id || evt?.data?.id;
+    if (nodeId) showGraphNodeDetails(String(nodeId));
+  });
+  // G6 v5's render() is async — the d3-force layout runs inside its promise
+  // chain. Fitting synchronously right after render() would measure the nodes
+  // at (0,0) before the layout has run (observed: layout sometimes never ran,
+  // leaving every node stacked at the origin). Fit once the first layout has
+  // settled instead.
+  graph.render();
+  if (typeof graph.once === 'function') {
+    graph.once('afterlayout', () => {
+      if (graph && typeof graph.fitView === 'function') {
+        graph.fitView({ padding: 40, onlyOutOfViewer: false });
+      }
+    });
+  }
+}
+
+function renderGraphStep(ri, s) {
+  const gv = (s && s.graphView) || { nodes: [], edges: [], undirected: false };
+  const highlight = graphViewDiff(ri, gv);
+  const cardNodes = (s && s.graph && s.graph.nodes) || [];
+  const data = buildGraphViewerG6Data(gv, highlight, cardNodes);
+  if (!graph || graph._dsvisMode !== 'graph') {
+    if (graph) resetGraphInstance();
+    initGraphViewer(data);
+  } else {
+    try {
+      graph.setData(data);
+      graph.render();
+      // The graph viewer only fits the view once at init. When a later step
+      // brings a larger graph, part of it would fall outside the viewport
+      // (zoom/pan kept from the previous step). Refit after the (async) layout
+      // settles — fitting synchronously right after render() would see the
+      // nodes still clustered (tiny bbox) and zoom in absurdly. Debounced
+      // 'afterlayout' refits only when the graph actually exceeds the viewport,
+      // preserving a manual pan/zoom for graphs that already fit.
+      if (typeof graph.on === 'function') {
+        graph.on('afterlayout', scheduleGraphViewRefit);
+      }
+    } catch (_e) {
+      // G6's transition diff may briefly reference elements removed by a step
+      // change ("Node/Edge not found for id: …") — benign, render stays correct.
+    }
+  }
+}
+
+// Debounced "fit only if the graph overflows the viewport" for the graph
+// viewer. Keeps the whole graph visible as steps grow, without stealing the
+// user's pan/zoom while the graph still fits.
+function scheduleGraphViewRefit() {
+  try {
+    if (!graph || graph._dsvisMode !== 'graph' || typeof graph.fitView !== 'function') return;
+    clearTimeout(graph.__graphRefitTimer);
+    graph.__graphRefitTimer = setTimeout(() => {
+      try {
+        graph.fitView({ padding: 40, onlyOutOfViewer: true });
+      } catch (_e) { /* benign */ }
+    }, 120);
+  } catch (_e) { /* benign */ }
+}
+
+function showGraphNodeDetails(nodeId) {
+  const ri = currentRaw != null ? currentRaw : toReal(current);
+  const cur = STEPS[ri];
+  const cardNode = (cur?.graph?.nodes || []).find((n) => String(n.id) === String(nodeId));
+  const gvNode = (cur?.graphView?.nodes || []).find((n) => String(n.id) === String(nodeId));
+  const title = gvNode && gvNode.value != null ? String(gvNode.value) : (cardNode?.style?.name || nodeId);
+  const rows = cardNode?.style?.rows || [];
+  const menu = document.getElementById('nodeContextMenu');
+  if (!menu) return;
+  menu.innerHTML = '';
+  const t = document.createElement('div');
+  t.style.cssText = 'padding:6px 12px;font-weight:700;font-size:12px;color:#0f2c63;border-bottom:1px solid #eee;';
+  t.textContent = title;
+  menu.appendChild(t);
+  if (!rows.length) {
+    const e = document.createElement('div');
+    e.style.cssText = 'padding:6px 12px;font-size:11px;color:#888;';
+    e.textContent = '（无字段数据）';
+    menu.appendChild(e);
+  }
+  for (const row of rows) {
+    const d = document.createElement('div');
+    d.style.cssText = 'padding:4px 12px;font-size:11px;white-space:nowrap;';
+    d.textContent = String(row.text || row.name || '');
+    menu.appendChild(d);
+  }
+  menu.style.display = 'block';
+  const g = document.getElementById('graph');
+  const rect = g ? g.getBoundingClientRect() : { right: 300, top: 80 };
+  menu.style.left = (rect.right - 240) + 'px';
+  menu.style.top = (rect.top + 16) + 'px';
+  const close = (e) => {
+    if (e.type === 'keydown' && e.key === 'Escape') { menu.style.display = 'none'; cleanup(); }
+    else if (e.type === 'click' && !menu.contains(e.target)) { menu.style.display = 'none'; cleanup(); }
+  };
+  const cleanup = () => {
+    document.removeEventListener('click', close);
+    document.removeEventListener('keydown', close);
+  };
+  document.addEventListener('click', close);
+  document.addEventListener('keydown', close);
+}
+
+// G6 v5 throws "Node/Edge not found for id: …" when a step transition removes
+// elements and its internal diff briefly references them. The render stays
+// correct — these are benign, so swallow them globally (both the synchronous
+// uncaught errors and the promise rejections).
+function _dsvisIsG6NotFoundError(msg) {
+  return /Node not found for id|Edge not found for id/.test(msg || '');
+}
+window.addEventListener('unhandledrejection', (evt) => {
+  const reason = evt && evt.reason;
+  const msg = String((reason && reason.message) || reason || '');
+  if (_dsvisIsG6NotFoundError(msg)) evt.preventDefault();
+});
+window.addEventListener('error', (evt) => {
+  if (_dsvisIsG6NotFoundError(String(evt && evt.message || ''))) evt.preventDefault();
+});
+
 function buildPortStyles(node, usedPorts) {
   const ports = Array.isArray(node?.style?.ports) ? node.style.ports : [];
   return ports.map((p) => {
@@ -2067,6 +3149,19 @@ function resolvePortsForEdge(e, nodeMap) {
   const src = nodeMap.get(e.source);
   const tgt = nodeMap.get(e.target);
   if (!src || !tgt) return null;
+
+  // ── Parent-pointer special routing (hidden parent cell) ──
+  if (e.data && e.data._parentCenter) {
+    const pc = e.data._parentCenterPorts;
+    if (pc && pc.sourcePort && pc.targetPort) {
+      const srcPorts = new Set((src?.style?.ports || []).map((p) => p.key));
+      const tgtPorts = new Set((tgt?.style?.ports || []).map((p) => p.key));
+      if (srcPorts.has(pc.sourcePort) && tgtPorts.has(pc.targetPort)) {
+        return { sourcePort: pc.sourcePort, targetPort: pc.targetPort };
+      }
+    }
+    return null;
+  }
 
   // ── Uniform-edge mode: direct port name ──
   if (e.data && e.data._uniformPort) {
@@ -2116,7 +3211,12 @@ function updateEdgePorts(focusNodeId = null) {
     relatedNodeIds.add(e.target);
   }
   if (edgeUpdates.length > 0) {
-    graph.updateEdgeData(edgeUpdates);
+    try {
+      graph.updateEdgeData(edgeUpdates);
+    } catch (_e) {
+      // Edge was removed by a step transition before the port update ran —
+      // "Edge not found for id: …" is benign here, nothing to update.
+    }
   }
 
   const nodeIdsToRefresh = focusNodeId
@@ -2141,7 +3241,12 @@ function updateEdgePorts(focusNodeId = null) {
     });
   }
   if (nodeUpdates.length > 0) {
-    graph.updateNodeData(nodeUpdates);
+    try {
+      graph.updateNodeData(nodeUpdates);
+    } catch (_e) {
+      // Node was removed by a step transition before the port update ran —
+      // "Node not found for id: …" is benign here, nothing to update.
+    }
   }
   if (edgeUpdates.length > 0 || nodeUpdates.length > 0 || !focusNodeId) {
     graph.draw();
@@ -2153,34 +3258,69 @@ function fitGraph() {
     if (!graph) return;
     const autoFitToggle = document.getElementById('autoFitToggle');
     if (autoFitToggle && !autoFitToggle.checked) return;
-    const size = getGraphSize();
-    const ringInset = Math.max(
-      AUTO_FIT_CONFIG.minInnerRingPx,
-      Math.floor(Math.min(size.width, size.height) * AUTO_FIT_CONFIG.innerRingRatio)
-    );
-    const fitPadding = {
-      top: FIT_PADDING.top + ringInset,
-      right: FIT_PADDING.right + ringInset,
-      bottom: FIT_PADDING.bottom + ringInset,
-      left: FIT_PADDING.left + ringInset,
-    };
-    if (typeof graph.fitView === 'function') {
-      graph.fitView({
-        padding: [fitPadding.top, fitPadding.right, fitPadding.bottom, fitPadding.left],
-        when: 'always',
-        animation: false,
-      });
-      if (typeof graph.getZoom === 'function' && typeof graph.zoomTo === 'function') {
-        const currentScale = Number(graph.getZoom());
-        if (Number.isFinite(currentScale) && currentScale > AUTO_FIT_CONFIG.maxScale) {
-          graph.zoomTo(AUTO_FIT_CONFIG.maxScale, { x: size.width / 2, y: size.height / 2 }, false);
-        }
+    try {
+      const size = getGraphSize();
+      const ringInset = Math.max(
+        AUTO_FIT_CONFIG.minInnerRingPx,
+        Math.floor(Math.min(size.width, size.height) * AUTO_FIT_CONFIG.innerRingRatio)
+      );
+      const padT = FIT_PADDING.top + ringInset;
+      const padR = FIT_PADDING.right + ringInset;
+      const padB = FIT_PADDING.bottom + ringInset;
+      const padL = FIT_PADDING.left + ringInset;
+
+      // Source of truth for node positions is graph.getData() (style.x/y).
+      // G6 v5.0.51's graph.fitView() relies on canvas.getBounds(), which does
+      // NOT reflect nodes moved by translateElementTo() (the textbook binary
+      // tree pass) — it returns a stale/smaller bbox, so fitView zooms to the
+      // wrong region and nodes fall outside the viewport. graph.zoomTo() is
+      // also broken in this build (silently no-ops). Fit manually instead:
+      // set the camera zoom directly, then translate so the content bbox
+      // centre lands at the viewport centre.
+      const data = (typeof graph.getData === 'function') ? graph.getData() : { nodes: [] };
+      const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      let any = false;
+      for (const n of nodes) {
+        if (n.style && n.style.visibility === 'hidden') continue;
+        const x = n.style && n.style.x, y = n.style && n.style.y;
+        if (x == null || y == null) continue;
+        const sz = (n.style && n.style.size) || [60, 40];
+        const w = Array.isArray(sz) ? sz[0] : 60;
+        const h = Array.isArray(sz) ? sz[1] : 40;
+        minX = Math.min(minX, x - w / 2); maxX = Math.max(maxX, x + w / 2);
+        minY = Math.min(minY, y - h / 2); maxY = Math.max(maxY, y + h / 2);
+        any = true;
       }
-      return;
-    }
-    if (typeof graph.fitCenter === 'function') {
-      graph.fitCenter();
-    }
+      if (!any) return;
+
+      const bw = maxX - minX, bh = maxY - minY;
+      const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+      const vw = size.width, vh = size.height;
+      const target = Math.min(
+        Math.max(Math.min((vw - padL - padR) / bw, (vh - padT - padB) / bh), 0.05),
+        AUTO_FIT_CONFIG.maxScale
+      );
+
+      const vp = graph.context && graph.context.viewport;
+      const cam = vp && vp.camera;
+      if (cam) {
+        cam.zoom = target;
+        // Let the camera matrix settle, then centre the content bbox.
+        requestAnimationFrame(() => {
+          try {
+            const zc = graph.getViewportByCanvas([cx, cy]);
+            const dx = vw / 2 - zc[0];
+            const dy = vh / 2 - zc[1];
+            if (typeof graph.translateBy === 'function') {
+              graph.translateBy([dx, dy], { duration: 0 });
+            }
+          } catch (_e) { /* best-effort */ }
+        });
+      } else if (typeof graph.fitCenter === 'function') {
+        graph.fitCenter();
+      }
+    } catch (_e) { /* best-effort */ }
   });
 }
 
@@ -2189,6 +3329,14 @@ function refreshVisibleGraph() {
   if (typeof graph.setSize === 'function') {
     const size = getGraphSize();
     graph.setSize(size.width, size.height);
+  }
+  // Graph viewer mode: the card-mode fitGraph() (always-fit + ring inset
+  // padding + maxScale cap) must NOT run here — it fights the graph viewer's
+  // own only-out-of-viewer fit and stomps the user's manual pan/zoom whenever
+  // a panel opens/closes and the canvas resizes. Just refit on overflow.
+  if (graph._dsvisMode === 'graph') {
+    scheduleGraphViewRefit();
+    return;
   }
   refreshGraphVisuals();
 }
@@ -2420,6 +3568,17 @@ function parseVerticalField(rowText, isRef) {
   return { name: raw, value: isRef ? '' : raw };
 }
 
+function wrapTextToChars(text, maxChars) {
+  const lines = String(text == null ? '' : text).split('\n');
+  const max = Math.max(1, maxChars || 1);
+  const out = [];
+  for (const line of lines) {
+    if (line.length <= max) { out.push(line); continue; }
+    for (let i = 0; i < line.length; i += max) out.push(line.slice(i, i + max));
+  }
+  return out.length ? out : [''];
+}
+
 function adaptNodesForTextFlow(graphData) {
   // Run whenever any node uses vertical text flow (from backend or global setting).
   const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
@@ -2435,6 +3594,9 @@ function adaptNodesForTextFlow(graphData) {
     st.textFlow = 'vertical';
     const rows = Array.isArray(st.rows) ? st.rows : [];
     const refRowSet = new Set(Array.isArray(st.refRowIndices) ? st.refRowIndices : []);
+    // Note: ref fields keep their column in every row mode. Dropping them in
+    // value-only mode was tried (2026-08-06) but it removed the ref ports /
+    // blue pointer dots and made left/right edges share one anchor — reverted.
     const parsed = rows.map((r, i) => parseVerticalField(r, refRowSet.has(i)));
     st.gridNames = parsed.map((x) => x.name);
     st.gridValues = parsed.map((x) => x.value);
@@ -2445,23 +3607,42 @@ function adaptNodesForTextFlow(graphData) {
     const titleKey = `${className}.__title__`;
     const titleVisible = isFieldVisible(titleKey);
 
-    const title = titleVisible ? String(st.name || '') : '';
-    const titleW = titleVisible
-      ? Math.max(60, Math.min(180, Math.ceil(Math.max(...title.split('\n').map((x) => x.length), 1) * 6 + 12)))
+    const titleRaw = titleVisible ? String(st.name || '') : '';
+    // Wrap the title to the (capped) title column so a long class name like
+    // "tree\n(HuffmanTreeeeee...)" renders on multiple lines inside the cell
+    // instead of overflowing it. Parens in the label are already counted in
+    // the string length.
+    let titleW = titleVisible
+      ? Math.max(60, Math.min(180, Math.ceil(Math.max(...titleRaw.split('\n').map((x) => x.length), 1) * 7 + 12)))
       : 0;
-    const colW = Math.max(50, Math.min(130, Math.ceil(Math.max(1, ...parsed.map((x) => Math.max(String(x.name).length, String(x.value).length))) * 6 + 12)));
+    let titleMaxChars = titleVisible ? Math.max(4, Math.floor((titleW - 12) / 7)) : 0;
+    let title = '';
+    if (titleVisible) {
+      const titleLines2 = wrapTextToChars(titleRaw, titleMaxChars);
+      const wrappedMax = Math.max(...titleLines2.map((x) => x.length), 1);
+      titleW = Math.max(60, Math.min(180, Math.ceil(wrappedMax * 7 + 12)));
+      st.name = titleLines2.join('\n');
+      title = st.name;
+    }
+    const colW = Math.max(50, Math.min(130, Math.ceil(Math.max(1, ...parsed.map((x) => Math.max(String(x.name).length, String(x.value).length))) * 7 + 12)));
     const numFields = Math.max(1, parsed.length);
     const padX = 10, padY = 8, rowH = 20;
+    const effRowMode = st.rowDisplayMode || VIS_CONFIG.rowDisplayMode || 'both';
+    const effShowKey = effRowMode !== 'value';
+    const effShowVal = effRowMode !== 'key';
+    const visibleRows = (effShowKey ? 1 : 0) + (effShowVal ? 1 : 0);
+    st.rowDisplayMode = effRowMode;
     st.titleColW = titleW;
     st.fieldColW = colW;
-    st.size = [Math.max(120, padX * 2 + titleW + numFields * colW), padY * 2 + rowH * 2];
+    st.size = [Math.max(120, padX * 2 + titleW + numFields * colW), padY * 2 + rowH * visibleRows];
 
-    // Ports: when title is hidden, entry ports go to the first field column centre
+    // Ports: when the title is hidden, the incoming edge attaches at the whole
+    // node's horizontal centre instead of the (now-collapsed) title column.
     const w = Number(st.size?.[0]) || 120;
     const h = Number(st.size?.[1]) || 56;
     const entryCenterX = titleVisible
       ? (padX + titleW / 2) / Math.max(w, 1)
-      : (padX + colW / 2) / Math.max(w, 1);
+      : 0.5;
     const topEdgeY = 0;
     const bottomEdgeY = 1;
 
@@ -2469,6 +3650,10 @@ function adaptNodesForTextFlow(graphData) {
       { key: 'inT', placement: [entryCenterX, topEdgeY], r: 0, fill: 'transparent', stroke: 'transparent' },
       { key: 'inB', placement: [entryCenterX, bottomEdgeY], r: 0, fill: 'transparent', stroke: 'transparent' },
     ];
+    // Centre ports — used by parent-pointer edges (hidden parent cell) to
+    // anchor at the node's horizontal midpoint.
+    st.ports.push({ key: 'cT', placement: [0.5, 0], r: 0, fill: 'transparent', stroke: 'transparent' });
+    st.ports.push({ key: 'cB', placement: [0.5, 1], r: 0, fill: 'transparent', stroke: 'transparent' });
     const refEntries = [];
     st.gridRefs.forEach((rowIdx) => {
       const cellCenterX = (padX + titleW + rowIdx * colW + colW / 2) / Math.max(w, 1);
@@ -2480,6 +3665,164 @@ function adaptNodesForTextFlow(graphData) {
   }
   return graphData;
 }
+
+/**
+ * B-tree / B+ tree display mode (structureType 'btree' / 'bplustree').
+ * Turns a vertical-grid B-tree node into a compact "keys row" node:
+ *   - hides the `children` columns (rows) but KEEPS the child edges;
+ *   - shows only the key values in a single row;
+ *   - child pointers (ports) emit from the gaps between keys (including
+ *     before the first and after the last key) — the classic B-tree look.
+ * Edges are remapped so each `children[i]` edge lands on its gap port.
+ */
+
+/**
+ * B-tree default field visibility: for node classes that own a `keys` list,
+ * hide every non-keys/non-children field (t, leaf, …) by default so the node
+ * shows only the key row + child pointers. The style panel can still toggle
+ * them back to 'visible' — they then render as normal field rows above the
+ * keys (see adaptBTreeNodes / drawKeyShape). Only *unset* fields are touched;
+ * the container class (BTree) keeps its fields.
+ */
+function applyBTreeMetaDefaults() {
+  const st = VIS_CONFIG.structureType;
+  if (st !== 'btree' && st !== 'bplustree') return;
+  const stDef = STRUCTURE_TYPES[st];
+  if (!stDef || !stDef.proxyRules || !stDef.proxyRules.keyField) return;
+  const keyField = String(stDef.proxyRules.keyField);
+  const childField = String(stDef.proxyRules.childField || 'children');
+  for (const [className, group] of NODE_TYPE_REGISTRY.entries()) {
+    const hasKeyField = group.some((f) =>
+      f.fieldName === keyField || String(f.fieldName).startsWith(keyField + '['));
+    if (!hasKeyField) continue; // container class (BTree) keeps its fields
+    for (const f of group) {
+      const nm = String(f.fieldName || '');
+      if (nm === keyField || nm.startsWith(keyField + '[') ||
+          nm === childField || nm.startsWith(childField + '[') ||
+          nm === '__title__') continue;
+      if (!NODE_TYPE_VISIBILITY.has(f.key)) {
+        NODE_TYPE_VISIBILITY.set(f.key, 'self');
+      }
+    }
+  }
+}
+
+function adaptBTreeNodes(graphData) {
+  const stDef = STRUCTURE_TYPES[VIS_CONFIG.structureType];
+  if (!stDef || !stDef.proxyRules || !stDef.proxyRules.keyField) return graphData;
+  const keyField = String(stDef.proxyRules.keyField);
+  const childField = String(stDef.proxyRules.childField || 'children');
+  const keyRe = new RegExp('^' + keyField + '\\[\\d+\\]$');
+  const childReIdx = new RegExp('^' + childField + '\\[(\\d+)\\]$');
+  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+  for (const n of (graphData?.nodes || [])) {
+    const st = n.style;
+    if (!st || (st.textFlow || VIS_CONFIG.textFlow) !== 'vertical') continue;
+    const rows = Array.isArray(st.rows) ? st.rows : [];
+    const refRowSet = new Set(Array.isArray(st.refRowIndices) ? st.refRowIndices : []);
+    const names = Array.isArray(st.rowNames) ? st.rowNames : [];
+    const keyCols = [];
+    let bareKeyIdx = -1;
+    rows.forEach((r, i) => {
+      const rawName = String(names[i] ?? (r && r.name) ?? '');
+      if (keyRe.test(rawName)) keyCols.push(i);
+      else if (rawName === keyField) bareKeyIdx = i;
+    });
+    // In btree mode any node with `keys[i]` rows is a B-tree node (the
+    // container `BTree` has none and is skipped). A bare `keys` row appears
+    // when the key list is empty (a split-in-progress new root); it must ALSO
+    // be treated as a B-tree node, otherwise the bare `keys`/`children`
+    // columns render as empty grid cells in the generic card renderer. Do NOT
+    // require `children[i]` rows: they may be stripped by
+    // applyNodeTypeVisibility when the user self-hides `children`, yet the
+    // child pointers must still emit from the key gaps.
+    if (!keyCols.length && bareKeyIdx < 0) continue;
+    const keyValues = keyCols.map((i) => parseVerticalField(rows[i], refRowSet.has(i)).value);
+    const numKeys = keyValues.length;
+    const padX = 10, padY = 8, rowH = 20;
+    const colW = Math.max(50, Math.min(130, Math.ceil(Math.max(1, ...keyValues.map((v) => Math.max(4, String(v).length))) * 7 + 12)));
+    // Meta fields: visible non-keys/non-children fields (t, leaf, …). They
+    // default to hidden (applyBTreeMetaDefaults sets 'self'); when the user
+    // toggles one visible the node renders like a binary-tree grid — a field
+    // name row above the value row, each field in its own column, with the
+    // keys as bare value cells (no field name).
+    const rowFieldKeysArr = Array.isArray(st.rowFieldKeys) ? st.rowFieldKeys : [];
+    const metaFields = [];
+    rows.forEach((r, i) => {
+      const rawName = String(names[i] ?? (r && r.name) ?? '');
+      if (keyRe.test(rawName) || rawName === keyField || childReIdx.test(rawName) || rawName === childField) return;
+      const fk = rowFieldKeysArr[i]
+        ? String(rowFieldKeysArr[i]).replace(/::/g, '.')
+        : `${String(st.className || '')}.${rawName}`;
+      if (!isFieldVisible(fk)) return;
+      const val = parseVerticalField(rows[i], refRowSet.has(i)).value;
+      metaFields.push({ name: rawName, value: val });
+    });
+    const hasMeta = metaFields.length > 0;
+    const gridNames = [];
+    const gridValues = [];
+    for (const mf of metaFields) { gridNames.push(mf.name); gridValues.push(mf.value); }
+    for (const kv of keyValues) { gridNames.push(''); gridValues.push(kv); }
+    const numCells = metaFields.length + numKeys;
+    const w = Math.max(120, padX * 2 + numCells * colW);
+    const h = padY * 2 + (hasMeta ? 2 : 1) * rowH; // name+value rows or value-only
+    st.titleColW = 0;
+    st.fieldColW = colW;
+    st.gridNames = gridNames;
+    st.gridValues = gridValues;
+    st.gridRefs = [];
+    st.rowDisplayMode = hasMeta ? 'both' : 'value';
+    st.rows = gridValues.slice();
+    delete st.metaFields;
+    delete st.btreeMeta;
+    st.size = [w, h];
+    // Ports: entry at node centre-top/bottom, children at key gaps (0..numKeys).
+    // During a split the new root may briefly hold more children than keys
+    // (children are inserted before the mid key is promoted), so size the port
+    // list to the larger of (keys + 1) and (child count).
+    let maxChildIdx = -1;
+    rows.forEach((r, i) => {
+      const m = String(names[i] ?? (r && r.name) ?? '').match(childReIdx);
+      if (m) maxChildIdx = Math.max(maxChildIdx, parseInt(m[1], 10));
+    });
+    const portCount = Math.max(numKeys + 1, maxChildIdx + 1);
+    const ports = [
+      { key: 'inT', placement: [0.5, 0], r: 0, fill: 'transparent', stroke: 'transparent' },
+      { key: 'inB', placement: [0.5, 1], r: 0, fill: 'transparent', stroke: 'transparent' },
+    ];
+    const refEntries = [];
+    // Key-gap ports sit between the keys; when meta columns precede the keys,
+    // the gap x must be offset past them.
+    const gapOffset = metaFields.length;
+    for (let i = 0; i < portCount; i++) {
+      const frac = (padX + (gapOffset + i) * colW) / w;
+      ports.push({ key: 'pt' + i, placement: [frac, 0], r: 0, fill: 'transparent', stroke: 'transparent' });
+      ports.push({ key: 'pb' + i, placement: [frac, 1], r: 0, fill: 'transparent', stroke: 'transparent' });
+      refEntries.push({ idx: i, ports: ['pb' + i, 'pt' + i] });
+    }
+    st.ports = ports;
+    st.portLayout = { direction: 'TB', entry: ['inT', 'inB'], ref: refEntries };
+    // Remap child edges → refIndex = child index (gap 0..numKeys).
+    for (const e of edges) {
+      if (String(e.source) !== String(n.id)) continue;
+      const label = String(e?.data?.label || '');
+      const m = label.match(childReIdx);
+      if (m) {
+        e.data.refIndex = parseInt(m[1], 10);
+        // A self-hidden `children[i]` row orphans the edge (uniform placement).
+        // In btree mode the child pointer must still emit from the key-gap port,
+        // so undo the orphan marker — applyUniformEdgePorts then leaves it alone.
+        if (e.data._orphan) {
+          delete e.data._orphan;
+          delete e.data._uniformPort;
+          delete e.data._orphanLabel;
+        }
+      }
+    }
+  }
+  return graphData;
+}
+
 function cloneGraphData(data) {
   return JSON.parse(JSON.stringify(data || { nodes: [], edges: [] }));
 }
@@ -2913,6 +4256,14 @@ function filterHiddenNodes(graphData) {
   return { ...(graphData || {}), nodes, edges: filteredEdges };
 }
 
+// ---- row display-mode helper ----
+function rowDisplayVisible(mode) {
+  // Return { showKey: boolean, showVal: boolean }
+  if (mode === 'key')   return { showKey: true,  showVal: false };
+  if (mode === 'value') return { showKey: false, showVal: true  };
+  return { showKey: true, showVal: true }; // 'both'
+}
+
 const NODE_VISUAL_LAYOUT = {
   paddingX: 10,
   paddingY: 8,
@@ -3032,6 +4383,19 @@ function buildHorizontalPorts(refRowIndices, headerH, height) {
  * the render pipeline (renderStepImpl) and the settings UI.
  * ======================================================================== */
 
+/** For a member key like `Type.keys[0]`, return the base group key `Type.keys`. */
+function baseKeyOfFieldKey(key) {
+  const m = String(key || '').match(/^(.*)\.([^.\[]+)\[[^\]]+\]$/);
+  return m ? `${m[1]}.${m[2]}` : null;
+}
+
+/** Base name of the structure's parent-pointer field (config override wins). */
+function getEffectiveParentField() {
+  if (VIS_CONFIG.parentFieldKey) return VIS_CONFIG.parentFieldKey;
+  const def = STRUCTURE_TYPES[VIS_CONFIG.structureType];
+  return (def && def.parentField) || null;
+}
+
 function buildNodeTypeRegistry() {
   if (nodeTypeRegistryBuilt) return;
   NODE_TYPE_REGISTRY.clear();
@@ -3103,6 +4467,62 @@ function buildNodeTypeRegistry() {
       }
     }
   }
+
+  // ── Synthesize container groups from `X[i]` members ──
+  // Non-empty containers now expand to `X[i]` rows only (the aggregate `X`
+  // row is gone). Re-derive the `X` group so the settings panel keeps a
+  // master toggle that hides/shows every `X[i]` member.
+  for (const [className, group] of NODE_TYPE_REGISTRY.entries()) {
+    const groups = new Map();
+    for (const f of group) {
+      const base = baseKeyOfFieldKey(f.key);
+      if (base && !groups.has(base)) {
+        const idx = base.lastIndexOf('.');
+        groups.set(base, {
+          key: base,
+          className: base.slice(0, idx),
+          fieldName: base.slice(idx + 1),
+          kind: 'container',
+          isGroup: true,
+        });
+      }
+    }
+    for (const [gk, gf] of groups) {
+      const existing = group.find((e) => e.key === gk);
+      if (existing) {
+        // A real field row may already exist (e.g. `keys = []` from an empty
+        // array at some step). Upgrade it to a group so the master toggle
+        // controls every member.
+        existing.isGroup = true;
+      } else {
+        group.push(gf);
+      }
+      if (!NODE_TYPE_VISIBILITY.has(gk)) {
+        NODE_TYPE_VISIBILITY.set(gk, 'visible');
+      }
+    }
+    // Reorder so each container group sits immediately before its members;
+    // all other fields (plain rows, title) keep their original relative order.
+    const groupMap = new Map(group.filter((f) => f.isGroup).map((f) => [f.key, f]));
+    const ordered = [];
+    const emitted = new Set();
+    for (const f of group) {
+      if (f.isGroup) continue;
+      const base = baseKeyOfFieldKey(f.key);
+      if (base && groupMap.has(base) && !emitted.has(base)) {
+        ordered.push(groupMap.get(base));
+        emitted.add(base);
+      }
+      ordered.push(f);
+    }
+    for (const [gk, gf] of groupMap) {
+      if (!emitted.has(gk)) ordered.push(gf);
+    }
+    NODE_TYPE_REGISTRY.set(className, ordered);
+  }
+
+  // B-tree: hide non-keys/non-children fields (t, leaf, …) by default.
+  applyBTreeMetaDefaults();
   nodeTypeRegistryBuilt = true;
 }
 
@@ -3124,6 +4544,7 @@ function toggleNodeFieldVisible(key) {
   } else {
     NODE_TYPE_VISIBILITY.set(key, 'self');
   }
+  persistVisibility();
   syncSettingsPanel();
   renderStep(current);
 }
@@ -3143,6 +4564,7 @@ function toggleBindGroup(className, groupName) {
   for (const key of entry.fields) {
     NODE_TYPE_VISIBILITY.set(key, newState);
   }
+  persistVisibility();
   syncSettingsPanel();
   renderStep(current);
 }
@@ -3154,13 +4576,24 @@ function isFieldVisible(key) {
   if (!key) return true;
   const state = NODE_TYPE_VISIBILITY.get(key);
   if (state === 'self' || state === 'cascade' || state === false) return false;
-  // Check base key — only cascade hides children (self means only the parent)  
+  // Check base key — only cascade hides children (self means only the parent)
   const baseMatch = key.match(/^(.+?)\[.*\]$/);
   if (baseMatch) {
     const baseState = NODE_TYPE_VISIBILITY.get(baseMatch[1]);
     if (baseState === 'cascade' || baseState === false) return false;
   }
   return true;
+}
+
+/** Whether a field is layout-exempt: its edges are drawn but must NOT drive the
+ *  layout. Controlled by the "布局" panel via LAYOUT_EXEMPT_KEYS. Indexed keys
+ *  (children[0]) inherit their base key's (children) exemption. */
+function isFieldNoLayout(key) {
+  if (!key) return false;
+  if (LAYOUT_EXEMPT_KEYS.has(key)) return true;
+  const baseMatch = key.match(/^(.+?)\[.*\]$/);
+  if (baseMatch && LAYOUT_EXEMPT_KEYS.has(baseMatch[1])) return true;
+  return false;
 }
 
 // ── Uniform edge port distribution ──
@@ -3266,6 +4699,7 @@ function applyNodeTypeVisibility(graphData) {
     let effectiveKey = hiddenKey;
     let forceVisible = false;
     let orphan = false;
+    let parentCenter = false;
     if (hiddenKey && !isFieldVisible(hiddenKey)) {
       const state = NODE_TYPE_VISIBILITY.get(hiddenKey);
       const baseMatch = hiddenKey.match(/^(.+?)\[.*\]$/);
@@ -3274,9 +4708,13 @@ function applyNodeTypeVisibility(graphData) {
                         (baseState === 'cascade' || baseState === false);
 
       const stDef = STRUCTURE_TYPES[VIS_CONFIG.structureType];
-      const useUniform = VIS_CONFIG.uniformEdgesEnabled && stDef && stDef.uniformEdges;
-
-      if (useUniform) {
+      const parentField = getEffectiveParentField();
+      if (parentField && !isCascade && hiddenKey.endsWith('.' + parentField)) {
+        // Parent-pointer cell self-hidden → special centre / double-headed
+        // routing (scenarios resolved in the post-pass below).
+        forceVisible = true;
+        parentCenter = true;
+      } else if (VIS_CONFIG.uniformEdgesEnabled && stDef && stDef.uniformEdges) {
         // ── Uniform-edge mode: orphaned edges survive, positioned uniformly ──
         if (!isCascade) {
           forceVisible = true;
@@ -3314,7 +4752,15 @@ function applyNodeTypeVisibility(graphData) {
       }
     }
     const hidden = forceVisible ? false : (effectiveKey ? (!isFieldVisible(effectiveKey)) : false);
-    if (orphan) {
+    // Layout-exempt: the field is visible but its edges must not drive layout.
+    if (effectiveKey && isFieldNoLayout(effectiveKey) && edge && typeof edge === 'object') {
+      edge.data = { ...(edge?.data || {}), _noLayout: true };
+    }
+    if (parentCenter) {
+      // Parent pointer: keep the edge, resolve its routing in the post-pass.
+      const pcEdge = { ...edge, data: { ...(edge?.data || {}), _parentCenter: true, _orphanLabel: edge?.data?.label || '' } };
+      edgeMeta.push({ edge: pcEdge, hidden: false, srcId });
+    } else if (orphan) {
       // Uniform-edge orphan: keep original edge, tag for later port placement
       const orphanEdge = { ...edge, data: { ...(edge?.data || {}), _orphan: true, _orphanLabel: edge?.data?.label || '' } };
       edgeMeta.push({ edge: orphanEdge, hidden: false, srcId });
@@ -3323,6 +4769,33 @@ function applyNodeTypeVisibility(graphData) {
       edgeMeta.push({ edge: substEdge, hidden, srcId });
     } else {
       edgeMeta.push({ edge, hidden, srcId });
+    }
+  }
+
+  // ── Parent-pointer routing post-pass ──
+  // Resolve the hidden-parent-cell scenarios:
+  //   - reverse tree edge (left/right) VISIBLE → parent edge routes between the
+  //     node centres (child top-centre → parent bottom-centre).
+  //   - reverse tree edge ALSO self-hidden → both the tree edge and the parent
+  //     edge share one centre line (parent bottom-centre ↔ child top-entry),
+  //     i.e. a double-headed arrow.
+  for (const pen of edgeMeta) {
+    const pe = pen.edge;
+    if (!pe?.data?._parentCenter) continue;
+    const childId = String(pe.source);
+    const parentId = String(pe.target);
+    const revEntry = edgeMeta.find((en) =>
+      String(en.edge?.source) === parentId && String(en.edge?.target) === childId);
+    const revIsOrphan = revEntry && revEntry.edge?.data?._orphan;
+    if (revIsOrphan) {
+      // Scenario 4: double-headed arrow on the shared centre line.
+      pe.data._parentCenterPorts = { sourcePort: 'inT', targetPort: 'cB' };
+      revEntry.edge.data._orphan = false;
+      revEntry.edge.data._parentCenter = true;
+      revEntry.edge.data._parentCenterPorts = { sourcePort: 'cB', targetPort: 'inT' };
+    } else {
+      // Scenario 2: parent edge at the node centres.
+      pe.data._parentCenterPorts = { sourcePort: 'cT', targetPort: 'cB' };
     }
   }
 
@@ -3676,10 +5149,21 @@ function renderStepImpl(ri, displayIndex) {
   hoveredLine = null;
   hoveredFrameKey = null;
   const s = STEPS[ri];
+
+  // ── Independent graph-displayer mode ──
+  if (VIS_CONFIG.structureType === 'graph') {
+    renderGraphStep(ri, s);
+    renderStackPanel(s.stack, displayIndex);
+    syncCodeHighlights(true);
+    syncStackHighlights();
+    return;
+  }
+
   const rawGraph = applyStepHighlights(cloneGraphData(s.graph), ri);
   const visResult = applyNodeTypeVisibility(rawGraph);
   const typeFilteredGraph = visResult.data;
   const adaptedGraph = adaptNodesForTextFlow(typeFilteredGraph);
+  adaptBTreeNodes(adaptedGraph);
   const graphData = filterHiddenNodes(adaptedGraph);
 
   // Uniform-edge port placement (must run AFTER adaptNodesForTextFlow
@@ -3700,29 +5184,52 @@ function renderStepImpl(ri, displayIndex) {
   }
   renderStackPanel(s.stack, displayIndex);
 
-  if (!graph) {
+  // Reset when coming from the independent graph-viewer mode.
+  if (!graph || graph._dsvisMode === 'graph') {
+    if (graph) resetGraphInstance();
     initGraph(graphData);
   } else {
-    const prepared = prepareGraphForLayout(graphData, getGraphSize());
-    const nextLayout = prepared.layout;
-    // Tag node data with a render epoch so G6 always sees a change
-    // even when VIS_CONFIG (external) is the only thing that changed.
-    const now = Date.now();
-    for (const n of (prepared.data.nodes || [])) {
-      if (n.style) n.style._renderEpoch = now;
+    // Row-display-mode / text-flow changes can leave stale grid columns and
+    // separator lines behind on the incremental setData+render path (blank
+    // columns, extra dividers). A full rebuild clears them — equivalent to
+    // going back to the first step and returning to the current one. Track the
+    // last mode on the instance so only actual changes force a rebuild.
+    const rowModeChanged = graph._dsvisLastRowMode !== undefined && graph._dsvisLastRowMode !== VIS_CONFIG.rowDisplayMode;
+    const flowChanged = graph._dsvisLastTextFlow !== undefined && graph._dsvisLastTextFlow !== VIS_CONFIG.textFlow;
+    graph._dsvisLastRowMode = VIS_CONFIG.rowDisplayMode;
+    graph._dsvisLastTextFlow = VIS_CONFIG.textFlow;
+    if (rowModeChanged || flowChanged) {
+      resetGraphInstance();
+      initGraph(graphData);
+    } else {
+      const prepared = prepareGraphForLayout(graphData, getGraphSize());
+      const nextLayout = prepared.layout;
+      // Tag node data with a render epoch so G6 always sees a change
+      // even when VIS_CONFIG (external) is the only thing that changed.
+      const now = Date.now();
+      for (const n of (prepared.data.nodes || [])) {
+        if (n.style) n.style._renderEpoch = now;
+      }
+      if (nextLayout == null && typeof graph.setLayout === 'function') {
+        // Binary-tree pre-positioned data: no G6 layout so nodes stay where the
+        // textbook pass put them (no dagre flash-then-fix during playback).
+        graph.setLayout(null);
+      } else if (typeof graph.setOptions === 'function' && nextLayout && nextLayout.type !== 'preset') {
+        graph.setOptions({ layout: nextLayout });
+      } else if (typeof graph.setLayout === 'function' && nextLayout && nextLayout.type !== 'preset') {
+        graph.setLayout(nextLayout);
+      }
+      graph.setData(prepared.data);
+      // Re-add layout-exempt edges after the layout settles (arrows only).
+      attachNoLayoutEdges(graph, prepared.noLayoutEdges || []);
+      if (typeof graph.once === 'function') {
+        graph.once('afterlayout', refreshGraphVisuals);
+        graph.once('afterlayout', enforceLeftRightOrdering);
+        graph.once('afterlayout', enforceArrayChildrenOrdering);
+        graph.once('afterrender', refreshGraphVisuals);
+      }
+      graph.render();
     }
-    if (typeof graph.setOptions === 'function' && nextLayout.type !== 'preset') {
-      graph.setOptions({ layout: nextLayout });
-    } else if (typeof graph.setLayout === 'function' && nextLayout.type !== 'preset') {
-      graph.setLayout(nextLayout);
-    }
-    graph.setData(prepared.data);
-    if (typeof graph.once === 'function') {
-      graph.once('afterlayout', refreshGraphVisuals);
-      graph.once('afterlayout', enforceLeftRightOrdering);
-      graph.once('afterrender', refreshGraphVisuals);
-    }
-    graph.render();
   }
 
   syncCodeHighlights(true);
@@ -4004,11 +5511,21 @@ function toggleSettingsPanel() {
   const panel = document.getElementById('settingsPanel');
   if (panel) panel.classList.toggle('open', settingsPanelVisible);
   if (settingsPanelVisible) syncSettingsPanel();
+  else if (__styleAutosaveReady) {
+    // 关闭样式面板时立即把当前样式写入本地（.dsvis/<script>.json，或
+    // server 不可用时写入 localStorage），而不是等到页面关闭。
+    clearTimeout(__styleAutosaveTimer);
+    __styleAutosaveSend();
+  }
 }
 
 function syncSettingsPanel() {
   const sel = document.getElementById('settingsTextFlow');
   if (sel) sel.value = VIS_CONFIG.textFlow;
+  const rowDisp = document.getElementById('settingsRowDisplay');
+  if (rowDisp) rowDisp.value = VIS_CONFIG.rowDisplayMode;
+  const showSub = document.getElementById('settingsShowSubtitle');
+  if (showSub) showSub.checked = VIS_CONFIG.showSubtitle;
   const pageAgentConfig = loadPageAgentConfig();
   const agentEnabled = document.getElementById('pageAgentEnabled');
   const agentBaseURL = document.getElementById('pageAgentBaseURL');
@@ -4022,6 +5539,47 @@ function syncSettingsPanel() {
   const list = document.getElementById('nodeTypeList');
   if (!list) return;
   list.innerHTML = '';
+
+  // ── Style copy / import / reset (available in every mode, incl. graph) ──
+  (function() {
+    var styleGroup = document.createElement('div');
+    styleGroup.className = 'node-type-group';
+    styleGroup.style.cssText = 'border-left:3px solid #9b59b6;';
+    var styleHeader = document.createElement('div');
+    styleHeader.className = 'node-type-group-header';
+    var styleTitle = document.createElement('span');
+    styleTitle.className = 'node-type-group-title';
+    styleTitle.textContent = '样式';
+    styleHeader.appendChild(styleTitle);
+    styleGroup.appendChild(styleHeader);
+    var styleItems = document.createElement('div');
+    styleItems.className = 'node-type-items';
+    styleItems.style.cssText = 'flex-wrap:wrap;gap:6px;align-items:center';
+
+    var copyBtn = document.createElement('button');
+    copyBtn.textContent = '复制样式'; copyBtn.type = 'button';
+    copyBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #5b8ff9;background:#e8f0fe;border-radius:3px';
+    copyBtn.title = '一键复制当前完整样式 JSON，可粘贴到其他页面导入';
+    copyBtn.addEventListener('click', copyCurrentStyle);
+    styleItems.appendChild(copyBtn);
+
+    var importBtn = document.createElement('button');
+    importBtn.textContent = '导入样式'; importBtn.type = 'button';
+    importBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #5b8ff9;background:#e8f0fe;border-radius:3px';
+    importBtn.title = '粘贴从其他页面复制的样式 JSON 并应用';
+    importBtn.addEventListener('click', function() { showStyleModal('', true); });
+    styleItems.appendChild(importBtn);
+
+    var resetBtn = document.createElement('button');
+    resetBtn.textContent = '重置'; resetBtn.type = 'button';
+    resetBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #e88;background:#fff5f5;border-radius:3px;color:#c00;';
+    resetBtn.title = '将所有样式恢复为内置默认';
+    resetBtn.addEventListener('click', resetAllStyle);
+    styleItems.appendChild(resetBtn);
+
+    styleGroup.appendChild(styleItems);
+    list.appendChild(styleGroup);
+  })();
 
   // ── Structure type section (replaces old preset system) ──
   (function() {
@@ -4058,51 +5616,17 @@ function syncSettingsPanel() {
     structItems.appendChild(structSel);
 
     var applyDefaultsBtn = document.createElement('button');
-    applyDefaultsBtn.textContent = '应用默认'; applyDefaultsBtn.type = 'button';
+    applyDefaultsBtn.textContent = '恢复默认'; applyDefaultsBtn.type = 'button';
     applyDefaultsBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #5b8ff9;background:#e8f0fe;border-radius:3px';
-    applyDefaultsBtn.addEventListener('click', function() { autoApplyStructureDefaults(); });
-    structItems.appendChild(applyDefaultsBtn);
-
-    var exportBtn = document.createElement('button');
-    exportBtn.textContent = '导出'; exportBtn.type = 'button';
-    exportBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #aaa;background:#fafafa;border-radius:3px';
-    exportBtn.addEventListener('click', function() {
-      var data = exportCurrentConfig();
-      var json = JSON.stringify(data, null, 2);
-      navigator.clipboard.writeText(json).then(function() { alert('配置已复制到剪贴板'); }).catch(function() { alert('复制失败:\n' + json); });
-    });
-    structItems.appendChild(exportBtn);
-
-    var importBtn = document.createElement('button');
-    importBtn.textContent = '导入'; importBtn.type = 'button';
-    importBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #aaa;background:#fafafa;border-radius:3px';
-    importBtn.addEventListener('click', function() {
-      var text = prompt('粘贴配置 JSON:');
-      if (!text) return;
-      try { importConfig(text); } catch(e) { alert('无效的配置: ' + e.message); }
-    });
-    structItems.appendChild(importBtn);
-
-    var resetBtn = document.createElement('button');
-    resetBtn.textContent = '重置'; resetBtn.type = 'button';
-    resetBtn.style.cssText = 'font-size:10px;padding:2px 8px;cursor:pointer;border:1px solid #e88;background:#fff5f5;border-radius:3px;color:#c00;';
-    resetBtn.addEventListener('click', function() {
-      EDGE_PROXY.clear();
-      LAYER_EDGES.clear();
-      TITLE_FIELD = null;
-      for (var _rkey of NODE_TYPE_VISIBILITY.keys()) NODE_TYPE_VISIBILITY.set(_rkey, 'visible');
-      VIS_CONFIG.textFlow = 'horizontal';
-      VIS_CONFIG.showSubtitle = true;
+    applyDefaultsBtn.title = '将数据结构类型恢复为“默认”，并应用对应的默认设置';
+    applyDefaultsBtn.addEventListener('click', function() {
       VIS_CONFIG.structureType = 'other';
-      VIS_CONFIG.layerEdgeKeys = {};
-      VIS_CONFIG.uniformEdgesEnabled = true;
+      structSel.value = 'other';
       saveVisConfig(VIS_CONFIG);
-      persistProxy(); persistVisibility();
-      try { localStorage.removeItem('dsvis:layerEdges'); } catch(_) {}
-      try { localStorage.removeItem('dsvis:titleField'); } catch(_) {}
-      applyVisConfig();
+      buildStructureParams(structParamsDiv);
+      autoApplyStructureDefaults();
     });
-    structItems.appendChild(resetBtn);
+    structItems.appendChild(applyDefaultsBtn);
 
     structGroup.appendChild(structItems);
 
@@ -4114,6 +5638,12 @@ function syncSettingsPanel() {
     list.appendChild(structGroup);
     buildStructureParams(structParamsDiv);
   })();
+
+  // ── Independent graph viewer: only show graph-specific options ──
+  if (VIS_CONFIG.structureType === 'graph') {
+    buildGraphViewerSettings(list);
+    return;
+  }
 
   if (!NODE_TYPE_REGISTRY.size) {
     const empty = document.createElement('div');
@@ -4141,19 +5671,24 @@ function syncSettingsPanel() {
     items.className = 'node-type-items';
     for (const field of fields) {
       const state = NODE_TYPE_VISIBILITY.get(field.key);
-      const isVisible = state === 'visible' || state === true || state === undefined;
+      // Members use effective visibility (considers the parent group's state),
+      // so when `keys` is hidden via its group toggle, `keys[i]` show hidden too.
+      const effVisible = isFieldVisible(field.key);
       const isSelf = state === 'self';
-      const isCascade = state === 'cascade' || state === false;
-      const cssClass = isVisible ? 'visible' : (isSelf ? 'self-hidden' : 'cascade-hidden');
-      const stateLabel = isVisible ? '显示' : (isSelf ? '仅自身隐藏' : '隐藏+子项');
-      
+      let cssClass = effVisible ? 'visible' : (isSelf ? 'self-hidden' : 'cascade-hidden');
+      const stateLabel = effVisible ? '显示' : (isSelf ? '仅自身隐藏' : '隐藏+子项');
+      if (field.isGroup) {
+        cssClass += ' node-type-group-btn';
+      }
       const item = document.createElement('button');
       item.type = 'button';
       item.className = `node-type-item ${cssClass}`;
       item.textContent = field.fieldName;
       item.title = `左键切换 | ${stateLabel} | ${field.key}`;
       
-      // Left-click: cycle visible → self → cascade → visible
+      // Left-click: standard 3-state cycle (visible → self → cascade → visible).
+      // Container groups follow the same cycle; 'cascade' hides every member
+      // via base-key cascading in isFieldVisible().
       item.addEventListener('click', () => toggleNodeFieldVisible(field.key));
       
       // Right-click: context menu
@@ -4351,54 +5886,74 @@ function syncSettingsPanel() {
       proxyGroup.appendChild(proxyItems);
       list.appendChild(proxyGroup);
     }
-
-    // ── Title substitution: keep simple per-field dropdown ──
-    const titleGroup = document.createElement('div');
-    titleGroup.className = 'node-type-group title-group';
-    const titleHeader = document.createElement('div');
-    titleHeader.className = 'node-type-group-header';
-    const thTitle = document.createElement('span');
-    thTitle.className = 'node-type-group-title';
-    thTitle.textContent = '标题替换';
-    titleHeader.appendChild(thTitle);
-    titleGroup.appendChild(titleHeader);
-    const titleItems = document.createElement('div');
-    titleItems.className = 'node-type-items';
-    const titleRow = document.createElement('div');
-    titleRow.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:10px';
-    const titleLabel = document.createElement('span');
-    titleLabel.textContent = '显示为:';
-    const titleSel = document.createElement('select');
-    titleSel.style.fontSize = '10px';
-    const noneOpt = document.createElement('option');
-    noneOpt.value = ''; noneOpt.textContent = '默认标题';
-    titleSel.appendChild(noneOpt);
-    for (const f of fields) {
-      const o = document.createElement('option');
-      o.value = f.key; o.textContent = f.fieldName;
-      if (TITLE_FIELD && TITLE_FIELD.key === f.key) o.selected = true;
-      titleSel.appendChild(o);
-    }
-    titleSel.addEventListener('change', () => {
-      if (titleSel.value) {
-        TITLE_FIELD = { className, key: titleSel.value };
-      } else {
-        TITLE_FIELD = null;
-      }
-      reapplyStep();
-    });
-    titleRow.appendChild(titleLabel);
-    titleRow.appendChild(titleSel);
-    titleItems.appendChild(titleRow);
-    titleGroup.appendChild(titleItems);
-    list.appendChild(titleGroup);
   }
+  // ── Layout control panel ──
+  // Independent from visibility: which pointer (ref) fields decide the layout.
+  // Untick a field to keep its arrows drawn but exclude its edges from layout.
+  renderLayoutControlPanel(list);
 }
 
-function applySettings() {
-  const sel = document.getElementById('settingsTextFlow');
-  if (sel) VIS_CONFIG.textFlow = sel.value;
+/** Render the "布局控制" panel: a checkbox per pointer (ref) field controlling
+ *  whether its edges drive the layout (see LAYOUT_EXEMPT_KEYS / isFieldNoLayout).
+ *  Pointer fields are collected from the script's actual edges (field_key /
+ *  label), normalised to their base key (children[0] → children), because the
+ *  node-type registry marks container parents as 'field' not 'ref'. */
+function renderLayoutControlPanel(list) {
+  const seen = new Set();
+  const rows = [];
+  for (const step of STEPS) {
+    const g = step && step.graph;
+    if (!g || !Array.isArray(g.edges)) continue;
+    for (const e of g.edges) {
+      const raw = String(e?.data?.field_key || e?.data?.label || '').trim();
+      if (!raw) continue;
+      let key = raw.replace(/::/g, '.');
+      // Normalise indexed variants to their base field (children[0] → children).
+      const base = key.replace(/\[.*\]$/, '');
+      if (!base.includes('.')) continue; // needs ClassName.field form
+      if (!seen.has(base)) {
+        seen.add(base);
+        rows.push({ key: base });
+      }
+    }
+  }
+  if (!rows.length) return;
+  const group = document.createElement('div');
+  group.className = 'node-type-group layout-exempt-group';
+  group.style.cssText = 'border-left:3px solid #66bb6a;';
+  const header = document.createElement('div');
+  header.className = 'node-type-group-header';
+  const title = document.createElement('span');
+  title.className = 'node-type-group-title';
+  title.textContent = '布局控制';
+  header.appendChild(title);
+  const sub = document.createElement('span');
+  sub.className = 'node-type-group-subtitle';
+  sub.textContent = '指针是否参与布局';
+  header.appendChild(sub);
+  group.appendChild(header);
+  const items = document.createElement('div');
+  items.className = 'node-type-items layout-exempt-items';
+  items.style.cssText = 'flex-direction:column;align-items:flex-start;gap:4px;';
+  for (const r of rows) {
+    const label = document.createElement('label');
+    label.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;color:#24406f;cursor:pointer;';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !isFieldNoLayout(r.key);
+    cb.addEventListener('change', () => setFieldLayoutExempt(r.key, !cb.checked));
+    label.appendChild(cb);
+    const span = document.createElement('span');
+    span.textContent = r.key;
+    label.appendChild(span);
+    items.appendChild(label);
+  }
+  group.appendChild(items);
+  list.appendChild(group);
+}
 
+/** Save the current PageAgent form values and reload the agent. */
+function applyPageAgentSettingsImmediate() {
   const agentEnabled = document.getElementById('pageAgentEnabled');
   const agentBaseURL = document.getElementById('pageAgentBaseURL');
   const agentApiKey = document.getElementById('pageAgentApiKey');
@@ -4411,8 +5966,34 @@ function applySettings() {
     language: 'zh-CN',
   });
   reloadDsvisAgent();
-  applyVisConfig();
 }
+
+// Every setting now applies immediately (no Apply button). Previously these
+// were deferred to the removed 「应用」 button.
+(function bindImmediateSettings() {
+  const flowSel = document.getElementById('settingsTextFlow');
+  if (flowSel) flowSel.addEventListener('change', () => {
+    VIS_CONFIG.textFlow = flowSel.value;
+    saveVisConfig(VIS_CONFIG);
+    applyVisConfig();
+  });
+  const rowDisp = document.getElementById('settingsRowDisplay');
+  if (rowDisp) rowDisp.addEventListener('change', () => {
+    VIS_CONFIG.rowDisplayMode = rowDisp.value;
+    saveVisConfig(VIS_CONFIG);
+    applyVisConfig();
+  });
+  const showSub = document.getElementById('settingsShowSubtitle');
+  if (showSub) showSub.addEventListener('change', () => {
+    VIS_CONFIG.showSubtitle = showSub.checked;
+    saveVisConfig(VIS_CONFIG);
+    applyVisConfig();
+  });
+  for (const id of ['pageAgentEnabled', 'pageAgentBaseURL', 'pageAgentApiKey', 'pageAgentModel']) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', applyPageAgentSettingsImmediate);
+  }
+})();
 
 const settingsBtn = document.getElementById('settingsBtn');
 if (settingsBtn) {
@@ -4423,35 +6004,35 @@ if (pageAgentBtn) {
   pageAgentBtn.addEventListener('click', async () => {
     const panel = document.getElementById('pageAgentPanel');
     if (!panel) return;
-    const visible = panel.style.display !== 'none';
-    panel.style.display = visible ? 'none' : 'flex';
-    if (!visible) {
-      const config = loadPageAgentConfig();
-      if (!config.enabled) {
-        config.enabled = true;
-        savePageAgentConfig(config);
+    const visible = panel.classList.contains('open');
+    if (visible) {
+      panel.classList.remove('open');
+      setTimeout(() => { if (!panel.classList.contains('open')) panel.style.display = 'none'; }, 180);
+      return;
+    }
+    panel.style.display = 'flex';
+    requestAnimationFrame(() => requestAnimationFrame(() => panel.classList.add('open')));
+    const status = document.getElementById('pageAgentStatus');
+    const config = loadPageAgentConfig();
+    if (!config.enabled) {
+      config.enabled = true;
+      savePageAgentConfig(config);
+    }
+    if (status) status.textContent = '正在加载 CDN...';
+    try {
+      await reloadDsvisAgent();
+      if (status) {
+        const useCustom = hasCustomPageAgentConfig(config);
+        status.textContent = useCustom ? '就绪 — 自定义 API' : '就绪 — 免费测试 API（可能受限）';
       }
-      const status = document.getElementById('pageAgentStatus');
-      if (status) status.textContent = '正在加载 CDN...';
-      try {
-        await reloadDsvisAgent();
-        if (status) {
-          const useCustom = hasCustomPageAgentConfig(config);
-          status.textContent = useCustom ? '就绪 — 自定义 API' : '就绪 — 免费测试 API（可能受限）';
-        }
-      } catch(e) {
-        if (status) status.textContent = 'CDN 加载失败，请检查网络: ' + (e.message || '');
-      }
+    } catch(e) {
+      if (status) status.textContent = 'CDN 加载失败，请检查网络: ' + (e.message || '');
     }
   });
 }
 const settingsCloseBtn = document.getElementById('settingsCloseBtn');
 if (settingsCloseBtn) {
   settingsCloseBtn.addEventListener('click', toggleSettingsPanel);
-}
-const settingsApplyBtn = document.getElementById('settingsApplyBtn');
-if (settingsApplyBtn) {
-  settingsApplyBtn.addEventListener('click', applySettings);
 }
 function normalizeAgentFieldKey(fieldKey) {
   return String(fieldKey || '').replace(/::/g, '.').trim();
@@ -5506,7 +7087,11 @@ function doRestart() { restartDebugSession(); }
 
   // === Close button ===
   document.getElementById('pageAgentPanelClose').addEventListener('click', function() {
-    panel.style.display = 'none';
+    const p = document.getElementById('pageAgentPanel');
+    if (p) {
+      p.classList.remove('open');
+      setTimeout(() => { if (!p.classList.contains('open')) p.style.display = 'none'; }, 180);
+    }
   });
 
   // === Send button ===
@@ -5593,6 +7178,8 @@ function hideViaContextMenu(cascade) {
   const menu = document.getElementById('nodeContextMenu');
   if (!menu) return;
   if (menu._fieldKey) {
+    // Container groups behave like normal fields: 'self' hides the aggregate
+    // row (empty arrays), 'cascade' additionally hides every member.
     setNodeFieldVisible(menu._fieldKey, cascade ? 'cascade' : 'self');
   } else if (menu._nodeId) {
     hideNode(menu._nodeId, menu._nodeLabel, cascade);
@@ -5604,21 +7191,129 @@ document.getElementById('ctxHideCascade')?.addEventListener('click', () => hideV
 
 updateResizeHandleState();
 
-// Load persisted config
+// Load persisted config — per-script style file wins, localStorage is the fallback.
 loadProxy();
 loadVisibility();
-try {
-  const leRaw = localStorage.getItem('dsvis:layerEdges');
-  if (leRaw) { LAYER_EDGES = new Set(JSON.parse(leRaw)); }
-} catch(_) {}
-try {
-  const tfRaw = localStorage.getItem('dsvis:titleField');
-  if (tfRaw) { TITLE_FIELD = JSON.parse(tfRaw); }
-} catch(_) {}
+if (FILE_STYLE && Array.isArray(FILE_STYLE.layoutExempt)) {
+  LAYOUT_EXEMPT_KEYS.clear();
+  for (const _le0 of FILE_STYLE.layoutExempt) LAYOUT_EXEMPT_KEYS.add(_le0);
+} else {
+  try {
+    const leRaw = localStorage.getItem('dsvis:layoutExempt');
+    if (leRaw) { const _arr0 = JSON.parse(leRaw); LAYOUT_EXEMPT_KEYS.clear(); for (const _k0 of _arr0) LAYOUT_EXEMPT_KEYS.add(_k0); }
+  } catch(_) {}
+}
+if (FILE_STYLE && Array.isArray(FILE_STYLE.layerEdges)) {
+  LAYER_EDGES = new Set(FILE_STYLE.layerEdges);
+} else {
+  try {
+    const leRaw = localStorage.getItem('dsvis:layerEdges');
+    if (leRaw) { LAYER_EDGES = new Set(JSON.parse(leRaw)); }
+  } catch(_) {}
+}
+if (FILE_STYLE && FILE_STYLE.titleField) {
+  const _tkeys = Object.keys(FILE_STYLE.titleField);
+  if (_tkeys.length) TITLE_FIELD = { className: _tkeys[0], key: FILE_STYLE.titleField[_tkeys[0]] };
+} else {
+  try {
+    const tfRaw = localStorage.getItem('dsvis:titleField');
+    if (tfRaw) { TITLE_FIELD = JSON.parse(tfRaw); }
+  } catch(_) {}
+}
+// Server-less fallback: restore the full style from localStorage when no
+// per-script style file was embedded (kept before the first render).
+applyStyleLocalFallback();
+
+// ── Automatic style persistence ──
+// Every style change is written back to <cwd>/.dsvis/<script>.json automatically
+// (debounced) and flushed on page hide — no explicit save button needed. Saves
+// are suppressed until the page has finished initialising so loading a saved
+// style never immediately overwrites it.
+
+let __styleAutosaveReady = false;
+let __styleAutosaveTimer = null;
+
+function __styleAutosavePayload() {
+  if (!STYLE_SERVER || !STYLE_SERVER.port) return null;
+  return JSON.stringify({ script: STYLE_SERVER.script || '', style: exportCurrentConfig() });
+}
+
+function __styleAutosaveSend() {
+  const body = __styleAutosavePayload();
+  if (body) {
+    fetch(`http://127.0.0.1:${STYLE_SERVER.port}/style`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      keepalive: true,
+    }).catch(() => {});
+    return;
+  }
+  // No local style server reachable (server-less environment) — persist the
+  // full style to localStorage so it survives a reload.
+  try {
+    localStorage.setItem(STYLE_LOCAL_KEY, JSON.stringify(exportCurrentConfig()));
+  } catch (_) {}
+}
+
+/** Debounced auto-save after any style change (server or localStorage). */
+function scheduleStyleAutosave() {
+  if (!__styleAutosaveReady) return; // suppress writes while initialising
+  clearTimeout(__styleAutosaveTimer);
+  __styleAutosaveTimer = setTimeout(__styleAutosaveSend, 600);
+}
+
+// Flush any pending save when the page is closed / navigated away.
+window.addEventListener('pagehide', () => {
+  if (!__styleAutosaveReady) return;
+  clearTimeout(__styleAutosaveTimer);
+  __styleAutosaveSend();
+});
+
+// Server-less fallback load: when no per-script style file was embedded,
+// restore the full style previously persisted to localStorage.
+function applyStyleLocalFallback() {
+  if (FILE_STYLE) return; // per-script style file (.dsvis/) is authoritative
+  let cfg = null;
+  try {
+    const raw = localStorage.getItem(STYLE_LOCAL_KEY);
+    if (raw) cfg = JSON.parse(raw);
+  } catch (_) {}
+  if (!cfg || typeof cfg !== 'object') return;
+  if (cfg.layout && cfg.layout.rankdir) VIS_CONFIG.textFlow = cfg.layout.rankdir === 'TB' ? 'vertical' : 'horizontal';
+  if (cfg.showSubtitle !== undefined) VIS_CONFIG.showSubtitle = cfg.showSubtitle;
+  if (cfg.structureType) VIS_CONFIG.structureType = cfg.structureType;
+  if (cfg.layerEdgeKeys) VIS_CONFIG.layerEdgeKeys = { ...cfg.layerEdgeKeys };
+  if (cfg.uniformEdgesEnabled !== undefined) VIS_CONFIG.uniformEdgesEnabled = cfg.uniformEdgesEnabled;
+  if (cfg.rowDisplayMode) VIS_CONFIG.rowDisplayMode = cfg.rowDisplayMode;
+  if (cfg.parentFieldKey !== undefined) VIS_CONFIG.parentFieldKey = cfg.parentFieldKey;
+  if (cfg.graphViewer && typeof cfg.graphViewer === 'object') {
+    VIS_CONFIG.graphViewer = { ...(VIS_CONFIG.graphViewer || {}), ...cfg.graphViewer };
+  }
+  if (cfg.edgeProxy && typeof cfg.edgeProxy === 'object') {
+    EDGE_PROXY.clear();
+    for (const k in cfg.edgeProxy) EDGE_PROXY.set(k, cfg.edgeProxy[k]);
+  }
+  if (cfg.visibility && typeof cfg.visibility === 'object') {
+    for (const k in cfg.visibility) NODE_TYPE_VISIBILITY.set(k, cfg.visibility[k]);
+  }
+  if (cfg.titleField && typeof cfg.titleField === 'object') {
+    const tk = Object.keys(cfg.titleField);
+    if (tk.length) TITLE_FIELD = { className: tk[0], key: cfg.titleField[tk[0]] };
+  }
+  if (Array.isArray(cfg.layerEdges)) LAYER_EDGES = new Set(cfg.layerEdges);
+  if (Array.isArray(cfg.layoutExempt)) {
+    LAYOUT_EXEMPT_KEYS.clear();
+    for (const k of cfg.layoutExempt) LAYOUT_EXEMPT_KEYS.add(k);
+  }
+}
 
 renderAllCode();
 computeStepDiffs();
 renderStep(0);
+// Enable automatic style persistence once the page has finished initialising,
+// so loading a saved style never immediately overwrites it.
+setTimeout(() => { __styleAutosaveReady = true; }, 500);
 </script>
 </body>
 </html>

@@ -132,3 +132,25 @@ def get_pointer_watchers():
     for _, pointers in _WATCH_STACK:
         merged.extend(pointers)
     return merged
+
+
+# ---------------------------------------------------------------------------
+# Field visibility — initial visibility state for generated HTML
+# ---------------------------------------------------------------------------
+# Key format: "ClassName.fieldName", value: "visible" | "self" | "cascade"
+_FIELD_VISIBILITY: dict[str, str] = {}
+
+
+def set_field_visible(field_key: str, state: str):
+    """Set initial visibility for a field in generated HTML.
+
+    field_key: "ClassName.fieldName" (e.g. "AVLNode.left")
+    state: "visible" | "self" | "cascade"
+    """
+    if state not in {"visible", "self", "cascade"}:
+        raise ValueError("state must be 'visible', 'self', or 'cascade'")
+    _FIELD_VISIBILITY[field_key] = state
+
+
+def get_field_visibility() -> dict[str, str]:
+    return dict(_FIELD_VISIBILITY)
