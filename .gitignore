@@ -97,8 +97,15 @@ yarn-error.log
 #demo
 demo/
 
+# DSVis public release build output
+public/
+
 .scratch/
 
 # *.md
 
 .dsvis
+
+build_public.ps1
+
+*.zip
